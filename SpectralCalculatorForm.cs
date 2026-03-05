@@ -32,8 +32,7 @@ namespace SpecimenFX17.Imaging
         private readonly HyperspectralCube _cube;
 
         // ── Selección recibida desde MainForm ────────────────────────────────
-        private readonly IReadOnlyList<(Point Pt, Color Col)>        _selPixels;
-        private readonly IReadOnlyList<(Rectangle Rect, Color Col)>  _selRects;
+        private readonly IReadOnlyList<SelectionShape> _selections;
 
         // ── Exclusión de longitudes de onda ───────────────────────────────────
         private readonly List<(double From, double To)> _excludedRanges = new();
@@ -101,12 +100,10 @@ namespace SpecimenFX17.Imaging
         // ═════════════════════════════════════════════════════════════════════
 
         public SpectralCalculatorForm(HyperspectralCube cube,
-            IReadOnlyList<(Point Pt, Color Col)>?       selPixels = null,
-            IReadOnlyList<(Rectangle Rect, Color Col)>? selRects  = null)
+            IReadOnlyList<SelectionShape>? selections = null)
         {
             _cube       = cube;
-            _selPixels  = selPixels  ?? Array.Empty<(Point, Color)>();
-            _selRects   = selRects   ?? Array.Empty<(Rectangle, Color)>();
+            _selections = selections ?? Array.Empty<SelectionShape>();
             Text        = "Calculadora Espectral — SpecimenFX17";
             Size        = new Size(1150, 820);
             MinimumSize = new Size(900, 650);
@@ -331,7 +328,7 @@ namespace SpecimenFX17.Imaging
         private bool[,] BuildSelectionMask()
         {
             var mask         = new bool[_cube.Lines, _cube.Samples];
-            bool hasSelection = _selPixels.Count > 0 || _selRects.Count > 0;
+            bool hasSelection = _selections.Count > 0;
 
             if (!hasSelection)
             {
@@ -341,19 +338,12 @@ namespace SpecimenFX17.Imaging
                 return mask;
             }
 
-            foreach (var (pt, _) in _selPixels)
-                if (pt.Y >= 0 && pt.Y < _cube.Lines && pt.X >= 0 && pt.X < _cube.Samples)
-                    mask[pt.Y, pt.X] = true;
-
-            foreach (var (rect, _) in _selRects)
+            foreach (var sh in _selections)
             {
-                int x1 = Math.Clamp(rect.Left,   0, _cube.Samples - 1);
-                int y1 = Math.Clamp(rect.Top,    0, _cube.Lines   - 1);
-                int x2 = Math.Clamp(rect.Right,  0, _cube.Samples - 1);
-                int y2 = Math.Clamp(rect.Bottom, 0, _cube.Lines   - 1);
-                for (int l = y1; l <= y2; l++)
-                    for (int s = x1; s <= x2; s++)
-                        mask[l, s] = true;
+                var shMask = sh.GetMask(_cube.Lines, _cube.Samples);
+                for (int l = 0; l < _cube.Lines; l++)
+                    for (int s = 0; s < _cube.Samples; s++)
+                        if (shMask[l, s]) mask[l, s] = true;
             }
             return mask;
         }
@@ -361,20 +351,16 @@ namespace SpecimenFX17.Imaging
         /// <summary>Banner informativo que muestra si hay selección activa.</summary>
         private Panel BuildSelectionBanner()
         {
-            bool hasSel = _selPixels.Count > 0 || _selRects.Count > 0;
-            int selPixCount  = _selPixels.Count;
-            int selRectCount = _selRects.Count;
-
-            // Contar píxeles totales cubiertos por rectángulos
-            long rectPixels = _selRects.Sum(r => (long)(r.Rect.Width + 1) * (r.Rect.Height + 1));
+            bool hasSel   = _selections.Count > 0;
+            int  selCount = _selections.Count;
 
             string msg;
             Color  bannerColor;
             if (hasSel)
             {
                 var parts = new List<string>();
-                if (selPixCount  > 0) parts.Add($"{selPixCount} píxel(s)");
-                if (selRectCount > 0) parts.Add($"{selRectCount} región(es)  (~{rectPixels:N0} px)");
+                parts.Add($"{selCount} selección(es): " +
+                          string.Join(", ", _selections.Select(s => s.LegendIcon + s.ShortLabel)));
                 msg         = $"  🎯  Modo selección activo:  {string.Join("  +  ", parts)}   —   solo se calculará sobre esta selección";
                 bannerColor = Color.FromArgb(28, 55, 28);
             }
@@ -638,16 +624,14 @@ namespace SpecimenFX17.Imaging
             {
                 // Elegir un píxel representativo: centro de la selección o centro de la imagen
                 int cx, cy;
-                if (_selPixels.Count > 0)
+                if (_selections.Count > 0)
                 {
-                    cx = _selPixels[0].Pt.X;
-                    cy = _selPixels[0].Pt.Y;
-                }
-                else if (_selRects.Count > 0)
-                {
-                    var r = _selRects[0].Rect;
-                    cx = r.Left + r.Width  / 2;
-                    cy = r.Top  + r.Height / 2;
+                    var mask0 = _selections[0].GetMask(_cube.Lines, _cube.Samples);
+                    cx = _cube.Samples / 2; cy = _cube.Lines / 2;
+                    bool found = false;
+                    for (int l = 0; l < _cube.Lines && !found; l++)
+                        for (int s2 = 0; s2 < _cube.Samples && !found; s2++)
+                            if (mask0[l, s2]) { cy = l; cx = s2; found = true; }
                 }
                 else
                 {
@@ -689,7 +673,7 @@ namespace SpecimenFX17.Imaging
 
             // Construir máscara de selección (true = calcular ese píxel)
             bool[,] mask        = BuildSelectionMask();
-            bool    hasSelection = _selPixels.Count > 0 || _selRects.Count > 0;
+            bool    hasSelection = _selections.Count > 0;
 
             await Task.Run(() =>
             {
@@ -1035,7 +1019,7 @@ namespace SpecimenFX17.Imaging
             if (hasSelection)
             {
                 _tabStats.SelectionColor = Color.FromArgb(130, 230, 130);
-                _tabStats.AppendText($"  Ámbito   :  SELECCIÓN ({_selPixels.Count} píxel(es), {_selRects.Count} región(es))\n");
+                _tabStats.AppendText($"  Ámbito   :  SELECCIÓN ({_selections.Count} forma(s))\n");
                 _tabStats.SelectionColor = Color.FromArgb(170, 200, 170);
             }
             else
