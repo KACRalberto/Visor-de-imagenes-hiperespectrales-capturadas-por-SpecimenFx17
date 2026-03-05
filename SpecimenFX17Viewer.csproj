@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <UseWindowsForms>true</UseWindowsForms>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <AssemblyName>SpecimenFX17Viewer</AssemblyName>
+    <RootNamespace>SpecimenFX17.Imaging</RootNamespace>
+    <ApplicationIcon />
+    <StartupObject>SpecimenFX17.Imaging.Program</StartupObject>
+    <Optimize>true</Optimize>
+    <Platforms>x64</Platforms>
+  </PropertyGroup>
+
+
+
+</Project>
