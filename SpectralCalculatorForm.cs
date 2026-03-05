@@ -31,6 +31,17 @@ namespace SpecimenFX17.Imaging
     {
         private readonly HyperspectralCube _cube;
 
+        // ── Selección recibida desde MainForm ────────────────────────────────
+        private readonly IReadOnlyList<(Point Pt, Color Col)>        _selPixels;
+        private readonly IReadOnlyList<(Rectangle Rect, Color Col)>  _selRects;
+
+        // ── Exclusión de longitudes de onda ───────────────────────────────────
+        private readonly List<(double From, double To)> _excludedRanges = new();
+        private ListBox       _lstExcluded = null!;
+        private NumericUpDown _nudExclFrom = null!;
+        private NumericUpDown _nudExclTo   = null!;
+        private Label         _lblExclInfo = null!;
+
         // ── Fórmula y controles superiores ───────────────────────────────────
         private RichTextBox  _txtFormula  = null!;
         private Label        _lblPreview  = null!;
@@ -89,9 +100,13 @@ namespace SpecimenFX17.Imaging
 
         // ═════════════════════════════════════════════════════════════════════
 
-        public SpectralCalculatorForm(HyperspectralCube cube)
+        public SpectralCalculatorForm(HyperspectralCube cube,
+            IReadOnlyList<(Point Pt, Color Col)>?       selPixels = null,
+            IReadOnlyList<(Rectangle Rect, Color Col)>? selRects  = null)
         {
             _cube       = cube;
+            _selPixels  = selPixels  ?? Array.Empty<(Point, Color)>();
+            _selRects   = selRects   ?? Array.Empty<(Rectangle, Color)>();
             Text        = "Calculadora Espectral — SpecimenFX17";
             Size        = new Size(1150, 820);
             MinimumSize = new Size(900, 650);
@@ -107,7 +122,7 @@ namespace SpecimenFX17.Imaging
 
         private void BuildUI()
         {
-            // ── Panel izquierdo: bandas + presets ─────────────────────────────
+            // ── Panel izquierdo: bandas + exclusiones + presets ───────────────
             var leftPanel = new Panel
             {
                 Dock = DockStyle.Left, Width = 215,
@@ -121,6 +136,9 @@ namespace SpecimenFX17.Imaging
             // Zona fórmula (Dock Top)
             var formulaPanel = BuildFormulaPanel();
 
+            // Banner de selección (Dock Top) — solo si hay selección activa
+            var selBanner = BuildSelectionBanner();
+
             // Status (Dock Top)
             var statusPanel = BuildStatusPanel();
 
@@ -133,6 +151,7 @@ namespace SpecimenFX17.Imaging
             centerPanel.Controls.Add(_tabs);        // Fill primero
             centerPanel.Controls.Add(toolPanel);    // Top
             centerPanel.Controls.Add(statusPanel);  // Top
+            centerPanel.Controls.Add(selBanner);    // Top
             centerPanel.Controls.Add(formulaPanel); // Top
 
             Controls.Add(centerPanel);
@@ -150,13 +169,12 @@ namespace SpecimenFX17.Imaging
 
             _lstBands = new ListBox
             {
-                Location = new Point(6, cy), Size = new Size(198, 280),
+                Location = new Point(6, cy), Size = new Size(198, 200),
                 BackColor = Color.FromArgb(30, 30, 45),
                 ForeColor = Color.FromArgb(200, 220, 255),
                 Font = new Font("Consolas", 8f), BorderStyle = BorderStyle.FixedSingle
             };
-            foreach (var (i, wl) in _cube.Header.Wavelengths.Select((w, i) => (i + 1, w)))
-                _lstBands.Items.Add($"B[{i}]  {wl:F1} nm");
+            RefreshBandList();
             _lstBands.DoubleClick += (_, _) =>
             {
                 if (_lstBands.SelectedIndex < 0) return;
@@ -165,8 +183,100 @@ namespace SpecimenFX17.Imaging
                 _txtFormula.Focus();
             };
             p.Controls.Add(_lstBands);
-            cy += 288;
+            cy += 208;
 
+            // ── Sección EXCLUIR LONGITUDES DE ONDA ───────────────────────────
+            AddLbl(p, "EXCLUIR LONGITUDES DE ONDA", cy, bold: true,
+                   color: Color.FromArgb(220, 140, 80)); cy += 20;
+
+            AddLbl(p, "Desde (nm):", cy, size: 8); cy += 16;
+            _nudExclFrom = new NumericUpDown
+            {
+                Location = new Point(6, cy), Width = 198, Height = 22,
+                Minimum = (decimal)(_cube.Header.Wavelengths.Count > 0 ? _cube.Header.Wavelengths[0] : 0),
+                Maximum = (decimal)(_cube.Header.Wavelengths.Count > 0 ? _cube.Header.Wavelengths[^1] : 9999),
+                Value   = (decimal)(_cube.Header.Wavelengths.Count > 0 ? _cube.Header.Wavelengths[0] : 0),
+                DecimalPlaces = 1, Increment = 1m,
+                BackColor = Color.FromArgb(36, 36, 52), ForeColor = Color.White
+            };
+            p.Controls.Add(_nudExclFrom); cy += 26;
+
+            AddLbl(p, "Hasta (nm):", cy, size: 8); cy += 16;
+            _nudExclTo = new NumericUpDown
+            {
+                Location = new Point(6, cy), Width = 198, Height = 22,
+                Minimum = (decimal)(_cube.Header.Wavelengths.Count > 0 ? _cube.Header.Wavelengths[0] : 0),
+                Maximum = (decimal)(_cube.Header.Wavelengths.Count > 0 ? _cube.Header.Wavelengths[^1] : 9999),
+                Value   = (decimal)(_cube.Header.Wavelengths.Count > 0 ? _cube.Header.Wavelengths[^1] : 9999),
+                DecimalPlaces = 1, Increment = 1m,
+                BackColor = Color.FromArgb(36, 36, 52), ForeColor = Color.White
+            };
+            p.Controls.Add(_nudExclTo); cy += 26;
+
+            var btnAddExcl = new Button
+            {
+                Text = "+ Añadir rango", Location = new Point(6, cy), Width = 95, Height = 22,
+                FlatStyle = FlatStyle.Flat,
+                BackColor = Color.FromArgb(120, 60, 20), ForeColor = Color.FromArgb(255, 200, 150),
+                Font = new Font("Segoe UI", 8f), Cursor = Cursors.Hand
+            };
+            btnAddExcl.FlatAppearance.BorderColor = Color.FromArgb(180, 100, 40);
+            btnAddExcl.Click += (_, _) =>
+            {
+                double f = (double)_nudExclFrom.Value;
+                double t = (double)_nudExclTo.Value;
+                if (f > t) (f, t) = (t, f);
+                _excludedRanges.Add((f, t));
+                _lstExcluded.Items.Add($"{f:F1} – {t:F1} nm");
+                RefreshBandList();
+                UpdateExclInfo();
+                UpdatePreview();
+            };
+            p.Controls.Add(btnAddExcl);
+
+            var btnDelExcl = new Button
+            {
+                Text = "✕ Eliminar", Location = new Point(109, cy), Width = 95, Height = 22,
+                FlatStyle = FlatStyle.Flat,
+                BackColor = Color.FromArgb(65, 30, 30), ForeColor = Color.FromArgb(255, 150, 150),
+                Font = new Font("Segoe UI", 8f), Cursor = Cursors.Hand
+            };
+            btnDelExcl.FlatAppearance.BorderColor = Color.FromArgb(120, 50, 50);
+            btnDelExcl.Click += (_, _) =>
+            {
+                int idx = _lstExcluded.SelectedIndex;
+                if (idx < 0) return;
+                _excludedRanges.RemoveAt(idx);
+                _lstExcluded.Items.RemoveAt(idx);
+                RefreshBandList();
+                UpdateExclInfo();
+                UpdatePreview();
+            };
+            p.Controls.Add(btnDelExcl);
+            cy += 26;
+
+            _lstExcluded = new ListBox
+            {
+                Location = new Point(6, cy), Size = new Size(198, 68),
+                BackColor = Color.FromArgb(28, 20, 20),
+                ForeColor = Color.FromArgb(255, 190, 120),
+                Font = new Font("Consolas", 7.5f), BorderStyle = BorderStyle.FixedSingle
+            };
+            p.Controls.Add(_lstExcluded);
+            cy += 76;
+
+            _lblExclInfo = new Label
+            {
+                Location = new Point(6, cy), Size = new Size(198, 32),
+                ForeColor = Color.FromArgb(170, 130, 80),
+                Font = new Font("Segoe UI", 7.5f, FontStyle.Italic),
+                Text = "Sin exclusiones activas",
+                AutoSize = false
+            };
+            p.Controls.Add(_lblExclInfo);
+            cy += 36;
+
+            // ── Sección FÓRMULAS RÁPIDAS ──────────────────────────────────────
             AddLbl(p, "FÓRMULAS RÁPIDAS", cy, bold: true, color: Color.FromArgb(100, 160, 220)); cy += 20;
             foreach (var (name, formula) in Presets)
             {
@@ -182,6 +292,110 @@ namespace SpecimenFX17.Imaging
                 p.Controls.Add(btn);
                 cy += 25;
             }
+        }
+
+        /// <summary>Reconstruye el ListBox de bandas marcando las excluidas en rojo.</summary>
+        private void RefreshBandList()
+        {
+            if (_lstBands == null) return;
+            int prevSel = _lstBands.SelectedIndex;
+            _lstBands.Items.Clear();
+            for (int i = 0; i < _cube.Header.Wavelengths.Count; i++)
+            {
+                double wl  = _cube.Header.Wavelengths[i];
+                string tag = IsBandExcluded(i) ? "  ✕" : "";
+                _lstBands.Items.Add($"B[{i + 1}]  {wl:F1} nm{tag}");
+            }
+            if (prevSel >= 0 && prevSel < _lstBands.Items.Count)
+                _lstBands.SelectedIndex = prevSel;
+        }
+
+        private void UpdateExclInfo()
+        {
+            int excluded = Enumerable.Range(0, _cube.Bands).Count(IsBandExcluded);
+            _lblExclInfo.Text = _excludedRanges.Count == 0
+                ? "Sin exclusiones activas"
+                : $"{excluded} de {_cube.Bands} bandas excluidas\n(devuelven 0 en la fórmula)";
+        }
+
+        /// <summary>Devuelve true si la banda <paramref name="bandIndex"/> cae en algún rango excluido.</summary>
+        private bool IsBandExcluded(int bandIndex)
+        {
+            if (_excludedRanges.Count == 0) return false;
+            double wl = bandIndex >= 0 && bandIndex < _cube.Header.Wavelengths.Count
+                        ? _cube.Header.Wavelengths[bandIndex] : -1;
+            return _excludedRanges.Any(r => wl >= r.From && wl <= r.To);
+        }
+
+        /// <summary>Construye la máscara de selección. Si no hay selección, incluye todos los píxeles.</summary>
+        private bool[,] BuildSelectionMask()
+        {
+            var mask         = new bool[_cube.Lines, _cube.Samples];
+            bool hasSelection = _selPixels.Count > 0 || _selRects.Count > 0;
+
+            if (!hasSelection)
+            {
+                for (int l = 0; l < _cube.Lines; l++)
+                    for (int s = 0; s < _cube.Samples; s++)
+                        mask[l, s] = true;
+                return mask;
+            }
+
+            foreach (var (pt, _) in _selPixels)
+                if (pt.Y >= 0 && pt.Y < _cube.Lines && pt.X >= 0 && pt.X < _cube.Samples)
+                    mask[pt.Y, pt.X] = true;
+
+            foreach (var (rect, _) in _selRects)
+            {
+                int x1 = Math.Clamp(rect.Left,   0, _cube.Samples - 1);
+                int y1 = Math.Clamp(rect.Top,    0, _cube.Lines   - 1);
+                int x2 = Math.Clamp(rect.Right,  0, _cube.Samples - 1);
+                int y2 = Math.Clamp(rect.Bottom, 0, _cube.Lines   - 1);
+                for (int l = y1; l <= y2; l++)
+                    for (int s = x1; s <= x2; s++)
+                        mask[l, s] = true;
+            }
+            return mask;
+        }
+
+        /// <summary>Banner informativo que muestra si hay selección activa.</summary>
+        private Panel BuildSelectionBanner()
+        {
+            bool hasSel = _selPixels.Count > 0 || _selRects.Count > 0;
+            int selPixCount  = _selPixels.Count;
+            int selRectCount = _selRects.Count;
+
+            // Contar píxeles totales cubiertos por rectángulos
+            long rectPixels = _selRects.Sum(r => (long)(r.Rect.Width + 1) * (r.Rect.Height + 1));
+
+            string msg;
+            Color  bannerColor;
+            if (hasSel)
+            {
+                var parts = new List<string>();
+                if (selPixCount  > 0) parts.Add($"{selPixCount} píxel(s)");
+                if (selRectCount > 0) parts.Add($"{selRectCount} región(es)  (~{rectPixels:N0} px)");
+                msg         = $"  🎯  Modo selección activo:  {string.Join("  +  ", parts)}   —   solo se calculará sobre esta selección";
+                bannerColor = Color.FromArgb(28, 55, 28);
+            }
+            else
+            {
+                msg         = $"  🌐  Imagen completa:  {_cube.Samples} × {_cube.Lines} px  ({(long)_cube.Samples * _cube.Lines:N0} píxeles)   —   selecciona píxeles/regiones en la ventana principal para limitar el cálculo";
+                bannerColor = Color.FromArgb(25, 30, 45);
+            }
+
+            var banner = new Panel { Dock = DockStyle.Top, Height = 22, BackColor = bannerColor };
+            var lbl = new Label
+            {
+                Dock = DockStyle.Fill,
+                Text = msg,
+                ForeColor = hasSel ? Color.FromArgb(130, 230, 130) : Color.FromArgb(110, 130, 180),
+                Font = new Font("Segoe UI", 8f, hasSel ? FontStyle.Bold : FontStyle.Regular),
+                TextAlign = ContentAlignment.MiddleLeft,
+                Padding = new Padding(4, 0, 0, 0)
+            };
+            banner.Controls.Add(lbl);
+            return banner;
         }
 
         // ── Panel de fórmula ──────────────────────────────────────────────────
@@ -422,9 +636,27 @@ namespace SpecimenFX17.Imaging
             if (string.IsNullOrEmpty(f)) { _lblPreview.Text = ""; _lblError.Text = ""; return; }
             try
             {
-                int cx = _cube.Samples / 2, cy = _cube.Lines / 2;
-                double r = Evaluate(f, cx, cy);
-                _lblPreview.Text = $"  Preview píxel central ({cx},{cy}): {r:G8}";
+                // Elegir un píxel representativo: centro de la selección o centro de la imagen
+                int cx, cy;
+                if (_selPixels.Count > 0)
+                {
+                    cx = _selPixels[0].Pt.X;
+                    cy = _selPixels[0].Pt.Y;
+                }
+                else if (_selRects.Count > 0)
+                {
+                    var r = _selRects[0].Rect;
+                    cx = r.Left + r.Width  / 2;
+                    cy = r.Top  + r.Height / 2;
+                }
+                else
+                {
+                    cx = _cube.Samples / 2;
+                    cy = _cube.Lines   / 2;
+                }
+
+                double r2 = Evaluate(f, cx, cy);
+                _lblPreview.Text = $"  Preview píxel ({cx},{cy}): {r2:G8}";
                 _lblError.Text   = "";
                 _btnCalc.Enabled = true;
             }
@@ -455,6 +687,10 @@ namespace SpecimenFX17.Imaging
             float[,]? result = null;
             string?   error  = null;
 
+            // Construir máscara de selección (true = calcular ese píxel)
+            bool[,] mask        = BuildSelectionMask();
+            bool    hasSelection = _selPixels.Count > 0 || _selRects.Count > 0;
+
             await Task.Run(() =>
             {
                 try
@@ -463,7 +699,14 @@ namespace SpecimenFX17.Imaging
                     for (int line = 0; line < _cube.Lines; line++)
                     {
                         for (int col = 0; col < _cube.Samples; col++)
+                        {
+                            if (!mask[line, col])
+                            {
+                                result[line, col] = float.NaN;  // fuera de selección → negro
+                                continue;
+                            }
                             result[line, col] = (float)Evaluate(formula, col, line);
+                        }
 
                         if (line % 8 == 0)
                         {
@@ -490,10 +733,20 @@ namespace SpecimenFX17.Imaging
 
             _resultData = result!;
 
-            // Calcular estadísticas
+            // Calcular estadísticas (solo sobre píxeles válidos = en selección + no NaN)
             var stats = CalcStats(_resultData);
+
+            // Resumen de exclusiones activas
+            int exclBands = Enumerable.Range(0, _cube.Bands).Count(IsBandExcluded);
+            string exclInfo = exclBands > 0 ? $"  │  {exclBands} bandas excluidas" : "";
+
+            // Resumen de selección
+            string selInfo = hasSelection
+                ? $"  │  Selección: {stats.ValidCount:N0} px calculados"
+                : $"  │  Imagen completa";
+
             _lblStatus.Text = $"Listo  │  Mín: {stats.Min:G5}  Máx: {stats.Max:G5}  " +
-                              $"Media: {stats.Mean:G5}  σ: {stats.Std:G4}";
+                              $"Media: {stats.Mean:G5}  σ: {stats.Std:G4}{selInfo}{exclInfo}";
 
             // ── Pestaña 0: Imagen ─────────────────────────────────────────────
             _resultBitmap?.Dispose();
@@ -512,7 +765,7 @@ namespace SpecimenFX17.Imaging
             DrawProfileV();
 
             // ── Pestaña 4: Estadísticas ───────────────────────────────────────
-            FillStats(stats, formula);
+            FillStats(stats, formula, hasSelection, exclBands);
 
             _btnSave.Enabled = true;
         }
@@ -764,7 +1017,7 @@ namespace SpecimenFX17.Imaging
         }
 
         // ── Estadísticas ──────────────────────────────────────────────────────
-        private void FillStats(ResultStats s, string formula)
+        private void FillStats(ResultStats s, string formula, bool hasSelection = false, int exclBands = 0)
         {
             _tabStats.Clear();
             _tabStats.SelectionFont  = new Font("Consolas", 10f, FontStyle.Bold);
@@ -777,6 +1030,34 @@ namespace SpecimenFX17.Imaging
             _tabStats.SelectionColor = Color.FromArgb(170, 200, 170);
             _tabStats.AppendText($"  Fórmula  :  {formula}\n");
             _tabStats.AppendText($"  Imagen   :  {_cube.Samples} × {_cube.Lines} px\n");
+
+            // ── Ámbito de cálculo ─────────────────────────────────────────────
+            if (hasSelection)
+            {
+                _tabStats.SelectionColor = Color.FromArgb(130, 230, 130);
+                _tabStats.AppendText($"  Ámbito   :  SELECCIÓN ({_selPixels.Count} píxel(es), {_selRects.Count} región(es))\n");
+                _tabStats.SelectionColor = Color.FromArgb(170, 200, 170);
+            }
+            else
+            {
+                _tabStats.SelectionColor = Color.FromArgb(150, 160, 200);
+                _tabStats.AppendText($"  Ámbito   :  Imagen completa\n");
+                _tabStats.SelectionColor = Color.FromArgb(170, 200, 170);
+            }
+
+            // ── Bandas excluidas ──────────────────────────────────────────────
+            if (exclBands > 0)
+            {
+                _tabStats.SelectionColor = Color.FromArgb(255, 190, 100);
+                _tabStats.AppendText($"  Excluidas:  {exclBands} de {_cube.Bands} bandas (devuelven 0)\n");
+                foreach (var (f, t) in _excludedRanges)
+                {
+                    _tabStats.SelectionColor = Color.FromArgb(200, 150, 70);
+                    _tabStats.AppendText($"              • {f:F1} – {t:F1} nm\n");
+                }
+                _tabStats.SelectionColor = Color.FromArgb(170, 200, 170);
+            }
+
             _tabStats.AppendText($"  Válidos  :  {s.ValidCount:N0} píxeles\n\n");
 
             _tabStats.SelectionFont  = new Font("Consolas", 10f, FontStyle.Bold);
@@ -933,13 +1214,16 @@ namespace SpecimenFX17.Imaging
             {
                 double wl   = double.Parse(m.Groups[1].Value,
                               System.Globalization.CultureInfo.InvariantCulture);
-                float  v    = _cube[FindClosestBand(wl), line, col];
+                int    band = FindClosestBand(wl);
+                if (IsBandExcluded(band)) return "0";
+                float  v    = _cube[band, line, col];
                 return ToNum(v);
             });
 
             expr = Regex.Replace(expr, @"B\[([0-9]+)\]", m =>
             {
                 int   band = Math.Clamp(int.Parse(m.Groups[1].Value) - 1, 0, _cube.Bands - 1);
+                if (IsBandExcluded(band)) return "0";
                 float v    = _cube[band, line, col];
                 return ToNum(v);
             });

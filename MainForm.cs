@@ -4,6 +4,7 @@ using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.Drawing.Imaging;
 using System.IO;
+using System.Linq;
 using System.Threading.Tasks;
 using System.Windows.Forms;
 
@@ -263,7 +264,10 @@ namespace SpecimenFX17.Imaging
             btnCalc.Click += (_, _) =>
             {
                 if (_cube == null) { MessageBox.Show("Carga un cubo primero.", "Aviso"); return; }
-                new SpectralCalculatorForm(_cube).Show();
+                // Pasar la selección activa para que la calculadora opere sobre ella
+                var selPx   = _selectedPixels.Select(p => (p.Img,    p.Color)).ToList().AsReadOnly();
+                var selRect = _selectedRects .Select(r => (r.ImgRect, r.Color)).ToList().AsReadOnly();
+                new SpectralCalculatorForm(_cube, selPx, selRect).Show();
             };
 
             Sep(p, ref cy);
