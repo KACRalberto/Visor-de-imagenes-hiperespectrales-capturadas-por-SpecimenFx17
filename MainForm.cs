@@ -230,6 +230,22 @@ namespace SpecimenFX17.Imaging
                 new SpectralCalculatorForm(_cube, _selections.AsReadOnly()).Show();
             };
 
+            // ── Análisis Avanzado ─────────────────────────────────────────────
+            Sep(p, ref cy); Sec(p, "ANÁLISIS AVANZADO", ref cy);
+            var ba = Btn(p, "🔬  Herramientas Avanzadas", ref cy, Color.FromArgb(140, 70, 45));
+            ba.Click += (_, _) => {
+                if (_cube == null) { MessageBox.Show("Carga un cubo primero.", "Aviso"); return; }
+                new AdvancedAnalysisForm(_cube, _selections.AsReadOnly()).Show();
+            };
+
+            // ── Predicción PLS (Brix) ─────────────────────────────────────────
+            Sep(p, ref cy); Sec(p, "MODELOS DE PREDICCIÓN", ref cy);
+            var bp = Btn(p, "🍊  Predecir °Brix (PLS)", ref cy, Color.FromArgb(140, 90, 30));
+            bp.Click += (_, _) => {
+                if (_cube == null) { MessageBox.Show("Carga un cubo primero.", "Aviso"); return; }
+                new PlsPredictionForm(_cube, _selections.AsReadOnly()).Show();
+            };
+
             // ── Info de banda ─────────────────────────────────────────────────
             Sep(p, ref cy); Sec(p,"INFO DE BANDA", ref cy);
             _lblBandInfo = new Label { Location=new Point(8,cy), Width=210, Height=110,
