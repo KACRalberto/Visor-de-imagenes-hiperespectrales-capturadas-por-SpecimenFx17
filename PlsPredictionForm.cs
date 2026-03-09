@@ -24,12 +24,9 @@ namespace SpecimenFX17.Imaging
 
         public PlsPredictionForm(HyperspectralCube cube, IReadOnlyList<SelectionShape> selections)
         {
-            _cube = cube;
-            _selections = selections;
+            _cube = cube; _selections = selections;
             Text = "Predicción PLS de °Brix";
-            Size = new Size(1000, 700);
-            BackColor = Color.FromArgb(18, 18, 26);
-            ForeColor = Color.White;
+            Size = new Size(1000, 700); BackColor = Color.FromArgb(18, 18, 26); ForeColor = Color.White;
             Font = new Font("Segoe UI", 9f);
             BuildUI();
         }
@@ -50,14 +47,10 @@ namespace SpecimenFX17.Imaging
             btnPredict.Click += GenerateBrixMap;
 
             pnlTop.Controls.AddRange(new Control[] { btnExport, btnLoadModel, btnPredict, _pb, _lblStatus });
-
             _picBrixMap = new PictureBox { Dock = DockStyle.Fill, SizeMode = PictureBoxSizeMode.Zoom, BackColor = Color.Black };
-
-            Controls.Add(_picBrixMap);
-            Controls.Add(pnlTop);
+            Controls.Add(_picBrixMap); Controls.Add(pnlTop);
         }
 
-        // ── Máscara de Selección ──────────────────────────────────────────────
         private bool[,] BuildSelectionMask()
         {
             var mask = new bool[_cube.Lines, _cube.Samples];
@@ -78,43 +71,46 @@ namespace SpecimenFX17.Imaging
             return mask;
         }
 
-        // ═══════════════════════════════════════════════════════════════════
-        //  1. EXPORTAR ESPECTROS PARA ENTRENAR EN PYTHON
-        // ═══════════════════════════════════════════════════════════════════
         private async void ExportSpectraToCsv(object? sender, EventArgs e)
         {
             using var dlg = new SaveFileDialog { Filter = "CSV UTF-8 (*.csv)|*.csv", FileName = "espectros_naranjas.csv" };
             if (dlg.ShowDialog() != DialogResult.OK) return;
 
-            _pb.Visible = true; _lblStatus.Text = "Exportando datos...";
+            _pb.Visible = true; _lblStatus.Text = "Exportando datos (Multihilo)...";
             bool[,] mask = BuildSelectionMask();
+            int lines = _cube.Lines, samples = _cube.Samples, bands = _cube.Bands;
 
             await Task.Run(() =>
             {
-                using var writer = new StreamWriter(dlg.FileName, false, Encoding.UTF8);
+                string[][] rows = new string[lines][];
 
-                // Cabecera: X, Y, Banda_400nm, Banda_403nm...
-                var header = new StringBuilder("PixelX,PixelY,");
-                for (int b = 0; b < _cube.Bands; b++)
-                    header.Append($"Wl_{_cube.Header.Wavelengths[b].ToString("F1", System.Globalization.CultureInfo.InvariantCulture)}{(b == _cube.Bands - 1 ? "" : ",")}");
-                writer.WriteLine(header.ToString());
-
-                // Datos
-                for (int y = 0; y < _cube.Lines; y++)
+                // Preparar strings en paralelo
+                Parallel.For(0, lines, y =>
                 {
-                    for (int x = 0; x < _cube.Samples; x++)
+                    rows[y] = new string[samples];
+                    for (int x = 0; x < samples; x++)
                     {
                         if (!mask[y, x]) continue;
-
-                        var row = new StringBuilder($"{x},{y},");
-                        for (int b = 0; b < _cube.Bands; b++)
+                        var sb = new StringBuilder($"{x},{y},");
+                        for (int b = 0; b < bands; b++)
                         {
-                            row.Append(FormatFloat(_cube[b, y, x]));
-                            if (b < _cube.Bands - 1) row.Append(",");
+                            sb.Append(FormatFloat(_cube[b, y, x]));
+                            if (b < bands - 1) sb.Append(",");
                         }
-                        writer.WriteLine(row.ToString());
+                        rows[y][x] = sb.ToString();
                     }
-                }
+                });
+
+                // Escribir secuencialmente para no bloquear el archivo
+                using var writer = new StreamWriter(dlg.FileName, false, Encoding.UTF8);
+                var header = new StringBuilder("PixelX,PixelY,");
+                for (int b = 0; b < bands; b++)
+                    header.Append($"Wl_{_cube.Header.Wavelengths[b].ToString("F1", System.Globalization.CultureInfo.InvariantCulture)}{(b == bands - 1 ? "" : ",")}");
+                writer.WriteLine(header.ToString());
+
+                for (int y = 0; y < lines; y++)
+                    for (int x = 0; x < samples; x++)
+                        if (rows[y][x] != null) writer.WriteLine(rows[y][x]);
             });
 
             _pb.Visible = false; _lblStatus.Text = "Exportación CSV completada.";
@@ -122,9 +118,6 @@ namespace SpecimenFX17.Imaging
 
         private string FormatFloat(float v) => float.IsNaN(v) ? "0" : v.ToString(System.Globalization.CultureInfo.InvariantCulture);
 
-        // ═══════════════════════════════════════════════════════════════════
-        //  2. CARGAR MODELO PLS (Coeficientes exportados de scikit-learn)
-        // ═══════════════════════════════════════════════════════════════════
         private void LoadPlsModel()
         {
             using var dlg = new OpenFileDialog { Filter = "Modelo PLS CSV (*.csv)|*.csv", Title = "Selecciona el archivo de coeficientes PLS" };
@@ -132,36 +125,25 @@ namespace SpecimenFX17.Imaging
 
             try
             {
-                // El formato esperado es:
-                // Intercept,-2.45
-                // Coefs,0.012,-0.045,0.089...
                 var lines = File.ReadAllLines(dlg.FileName);
                 _plsIntercept = double.Parse(lines[0].Split(',')[1], System.Globalization.CultureInfo.InvariantCulture);
 
-                var coefStrings = lines[1].Split(',').Skip(1).ToArray(); // Saltar la palabra "Coefs"
+                var coefStrings = lines[1].Split(',').Skip(1).ToArray();
                 if (coefStrings.Length != _cube.Bands)
                 {
-                    MessageBox.Show($"El modelo tiene {coefStrings.Length} bandas, pero el cubo tiene {_cube.Bands}. Deben coincidir.", "Error de dimensiones");
+                    MessageBox.Show($"El modelo tiene {coefStrings.Length} bandas, pero el cubo tiene {_cube.Bands}.", "Error");
                     return;
                 }
-
                 _plsCoefs = coefStrings.Select(s => double.Parse(s, System.Globalization.CultureInfo.InvariantCulture)).ToArray();
                 _lblStatus.Text = $"Modelo PLS cargado ({_cube.Bands} bandas).";
             }
-            catch (Exception ex)
-            {
-                MessageBox.Show($"Error leyendo el modelo: {ex.Message}");
-            }
+            catch (Exception ex) { MessageBox.Show($"Error: {ex.Message}"); }
         }
 
-        // ═══════════════════════════════════════════════════════════════════
-        //  3. PREDECIR Y GENERAR MAPA DE CALOR (°BRIX)
-        // ═══════════════════════════════════════════════════════════════════
         private async void GenerateBrixMap(object? sender, EventArgs e)
         {
             if (_plsCoefs == null) return;
-
-            _pb.Visible = true; _lblStatus.Text = "Calculando predicción PLS...";
+            _pb.Visible = true; _lblStatus.Text = "Calculando predicción PLS (Multihilo)...";
             bool[,] mask = BuildSelectionMask();
             int lines = _cube.Lines, samples = _cube.Samples, bands = _cube.Bands;
 
@@ -169,38 +151,36 @@ namespace SpecimenFX17.Imaging
             {
                 float[,] brixMap = new float[lines, samples];
                 float minBrix = float.MaxValue, maxBrix = float.MinValue;
+                object syncObj = new object();
 
-                // Inferencia PLS (Y = X*Beta + Intercept)
-                for (int y = 0; y < lines; y++)
+                // Predicción Matemática en Paralelo
+                Parallel.For(0, lines, y =>
                 {
+                    float lMin = float.MaxValue, lMax = float.MinValue;
                     for (int x = 0; x < samples; x++)
                     {
-                        if (!mask[y, x])
-                        {
-                            brixMap[y, x] = float.NaN;
-                            continue;
-                        }
-
+                        if (!mask[y, x]) { brixMap[y, x] = float.NaN; continue; }
                         double pred = _plsIntercept;
-                        for (int b = 0; b < bands; b++)
-                            pred += _cube[b, y, x] * _plsCoefs[b];
-
+                        for (int b = 0; b < bands; b++) pred += _cube[b, y, x] * _plsCoefs[b];
                         float val = (float)pred;
                         brixMap[y, x] = val;
-
-                        if (val < minBrix) minBrix = val;
-                        if (val > maxBrix) maxBrix = val;
+                        if (val < lMin) lMin = val;
+                        if (val > lMax) lMax = val;
                     }
-                }
+                    lock (syncObj)
+                    {
+                        if (lMin < minBrix) minBrix = lMin;
+                        if (lMax > maxBrix) maxBrix = lMax;
+                    }
+                });
 
-                // Generar Heatmap (Turbo/Jet colormap)
                 var bMap = new Bitmap(samples, lines, PixelFormat.Format24bppRgb);
                 var bd = bMap.LockBits(new Rectangle(0, 0, samples, lines), ImageLockMode.WriteOnly, PixelFormat.Format24bppRgb);
                 byte[] pixels = new byte[bd.Stride * lines];
-                float range = maxBrix - minBrix;
-                if (range == 0) range = 1;
+                float range = maxBrix - minBrix == 0 ? 1 : maxBrix - minBrix;
 
-                for (int y = 0; y < lines; y++)
+                // Colorización en Paralelo
+                Parallel.For(0, lines, y =>
                 {
                     int row = y * bd.Stride;
                     for (int x = 0; x < samples; x++)
@@ -208,35 +188,29 @@ namespace SpecimenFX17.Imaging
                         int off = row + x * 3;
                         if (float.IsNaN(brixMap[y, x]))
                         {
-                            pixels[off] = 0; pixels[off + 1] = 0; pixels[off + 2] = 0; // Fondo negro
+                            pixels[off] = 0; pixels[off + 1] = 0; pixels[off + 2] = 0;
                             continue;
                         }
-
-                        // Normalizar predicción entre 0 y 1 para el color
                         float t = (brixMap[y, x] - minBrix) / range;
                         var (r, g, b) = GetHeatMapColor(t);
-
                         pixels[off] = b; pixels[off + 1] = g; pixels[off + 2] = r;
                     }
-                }
+                });
+
                 Marshal.Copy(pixels, 0, bd.Scan0, pixels.Length);
                 bMap.UnlockBits(bd);
 
-                // Dibujar leyenda
                 using var gfx = Graphics.FromImage(bMap);
                 DrawLegend(gfx, minBrix, maxBrix, bMap.Width, bMap.Height);
-
                 return bMap;
             });
 
-            _picBrixMap.Image?.Dispose();
-            _picBrixMap.Image = bmp;
+            _picBrixMap.Image?.Dispose(); _picBrixMap.Image = bmp;
             _pb.Visible = false; _lblStatus.Text = "Mapa °Brix generado con éxito.";
         }
 
         private (byte R, byte G, byte B) GetHeatMapColor(float t)
         {
-            // Escala térmica estilo "Jet"
             float r = Math.Clamp(1.5f - Math.Abs(2f * t - 1.5f), 0, 1);
             float g = Math.Clamp(1.5f - Math.Abs(2f * t - 1.0f), 0, 1);
             float b = Math.Clamp(1.5f - Math.Abs(2f * t - 0.5f), 0, 1);

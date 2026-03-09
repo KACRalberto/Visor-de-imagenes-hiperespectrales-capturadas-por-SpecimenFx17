@@ -2,6 +2,7 @@ using System;
 using System.Buffers;
 using System.IO;
 using System.Runtime.InteropServices;
+using System.Threading.Tasks;
 
 namespace SpecimenFX17.Imaging
 {
@@ -97,15 +98,15 @@ namespace SpecimenFX17.Imaging
         public void Calibrate(HyperspectralCube whiteRef, HyperspectralCube darkRef)
         {
             if (whiteRef.Bands != Bands || darkRef.Bands != Bands)
-                throw new Exception("El número de bandas de las referencias no coincide con la imagen original.");
+                throw new Exception("El número de bandas no coincide.");
             if (whiteRef.Samples != Samples || darkRef.Samples != Samples)
-                throw new Exception("El número de columnas (samples) de las referencias no coincide con la imagen original.");
+                throw new Exception("El número de columnas no coincide.");
 
-            // 1. Promediar las referencias verticalmente por si tienen varias líneas de escaneo
             float[,] avgWhite = new float[Bands, Samples];
             float[,] avgDark = new float[Bands, Samples];
 
-            for (int b = 0; b < Bands; b++)
+            // 1. Promediar las referencias en Paralelo
+            Parallel.For(0, Bands, b =>
             {
                 for (int s = 0; s < Samples; s++)
                 {
@@ -115,23 +116,21 @@ namespace SpecimenFX17.Imaging
                     for (int l = 0; l < whiteRef.Lines; l++)
                     {
                         float v = whiteRef[b, l, s];
-                        if (!float.IsNaN(v) && v != (float)whiteRef.Header.DataIgnoreValue)
-                        { sumW += v; validW++; }
+                        if (!float.IsNaN(v) && v != (float)whiteRef.Header.DataIgnoreValue) { sumW += v; validW++; }
                     }
                     for (int l = 0; l < darkRef.Lines; l++)
                     {
                         float v = darkRef[b, l, s];
-                        if (!float.IsNaN(v) && v != (float)darkRef.Header.DataIgnoreValue)
-                        { sumD += v; validD++; }
+                        if (!float.IsNaN(v) && v != (float)darkRef.Header.DataIgnoreValue) { sumD += v; validD++; }
                     }
 
                     avgWhite[b, s] = validW > 0 ? sumW / validW : 1f;
                     avgDark[b, s] = validD > 0 ? sumD / validD : 0f;
                 }
-            }
+            });
 
-            // 2. Aplicar la normalización al cubo original
-            for (int b = 0; b < Bands; b++)
+            // 2. Aplicar la normalización R = (I-D)/(W-D) en Paralelo por Banda
+            Parallel.For(0, Bands, b =>
             {
                 for (int l = 0; l < Lines; l++)
                 {
@@ -144,17 +143,15 @@ namespace SpecimenFX17.Imaging
                         float d = avgDark[b, s];
 
                         float range = w - d;
-                        if (range <= 0) range = 1e-6f; // Evitar divisiones por cero o negativas
+                        if (range <= 0) range = 1e-6f;
 
                         _cube[b, l, s] = (val - d) / range;
                     }
                 }
-            }
+            });
 
-            // 3. Recalcular las estadísticas tras cambiar los datos
-            ComputeStats();
+            ComputeStats(); // Actualiza Mín y Máx global
         }
-
         // ─────────────────────────────────────────────────────────────────────
         //  CARGA DESDE ARCHIVO
         // ─────────────────────────────────────────────────────────────────────

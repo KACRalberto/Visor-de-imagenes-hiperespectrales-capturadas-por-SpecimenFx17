@@ -35,28 +35,47 @@ namespace SpecimenFX17.Imaging
 
             foreach (var sh in shapes)
             {
+                if (sh is MaskShape) continue; // Saltamos MaskShape por ahora para evitar JSON masivos
+
                 var data = new ShapeData
                 {
                     ColorArgb = sh.Color.ToArgb(),
                     Variety = sh.Variety,
                     Date = sh.Date,
                     MeasuredBrix = sh.MeasuredBrix,
-                    Notes = sh.Notes,
-                    Type = sh.GetType().Name
+                    Notes = sh.Notes
                 };
 
-                if (sh is PixelShape ps) { data.PointsX = new[] { ps.Pt.X }; data.PointsY = new[] { ps.Pt.Y }; }
-                else if (sh is RectShape rs) { data.PointsX = new[] { rs.Rect.X, rs.Rect.Width }; data.PointsY = new[] { rs.Rect.Y, rs.Rect.Height }; }
-                else if (sh is CircleShape cs) { data.PointsX = new[] { cs.Center.X }; data.PointsY = new[] { cs.Center.Y }; data.Radius = cs.Radius; }
-                else if (sh is PolygonShape poly)
+                if (sh is PixelShape px)
                 {
-                    data.PointsX = poly.Vertices.Select(v => v.X).ToArray();
-                    data.PointsY = poly.Vertices.Select(v => v.Y).ToArray();
+                    data.Type = nameof(PixelShape);
+                    data.PointsX = new[] { px.Pt.X };
+                    data.PointsY = new[] { px.Pt.Y };
                 }
-                else if (sh is FreehandShape fh)
+                else if (sh is RectShape r)
                 {
-                    data.PointsX = fh.Points.Select(v => v.X).ToArray();
-                    data.PointsY = fh.Points.Select(v => v.Y).ToArray();
+                    data.Type = nameof(RectShape);
+                    data.PointsX = new[] { r.Rect.Left, r.Rect.Width };
+                    data.PointsY = new[] { r.Rect.Top, r.Rect.Height };
+                }
+                else if (sh is CircleShape c)
+                {
+                    data.Type = nameof(CircleShape);
+                    data.PointsX = new[] { c.Center.X };
+                    data.PointsY = new[] { c.Center.Y };
+                    data.Radius = c.Radius;
+                }
+                else if (sh is PolygonShape p)
+                {
+                    data.Type = nameof(PolygonShape);
+                    data.PointsX = p.Points.Select(pt => pt.X).ToArray();
+                    data.PointsY = p.Points.Select(pt => pt.Y).ToArray();
+                }
+                else if (sh is FreehandShape f)
+                {
+                    data.Type = nameof(FreehandShape);
+                    data.PointsX = f.Points.Select(pt => pt.X).ToArray();
+                    data.PointsY = f.Points.Select(pt => pt.Y).ToArray();
                 }
 
                 session.Selections.Add(data);
@@ -68,14 +87,16 @@ namespace SpecimenFX17.Imaging
 
         public static List<SelectionShape> LoadSession(string loadPath)
         {
+            var shapes = new List<SelectionShape>();
+            if (!File.Exists(loadPath)) return shapes;
+
             string json = File.ReadAllText(loadPath);
             var session = JsonSerializer.Deserialize<SessionData>(json);
-            var result = new List<SelectionShape>();
-            if (session == null) return result;
+            if (session == null || session.Selections == null) return shapes;
 
             foreach (var data in session.Selections)
             {
-                Color c = Color.FromArgb(data.ColorArgb);
+                var c = Color.FromArgb(data.ColorArgb);
                 SelectionShape? shape = null;
 
                 if (data.Type == nameof(PixelShape) && data.PointsX.Length > 0)
@@ -101,10 +122,11 @@ namespace SpecimenFX17.Imaging
                     shape.Date = data.Date;
                     shape.MeasuredBrix = data.MeasuredBrix;
                     shape.Notes = data.Notes;
-                    result.Add(shape);
+                    shapes.Add(shape);
                 }
             }
-            return result;
+
+            return shapes;
         }
     }
 }

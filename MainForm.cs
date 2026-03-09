@@ -20,7 +20,7 @@ namespace SpecimenFX17.Imaging
 
         private int _currentBand = 0;
         private bool _grayscaleMode = false;
-        private bool _rgbMode = false; // NUEVO: Estado para el modo de color verdadero
+        private bool _rgbMode = false;
         private Bitmap? _currentBitmap;
 
         // ── Selecciones y Tracking ─────────────────────────────────────────────
@@ -61,11 +61,12 @@ namespace SpecimenFX17.Imaging
         private ComboBox _cmbCmap = null!;
         private CheckBox _chkCbar = null!;
         private CheckBox _chkGray = null!;
-        private CheckBox _chkRgb = null!; // NUEVO: Checkbox para Color Original
+        private CheckBox _chkRgb = null!;
         private NumericUpDown _nudGamma = null!;
         private NumericUpDown _nudLo = null!;
         private NumericUpDown _nudHi = null!;
         private NumericUpDown _nudThr = null!;
+        private NumericUpDown _nudAutoTol = null!; // Tolerancia Auto ROI
 
         private Button _btnLoad = null!;
         private Label _lblWhite = null!;
@@ -312,15 +313,16 @@ namespace SpecimenFX17.Imaging
             {
                 Location = new Point(8, cy),
                 Width = 212,
-                Height = 56,
+                Height = 85,
                 ColumnCount = 2,
-                RowCount = 2,
+                RowCount = 3,
                 BackColor = Color.Transparent
             };
             grid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50f));
             grid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50f));
-            grid.RowStyles.Add(new RowStyle(SizeType.Percent, 50f));
-            grid.RowStyles.Add(new RowStyle(SizeType.Percent, 50f));
+            grid.RowStyles.Add(new RowStyle(SizeType.Percent, 33.3f));
+            grid.RowStyles.Add(new RowStyle(SizeType.Percent, 33.3f));
+            grid.RowStyles.Add(new RowStyle(SizeType.Percent, 33.3f));
 
             var defs = new (string Lbl, SelectionTool Mode, string Tip)[]
             {
@@ -328,9 +330,11 @@ namespace SpecimenFX17.Imaging
                 ("⬟ Polígono",   SelectionTool.Polygon,   "Clic = vértice  •  Enter / doble clic = cerrar"),
                 ("○ Círculo",    SelectionTool.Circle,    "Arrastra desde el centro hacia el borde"),
                 ("✏ Lasso",      SelectionTool.Freehand,  "Mantén pulsado y dibuja libremente"),
+                ("🪄 Auto ROI",  SelectionTool.AutoDetect,"Clic en un objeto para autoseleccionarlo")
             };
-            _toolBtns = new Button[4];
-            for (int i = 0; i < 4; i++)
+
+            _toolBtns = new Button[5];
+            for (int i = 0; i < 5; i++)
             {
                 var (lbl, mode, tip) = defs[i];
                 var tb = new Button
@@ -350,7 +354,10 @@ namespace SpecimenFX17.Imaging
                 grid.Controls.Add(tb, i % 2, i / 2);
                 _toolBtns[i] = tb;
             }
-            p.Controls.Add(grid); cy += 62;
+            p.Controls.Add(grid); cy += 90;
+
+            Lbl(p, "Tolerancia SAM (%):", ref cy);
+            _nudAutoTol = Num(p, ref cy, 10m, 1m, 100m, 1m, 0);
 
             // ── Calculadora y Avanzado ────────────────────────────────────────
             Sep(p, ref cy); Sec(p, "ANÁLISIS ESPECTRAL", ref cy);
@@ -485,6 +492,7 @@ namespace SpecimenFX17.Imaging
             {
                 SelectionTool.Polygon => Cursors.UpArrow,
                 SelectionTool.Freehand => Cursors.UpArrow,
+                SelectionTool.AutoDetect => Cursors.Hand,
                 _ => Cursors.Cross
             };
         }
@@ -630,6 +638,11 @@ namespace SpecimenFX17.Imaging
                         if (_freeImg.Count >= 3) AddShape(new FreehandShape(_freeImg, NextColor()));
                         _freeImg.Clear(); _freeScr.Clear(); break;
                     }
+                case SelectionTool.AutoDetect:
+                    {
+                        if (pt != null) RunAutoRoi(pt.Value.X, pt.Value.Y);
+                        break;
+                    }
             }
         }
 
@@ -694,6 +707,110 @@ namespace SpecimenFX17.Imaging
         private void ClearAll() { _selections.Clear(); _polyActive = false; _polyImg.Clear(); _polyScr.Clear(); _freeImg.Clear(); _freeScr.Clear(); _btnClear.Enabled = false; ClearSpectrumPlot(); _pictureBox.Invalidate(); }
 
         // ═══════════════════════════════════════════════════════════════════
+        //  AUTO ROI (SPECTRAL ANGLE MAPPER - HIPER-OPTIMIZADO)
+        // ═══════════════════════════════════════════════════════════════════
+
+        private async void RunAutoRoi(int startX, int startY)
+        {
+            if (_cube == null) return;
+
+            _slbl.Text = "🪄 Analizando firma espectral (SAM)...";
+            _pb.Visible = true;
+            _pb.Style = ProgressBarStyle.Marquee;
+            _pictureBox.Enabled = false;
+
+            float tolPercent = (float)_nudAutoTol.Value / 100f;
+            // Mapeamos el % a radianes. Un 10% equivale a 0.15 radianes (bastante estricto para SAM)
+            float maxAngleRads = tolPercent * 1.5f;
+            float minCos = (float)Math.Cos(maxAngleRads);
+
+            Color col = NextColor();
+            bool[,] mask = null!;
+
+            await Task.Run(() =>
+            {
+                int w = _cube.Samples;
+                int h = _cube.Lines;
+                mask = new bool[h, w];
+
+                // OPTIMIZACIÓN 1: Para la distancia espectral no necesitamos calcular 128 bandas. 
+                // Usaremos 16 bandas distribuidas equitativamente para capturar la "forma" rapidísimo.
+                int numBands = 16;
+                int step = Math.Max(1, _cube.Bands / numBands);
+                var bandsToUse = new List<int>();
+                for (int b = 0; b < _cube.Bands; b += step) bandsToUse.Add(b);
+
+                // Pre-calculamos el espectro de referencia (el píxel clicado)
+                float[] refSpec = new float[bandsToUse.Count];
+                float normRef = 0f;
+                for (int i = 0; i < bandsToUse.Count; i++)
+                {
+                    float val = _cube[bandsToUse[i], startY, startX];
+                    refSpec[i] = float.IsNaN(val) ? 0 : val;
+                    normRef += refSpec[i] * refSpec[i];
+                }
+                normRef = (float)Math.Sqrt(normRef);
+
+                // Si hacemos clic en el vacío absoluto (fuera de la bandeja de escaneo)
+                if (normRef < 1e-6f) return;
+
+                var stack = new Stack<(int x, int y)>(w * h / 4);
+                stack.Push((startX, startY));
+                mask[startY, startX] = true;
+
+                // Función súper optimizada usando SAM (Spectral Angle Mapper)
+                bool IsSimilar(int cx, int cy)
+                {
+                    float dot = 0f;
+                    float normB = 0f;
+                    for (int i = 0; i < bandsToUse.Count; i++)
+                    {
+                        float val = _cube[bandsToUse[i], cy, cx];
+                        if (float.IsNaN(val)) return false;
+                        dot += refSpec[i] * val;
+                        normB += val * val;
+                    }
+                    if (normB < 1e-6f) return false;
+
+                    normB = (float)Math.Sqrt(normB);
+                    float cosTheta = dot / (normRef * normB);
+                    return cosTheta >= minCos; // Evitamos calcular ArcCos para ganar velocidad pura
+                }
+
+                while (stack.Count > 0)
+                {
+                    var (cx, cy) = stack.Pop();
+
+                    // Comprobar vecinos
+                    if (cx > 0 && !mask[cy, cx - 1] && IsSimilar(cx - 1, cy))
+                    {
+                        mask[cy, cx - 1] = true; stack.Push((cx - 1, cy));
+                    }
+                    if (cx < w - 1 && !mask[cy, cx + 1] && IsSimilar(cx + 1, cy))
+                    {
+                        mask[cy, cx + 1] = true; stack.Push((cx + 1, cy));
+                    }
+                    if (cy > 0 && !mask[cy - 1, cx] && IsSimilar(cx, cy - 1))
+                    {
+                        mask[cy - 1, cx] = true; stack.Push((cx, cy - 1));
+                    }
+                    if (cy < h - 1 && !mask[cy + 1, cx] && IsSimilar(cx, cy + 1))
+                    {
+                        mask[cy + 1, cx] = true; stack.Push((cx, cy + 1));
+                    }
+                }
+            });
+
+            if (mask != null) AddShape(new MaskShape(mask, col));
+
+            _pictureBox.Enabled = true;
+            _pb.Visible = false;
+            _pb.Style = ProgressBarStyle.Continuous;
+            _slbl.Text = "✔ Auto ROI completado";
+        }
+
+
+        // ═══════════════════════════════════════════════════════════════════
         //  CARGA DEL CUBO
         // ═══════════════════════════════════════════════════════════════════
 
@@ -735,28 +852,27 @@ namespace SpecimenFX17.Imaging
                 LowPercentile = (float)_nudLo.Value,
                 HighPercentile = (float)_nudHi.Value,
                 SignalThreshold = (float)_nudThr.Value,
-                DrawColorbar = _chkCbar.Checked && !_rgbMode, // En RGB no tiene sentido la barra de color
+                DrawColorbar = _chkCbar.Checked && !_rgbMode,
                 Wavelength = WlAt(_currentBand),
                 WavelengthUnit = _cube.Header.WavelengthUnits
             };
             if (_grayscaleMode) opts.Colormap = BliColormap.Grayscale;
 
-            _currentBitmap?.Dispose();
+            Bitmap? newBitmap;
 
             if (_rgbMode)
             {
-                // Busca las bandas más cercanas a las longitudes de onda del Rojo, Verde y Azul
-                int bR = GetClosestBand(640); // Rojo
-                int bG = GetClosestBand(550); // Verde
-                int bB = GetClosestBand(460); // Azul
+                int bR = GetClosestBand(640);
+                int bG = GetClosestBand(550);
+                int bB = GetClosestBand(460);
 
-                _currentBitmap = BliRenderer.RenderRGB(_cube, bR, bG, bB, opts);
+                newBitmap = BliRenderer.RenderRGB(_cube, bR, bG, bB, opts);
                 _lblWl.Text = $"  Modo RGB (Falso color real)   │   R:{WlAt(bR):F0} nm, G:{WlAt(bG):F0} nm, B:{WlAt(bB):F0} nm";
                 _lblBandInfo.Text = $"Modo RGB\nR: {WlAt(bR):F1} nm\nG: {WlAt(bG):F1} nm\nB: {WlAt(bB):F1} nm\nPx: {_cube.Samples}x{_cube.Lines}";
             }
             else
             {
-                _currentBitmap = BliRenderer.RenderBand(_cube, _currentBand, opts);
+                newBitmap = BliRenderer.RenderBand(_cube, _currentBand, opts);
                 _lblWl.Text = $"  Banda {_currentBand + 1} / {_cube.Bands}   │   λ = {WlAt(_currentBand):F2} {_cube.Header.WavelengthUnits}";
                 var (mn, mx) = _cube.GetBandStats(_currentBand);
                 _lblBandInfo.Text = $"Banda: {_currentBand + 1}\nλ: {WlAt(_currentBand):F2} {_cube.Header.WavelengthUnits}\nMín: {mn:G5}\nMáx: {mx:G5}\nPx: {_cube.Samples}x{_cube.Lines}";
@@ -764,16 +880,20 @@ namespace SpecimenFX17.Imaging
 
             if (_selections.Count > 0)
             {
-                using var g = Graphics.FromImage(_currentBitmap);
+                using var g = Graphics.FromImage(newBitmap);
                 g.SmoothingMode = SmoothingMode.AntiAlias;
                 foreach (var sh in _selections) sh.DrawOn(g);
             }
 
-            RedrawSpectrumPlot();
+            Bitmap? oldBitmap = _currentBitmap;
+            _currentBitmap = newBitmap;
             _pictureBox.Image = _currentBitmap;
+
+            oldBitmap?.Dispose();
+
+            RedrawSpectrumPlot();
         }
 
-        // Busca el índice de la banda más cercana a una longitud de onda específica
         private int GetClosestBand(double targetWl)
         {
             if (_cube == null || _cube.Header.Wavelengths.Count == 0) return 0;

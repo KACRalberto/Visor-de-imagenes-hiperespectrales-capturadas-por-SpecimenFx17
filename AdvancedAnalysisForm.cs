@@ -72,7 +72,6 @@ namespace SpecimenFX17.Imaging
             Controls.Add(pnlTop);
         }
 
-        // ── Máscara de Selección ──────────────────────────────────────────────
         private bool[,] BuildSelectionMask()
         {
             var mask = new bool[_cube.Lines, _cube.Samples];
@@ -80,7 +79,6 @@ namespace SpecimenFX17.Imaging
 
             if (!hasSelection)
             {
-                // Si no hay selección, procesamos toda la imagen
                 for (int l = 0; l < _cube.Lines; l++)
                     for (int s = 0; s < _cube.Samples; s++)
                         mask[l, s] = true;
@@ -98,37 +96,54 @@ namespace SpecimenFX17.Imaging
         }
 
         // ═══════════════════════════════════════════════════════════════════
-        //  1. PCA (Principal Component Analysis) restringido a la máscara
+        //  1. PCA Optimizado (Multithreading y reducción de bloqueos)
         // ═══════════════════════════════════════════════════════════════════
         private async void RunPCA(object? sender, EventArgs e)
         {
             _tabs.SelectedIndex = 0;
-            _pb.Visible = true; _lblStatus.Text = "Calculando matriz de covarianza...";
+            _pb.Visible = true; _lblStatus.Text = "Calculando matriz de covarianza (Multihilo)...";
             int bands = _cube.Bands, lines = _cube.Lines, samples = _cube.Samples;
             bool[,] mask = BuildSelectionMask();
 
             var bmp = await Task.Run(() =>
             {
-                // Si hay selección, analizamos el 100% de los píxeles seleccionados.
-                // Si es imagen completa, submuestreamos (step = 4) para no saturar la memoria/CPU.
                 int step = _selections.Count > 0 ? 1 : 4;
                 var mean = new double[bands];
                 int n = 0;
+                object syncObj = new object();
 
-                for (int y = 0; y < lines; y += step)
+                // 1. Calcular Medias en Paralelo
+                Parallel.For(0, (lines + step - 1) / step, rowIdx =>
+                {
+                    int y = rowIdx * step;
+                    double[] localMean = new double[bands];
+                    int localN = 0;
+
                     for (int x = 0; x < samples; x += step)
                     {
                         if (!mask[y, x]) continue;
-                        for (int b = 0; b < bands; b++) mean[b] += _cube[b, y, x];
-                        n++;
+                        for (int b = 0; b < bands; b++) localMean[b] += _cube[b, y, x];
+                        localN++;
                     }
 
-                if (n <= 1) return new Bitmap(samples, lines); // Prevenir error si no hay píxeles
+                    lock (syncObj)
+                    {
+                        for (int b = 0; b < bands; b++) mean[b] += localMean[b];
+                        n += localN;
+                    }
+                });
+
+                if (n <= 1) return new Bitmap(samples, lines);
 
                 for (int b = 0; b < bands; b++) mean[b] /= n;
 
+                // 2. Calcular Covarianza en Paralelo (O(N * B^2))
                 var cov = new double[bands, bands];
-                for (int y = 0; y < lines; y += step)
+                Parallel.For(0, (lines + step - 1) / step, rowIdx =>
+                {
+                    int y = rowIdx * step;
+                    var localCov = new double[bands, bands];
+
                     for (int x = 0; x < samples; x += step)
                     {
                         if (!mask[y, x]) continue;
@@ -136,26 +151,38 @@ namespace SpecimenFX17.Imaging
                         {
                             double devI = _cube[i, y, x] - mean[i];
                             for (int j = i; j < bands; j++)
-                                cov[i, j] += devI * (_cube[j, y, x] - mean[j]);
+                                localCov[i, j] += devI * (_cube[j, y, x] - mean[j]);
                         }
                     }
+
+                    lock (syncObj)
+                    {
+                        for (int i = 0; i < bands; i++)
+                            for (int j = i; j < bands; j++)
+                                cov[i, j] += localCov[i, j];
+                    }
+                });
 
                 for (int i = 0; i < bands; i++)
                     for (int j = i; j < bands; j++)
                     {
                         cov[i, j] /= (n - 1);
-                        cov[j, i] = cov[i, j]; // La matriz es simétrica
+                        cov[j, i] = cov[i, j];
                     }
 
                 Invoke(() => _lblStatus.Text = "Extrayendo autovectores (Jacobi)...");
                 var evecs = JacobiEigen(cov, bands);
 
-                Invoke(() => _lblStatus.Text = "Proyectando píxeles seleccionados...");
+                Invoke(() => _lblStatus.Text = "Proyectando píxeles (Multihilo)...");
 
                 float[,] pc1 = new float[lines, samples], pc2 = new float[lines, samples], pc3 = new float[lines, samples];
                 float min1 = float.MaxValue, max1 = float.MinValue, min2 = float.MaxValue, max2 = float.MinValue, min3 = float.MaxValue, max3 = float.MinValue;
 
-                for (int y = 0; y < lines; y++)
+                // 3. Proyección PCA en Paralelo
+                Parallel.For(0, lines, y =>
+                {
+                    float lMin1 = float.MaxValue, lMax1 = float.MinValue, lMin2 = float.MaxValue, lMax2 = float.MinValue, lMin3 = float.MaxValue, lMax3 = float.MinValue;
+
                     for (int x = 0; x < samples; x++)
                     {
                         if (!mask[y, x]) continue;
@@ -169,34 +196,47 @@ namespace SpecimenFX17.Imaging
                             v3 += (float)(dev * evecs[b, 2]);
                         }
                         pc1[y, x] = v1; pc2[y, x] = v2; pc3[y, x] = v3;
-                        if (v1 < min1) min1 = v1; if (v1 > max1) max1 = v1;
-                        if (v2 < min2) min2 = v2; if (v2 > max2) max2 = v2;
-                        if (v3 < min3) min3 = v3; if (v3 > max3) max3 = v3;
+
+                        if (v1 < lMin1) lMin1 = v1; if (v1 > lMax1) lMax1 = v1;
+                        if (v2 < lMin2) lMin2 = v2; if (v2 > lMax2) lMax2 = v2;
+                        if (v3 < lMin3) lMin3 = v3; if (v3 > lMax3) lMax3 = v3;
                     }
 
-                // Generar mapa RGB
+                    lock (syncObj)
+                    {
+                        if (lMin1 < min1) min1 = lMin1; if (lMax1 > max1) max1 = lMax1;
+                        if (lMin2 < min2) min2 = lMin2; if (lMax2 > max2) max2 = lMax2;
+                        if (lMin3 < min3) min3 = lMin3; if (lMax3 > max3) max3 = lMax3;
+                    }
+                });
+
+                // 4. Renderizado Rápido
                 var bMap = new Bitmap(samples, lines, PixelFormat.Format24bppRgb);
                 var bd = bMap.LockBits(new Rectangle(0, 0, samples, lines), ImageLockMode.WriteOnly, PixelFormat.Format24bppRgb);
                 byte[] pixels = new byte[bd.Stride * lines];
 
-                for (int y = 0; y < lines; y++)
+                Parallel.For(0, lines, y =>
                 {
                     int row = y * bd.Stride;
+                    float range1 = max1 - min1 == 0 ? 1 : max1 - min1;
+                    float range2 = max2 - min2 == 0 ? 1 : max2 - min2;
+                    float range3 = max3 - min3 == 0 ? 1 : max3 - min3;
+
                     for (int x = 0; x < samples; x++)
                     {
                         int off = row + x * 3;
                         if (!mask[y, x])
                         {
-                            pixels[off] = 0; pixels[off + 1] = 0; pixels[off + 2] = 0; // Fuera de la máscara = negro
+                            pixels[off] = 0; pixels[off + 1] = 0; pixels[off + 2] = 0;
                             continue;
                         }
 
-                        byte r = (byte)Math.Clamp((pc1[y, x] - min1) / (max1 - min1) * 255, 0, 255);
-                        byte g = (byte)Math.Clamp((pc2[y, x] - min2) / (max2 - min2) * 255, 0, 255);
-                        byte b = (byte)Math.Clamp((pc3[y, x] - min3) / (max3 - min3) * 255, 0, 255);
-                        pixels[off] = b; pixels[off + 1] = g; pixels[off + 2] = r;
+                        pixels[off] = (byte)Math.Clamp((pc3[y, x] - min3) / range3 * 255, 0, 255);     // B
+                        pixels[off + 1] = (byte)Math.Clamp((pc2[y, x] - min2) / range2 * 255, 0, 255); // G
+                        pixels[off + 2] = (byte)Math.Clamp((pc1[y, x] - min1) / range1 * 255, 0, 255); // R
                     }
-                }
+                });
+
                 Marshal.Copy(pixels, 0, bd.Scan0, pixels.Length);
                 bMap.UnlockBits(bd);
                 return bMap;
@@ -207,7 +247,6 @@ namespace SpecimenFX17.Imaging
             _pb.Visible = false; _lblStatus.Text = $"PCA completado en {(_selections.Count > 0 ? "selección" : "imagen completa")}.";
         }
 
-        // Algoritmo de Jacobi básico para descomposición de eigenvalores
         private double[,] JacobiEigen(double[,] cov, int n)
         {
             double[,] v = new double[n, n];
@@ -266,7 +305,7 @@ namespace SpecimenFX17.Imaging
         }
 
         // ═══════════════════════════════════════════════════════════════════
-        //  2. SAM (Spectral Angle Mapper) restringido a la máscara
+        //  2. SAM Optimizado
         // ═══════════════════════════════════════════════════════════════════
         private async void RunSAM(object? sender, EventArgs e)
         {
@@ -276,9 +315,8 @@ namespace SpecimenFX17.Imaging
                 return;
             }
             _tabs.SelectedIndex = 1;
-            _pb.Visible = true; _lblStatus.Text = "Calculando mapa de ángulos SAM...";
+            _pb.Visible = true; _lblStatus.Text = "Calculando mapa de ángulos SAM (Multihilo)...";
 
-            // Tomamos la primera selección como firma pura (Endmember)
             float[] refSpec = _selections[0].GetSpectrum(_cube);
             int bands = _cube.Bands, lines = _cube.Lines, samples = _cube.Samples;
             bool[,] mask = BuildSelectionMask();
@@ -291,13 +329,17 @@ namespace SpecimenFX17.Imaging
 
                 float[,] angles = new float[lines, samples];
                 float maxAngle = 0;
+                object syncObj = new object();
 
-                for (int y = 0; y < lines; y++)
+                // Calcular Ángulos en Paralelo
+                Parallel.For(0, lines, y =>
+                {
+                    float localMaxAngle = 0;
                     for (int x = 0; x < samples; x++)
                     {
                         if (!mask[y, x])
                         {
-                            angles[y, x] = float.NaN; // Ignorado
+                            angles[y, x] = float.NaN;
                             continue;
                         }
 
@@ -309,7 +351,6 @@ namespace SpecimenFX17.Imaging
                             norm += v * v;
                         }
 
-                        // Prevención de división por cero
                         if (norm == 0 || refNorm == 0)
                         {
                             angles[y, x] = float.NaN;
@@ -321,16 +362,24 @@ namespace SpecimenFX17.Imaging
                         float ang = (float)Math.Acos(cosTheta);
 
                         angles[y, x] = ang;
-                        if (ang > maxAngle && !float.IsNaN(ang)) maxAngle = ang;
+                        if (ang > localMaxAngle && !float.IsNaN(ang)) localMaxAngle = ang;
                     }
+
+                    lock (syncObj)
+                    {
+                        if (localMaxAngle > maxAngle) maxAngle = localMaxAngle;
+                    }
+                });
 
                 var bMap = new Bitmap(samples, lines, PixelFormat.Format24bppRgb);
                 var bd = bMap.LockBits(new Rectangle(0, 0, samples, lines), ImageLockMode.WriteOnly, PixelFormat.Format24bppRgb);
                 byte[] pixels = new byte[bd.Stride * lines];
 
-                for (int y = 0; y < lines; y++)
+                Parallel.For(0, lines, y =>
                 {
                     int row = y * bd.Stride;
+                    float safeMaxAngle = maxAngle > 0 ? maxAngle : 1f;
+
                     for (int x = 0; x < samples; x++)
                     {
                         int off = row + x * 3;
@@ -340,16 +389,14 @@ namespace SpecimenFX17.Imaging
                             continue;
                         }
 
-                        // Ángulo menor = mayor similitud (pintamos inverso, más caliente = más similar)
-                        float t = 1f - (angles[y, x] / (maxAngle > 0 ? maxAngle : 1f));
+                        float t = 1f - (angles[y, x] / safeMaxAngle);
 
-                        byte r = (byte)Math.Clamp(t * 3f * 255, 0, 255);
-                        byte g = (byte)Math.Clamp((t * 3f - 1f) * 255, 0, 255);
-                        byte b = (byte)Math.Clamp((t * 3f - 2f) * 255, 0, 255);
-
-                        pixels[off] = b; pixels[off + 1] = g; pixels[off + 2] = r;
+                        pixels[off] = (byte)Math.Clamp((t * 3f - 2f) * 255, 0, 255);     // B
+                        pixels[off + 1] = (byte)Math.Clamp((t * 3f - 1f) * 255, 0, 255); // G
+                        pixels[off + 2] = (byte)Math.Clamp(t * 3f * 255, 0, 255);        // R
                     }
-                }
+                });
+
                 Marshal.Copy(pixels, 0, bd.Scan0, pixels.Length);
                 bMap.UnlockBits(bd);
                 return bMap;
@@ -361,7 +408,7 @@ namespace SpecimenFX17.Imaging
         }
 
         // ═══════════════════════════════════════════════════════════════════
-        //  3. DERIVADAS ESPECTRALES (1ª y 2ª) calculadas por cada selección
+        //  3. DERIVADAS ESPECTRALES (Ya es suficientemente rápido)
         // ═══════════════════════════════════════════════════════════════════
         private void RunDerivatives(object? sender, EventArgs e)
         {
@@ -390,7 +437,6 @@ namespace SpecimenFX17.Imaging
             using var gridPen = new Pen(Color.FromArgb(40, 255, 255, 255)) { DashStyle = DashStyle.Dot };
             g.DrawRectangle(gridPen, rect1); g.DrawRectangle(gridPen, rect2);
 
-            // Cada selección genera sus propias curvas de derivada
             foreach (var sel in _selections)
             {
                 float[] spec = sel.GetSpectrum(_cube);
