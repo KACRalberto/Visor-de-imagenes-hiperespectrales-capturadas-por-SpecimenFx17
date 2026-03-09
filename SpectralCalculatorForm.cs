@@ -36,29 +36,29 @@ namespace SpecimenFX17.Imaging
 
         // ── Exclusión de longitudes de onda ───────────────────────────────────
         private readonly List<(double From, double To)> _excludedRanges = new();
-        private ListBox       _lstExcluded = null!;
+        private ListBox _lstExcluded = null!;
         private NumericUpDown _nudExclFrom = null!;
-        private NumericUpDown _nudExclTo   = null!;
-        private Label         _lblExclInfo = null!;
+        private NumericUpDown _nudExclTo = null!;
+        private Label _lblExclInfo = null!;
 
         // ── Fórmula y controles superiores ───────────────────────────────────
-        private RichTextBox  _txtFormula  = null!;
-        private Label        _lblPreview  = null!;
-        private Label        _lblError    = null!;
-        private Button       _btnCalc     = null!;
-        private Button       _btnSave     = null!;
-        private ComboBox     _cmbColormap = null!;
-        private ProgressBar  _progress    = null!;
-        private Label        _lblStatus   = null!;
-        private ListBox      _lstBands    = null!;
+        private RichTextBox _txtFormula = null!;
+        private Label _lblPreview = null!;
+        private Label _lblError = null!;
+        private Button _btnCalc = null!;
+        private Button _btnSave = null!;
+        private ComboBox _cmbColormap = null!;
+        private ProgressBar _progress = null!;
+        private Label _lblStatus = null!;
+        private ListBox _lstBands = null!;
 
         // ── Pestañas de resultado ─────────────────────────────────────────────
-        private TabControl   _tabs           = null!;
-        private PictureBox   _tabImage       = null!;  // pestaña 0: imagen
-        private PictureBox   _tabHisto       = null!;  // pestaña 1: histograma
-        private PictureBox   _tabProfileH    = null!;  // pestaña 2: perfil fila
-        private PictureBox   _tabProfileV    = null!;  // pestaña 3: perfil col
-        private RichTextBox  _tabStats       = null!;  // pestaña 4: estadísticas
+        private TabControl _tabs = null!;
+        private PictureBox _tabImage = null!;  // pestaña 0: imagen
+        private PictureBox _tabHisto = null!;  // pestaña 1: histograma
+        private PictureBox _tabProfileH = null!;  // pestaña 2: perfil fila
+        private PictureBox _tabProfileV = null!;  // pestaña 3: perfil col
+        private RichTextBox _tabStats = null!;  // pestaña 4: estadísticas
 
         // ── Estado de zoom para cada gráfico ─────────────────────────────────
         private record ZoomRange(float X0, float X1, float Y0, float Y1);
@@ -68,19 +68,19 @@ namespace SpecimenFX17.Imaging
 
         // Estado de arrastre de zoom
         private PictureBox? _zoomTarget;
-        private Point       _zoomDragStart;
-        private Point       _zoomDragCurrent;
-        private bool        _zooming;
+        private Point _zoomDragStart;
+        private Point _zoomDragCurrent;
+        private bool _zooming;
 
         // Control de fila/columna para los perfiles
-        private TrackBar     _trkRow = null!;
-        private TrackBar     _trkCol = null!;
-        private Label        _lblRow = null!;
-        private Label        _lblCol = null!;
+        private TrackBar _trkRow = null!;
+        private TrackBar _trkCol = null!;
+        private Label _lblRow = null!;
+        private Label _lblCol = null!;
 
         // Datos calculados (se guardan para redibujar perfiles al mover los sliders)
         private float[,]? _resultData;
-        private Bitmap?   _resultBitmap;
+        private Bitmap? _resultBitmap;
 
         // ── Fórmulas predefinidas ─────────────────────────────────────────────
         private static readonly (string Name, string Formula)[] Presets =
@@ -102,14 +102,14 @@ namespace SpecimenFX17.Imaging
         public SpectralCalculatorForm(HyperspectralCube cube,
             IReadOnlyList<SelectionShape>? selections = null)
         {
-            _cube       = cube;
+            _cube = cube;
             _selections = selections ?? Array.Empty<SelectionShape>();
-            Text        = "Calculadora Espectral — SpecimenFX17";
-            Size        = new Size(1150, 820);
+            Text = "Calculadora Espectral — SpecimenFX17";
+            Size = new Size(1150, 820);
             MinimumSize = new Size(900, 650);
-            BackColor   = Color.FromArgb(18, 18, 26);
-            ForeColor   = Color.White;
-            Font        = new Font("Segoe UI", 9f);
+            BackColor = Color.FromArgb(18, 18, 26);
+            ForeColor = Color.White;
+            Font = new Font("Segoe UI", 9f);
             BuildUI();
         }
 
@@ -122,8 +122,11 @@ namespace SpecimenFX17.Imaging
             // ── Panel izquierdo: bandas + exclusiones + presets ───────────────
             var leftPanel = new Panel
             {
-                Dock = DockStyle.Left, Width = 215,
-                BackColor = Color.FromArgb(22, 22, 34), Padding = new Padding(8)
+                Dock = DockStyle.Left,
+                Width = 240, // Ampliado para dejar sitio a la barra de desplazamiento
+                BackColor = Color.FromArgb(22, 22, 34),
+                Padding = new Padding(8),
+                AutoScroll = true // MÁGIA AQUÍ: Permite hacer scroll si la ventana es pequeña
             };
             BuildLeftPanel(leftPanel);
 
@@ -166,10 +169,12 @@ namespace SpecimenFX17.Imaging
 
             _lstBands = new ListBox
             {
-                Location = new Point(6, cy), Size = new Size(198, 200),
+                Location = new Point(6, cy),
+                Size = new Size(210, 200),
                 BackColor = Color.FromArgb(30, 30, 45),
                 ForeColor = Color.FromArgb(200, 220, 255),
-                Font = new Font("Consolas", 8f), BorderStyle = BorderStyle.FixedSingle
+                Font = new Font("Consolas", 8f),
+                BorderStyle = BorderStyle.FixedSingle
             };
             RefreshBandList();
             _lstBands.DoubleClick += (_, _) =>
@@ -189,33 +194,46 @@ namespace SpecimenFX17.Imaging
             AddLbl(p, "Desde (nm):", cy, size: 8); cy += 16;
             _nudExclFrom = new NumericUpDown
             {
-                Location = new Point(6, cy), Width = 198, Height = 22,
+                Location = new Point(6, cy),
+                Width = 210,
+                Height = 22,
                 Minimum = (decimal)(_cube.Header.Wavelengths.Count > 0 ? _cube.Header.Wavelengths[0] : 0),
                 Maximum = (decimal)(_cube.Header.Wavelengths.Count > 0 ? _cube.Header.Wavelengths[^1] : 9999),
-                Value   = (decimal)(_cube.Header.Wavelengths.Count > 0 ? _cube.Header.Wavelengths[0] : 0),
-                DecimalPlaces = 1, Increment = 1m,
-                BackColor = Color.FromArgb(36, 36, 52), ForeColor = Color.White
+                Value = (decimal)(_cube.Header.Wavelengths.Count > 0 ? _cube.Header.Wavelengths[0] : 0),
+                DecimalPlaces = 1,
+                Increment = 1m,
+                BackColor = Color.FromArgb(36, 36, 52),
+                ForeColor = Color.White
             };
             p.Controls.Add(_nudExclFrom); cy += 26;
 
             AddLbl(p, "Hasta (nm):", cy, size: 8); cy += 16;
             _nudExclTo = new NumericUpDown
             {
-                Location = new Point(6, cy), Width = 198, Height = 22,
+                Location = new Point(6, cy),
+                Width = 210,
+                Height = 22,
                 Minimum = (decimal)(_cube.Header.Wavelengths.Count > 0 ? _cube.Header.Wavelengths[0] : 0),
                 Maximum = (decimal)(_cube.Header.Wavelengths.Count > 0 ? _cube.Header.Wavelengths[^1] : 9999),
-                Value   = (decimal)(_cube.Header.Wavelengths.Count > 0 ? _cube.Header.Wavelengths[^1] : 9999),
-                DecimalPlaces = 1, Increment = 1m,
-                BackColor = Color.FromArgb(36, 36, 52), ForeColor = Color.White
+                Value = (decimal)(_cube.Header.Wavelengths.Count > 0 ? _cube.Header.Wavelengths[^1] : 9999),
+                DecimalPlaces = 1,
+                Increment = 1m,
+                BackColor = Color.FromArgb(36, 36, 52),
+                ForeColor = Color.White
             };
             p.Controls.Add(_nudExclTo); cy += 26;
 
             var btnAddExcl = new Button
             {
-                Text = "+ Añadir rango", Location = new Point(6, cy), Width = 95, Height = 22,
+                Text = "+ Añadir",
+                Location = new Point(6, cy),
+                Width = 100,
+                Height = 24,
                 FlatStyle = FlatStyle.Flat,
-                BackColor = Color.FromArgb(120, 60, 20), ForeColor = Color.FromArgb(255, 200, 150),
-                Font = new Font("Segoe UI", 8f), Cursor = Cursors.Hand
+                BackColor = Color.FromArgb(120, 60, 20),
+                ForeColor = Color.FromArgb(255, 200, 150),
+                Font = new Font("Segoe UI", 8f),
+                Cursor = Cursors.Hand
             };
             btnAddExcl.FlatAppearance.BorderColor = Color.FromArgb(180, 100, 40);
             btnAddExcl.Click += (_, _) =>
@@ -233,10 +251,15 @@ namespace SpecimenFX17.Imaging
 
             var btnDelExcl = new Button
             {
-                Text = "✕ Eliminar", Location = new Point(109, cy), Width = 95, Height = 22,
+                Text = "✕ Eliminar",
+                Location = new Point(116, cy),
+                Width = 100,
+                Height = 24,
                 FlatStyle = FlatStyle.Flat,
-                BackColor = Color.FromArgb(65, 30, 30), ForeColor = Color.FromArgb(255, 150, 150),
-                Font = new Font("Segoe UI", 8f), Cursor = Cursors.Hand
+                BackColor = Color.FromArgb(65, 30, 30),
+                ForeColor = Color.FromArgb(255, 150, 150),
+                Font = new Font("Segoe UI", 8f),
+                Cursor = Cursors.Hand
             };
             btnDelExcl.FlatAppearance.BorderColor = Color.FromArgb(120, 50, 50);
             btnDelExcl.Click += (_, _) =>
@@ -250,21 +273,24 @@ namespace SpecimenFX17.Imaging
                 UpdatePreview();
             };
             p.Controls.Add(btnDelExcl);
-            cy += 26;
+            cy += 28;
 
             _lstExcluded = new ListBox
             {
-                Location = new Point(6, cy), Size = new Size(198, 68),
+                Location = new Point(6, cy),
+                Size = new Size(210, 68),
                 BackColor = Color.FromArgb(28, 20, 20),
                 ForeColor = Color.FromArgb(255, 190, 120),
-                Font = new Font("Consolas", 7.5f), BorderStyle = BorderStyle.FixedSingle
+                Font = new Font("Consolas", 7.5f),
+                BorderStyle = BorderStyle.FixedSingle
             };
             p.Controls.Add(_lstExcluded);
             cy += 76;
 
             _lblExclInfo = new Label
             {
-                Location = new Point(6, cy), Size = new Size(198, 32),
+                Location = new Point(6, cy),
+                Size = new Size(210, 32),
                 ForeColor = Color.FromArgb(170, 130, 80),
                 Font = new Font("Segoe UI", 7.5f, FontStyle.Italic),
                 Text = "Sin exclusiones activas",
@@ -279,15 +305,21 @@ namespace SpecimenFX17.Imaging
             {
                 var btn = new Button
                 {
-                    Text = name, Location = new Point(6, cy), Width = 198, Height = 22,
+                    Text = name,
+                    Location = new Point(6, cy),
+                    Width = 210,
+                    Height = 26,
                     FlatStyle = FlatStyle.Flat,
-                    BackColor = Color.FromArgb(36, 36, 56), ForeColor = Color.FromArgb(180, 200, 240),
-                    Font = new Font("Segoe UI", 8f), Cursor = Cursors.Hand, Tag = formula
+                    BackColor = Color.FromArgb(36, 36, 56),
+                    ForeColor = Color.FromArgb(180, 200, 240),
+                    Font = new Font("Segoe UI", 8.5f),
+                    Cursor = Cursors.Hand,
+                    Tag = formula
                 };
                 btn.FlatAppearance.BorderColor = Color.FromArgb(55, 55, 80);
                 btn.Click += (s, _) => { _txtFormula.Text = (string)((Button)s!).Tag!; };
                 p.Controls.Add(btn);
-                cy += 25;
+                cy += 30; // Incrementado para dar más margen vertical entre los botones
             }
         }
 
@@ -299,7 +331,7 @@ namespace SpecimenFX17.Imaging
             _lstBands.Items.Clear();
             for (int i = 0; i < _cube.Header.Wavelengths.Count; i++)
             {
-                double wl  = _cube.Header.Wavelengths[i];
+                double wl = _cube.Header.Wavelengths[i];
                 string tag = IsBandExcluded(i) ? "  ✕" : "";
                 _lstBands.Items.Add($"B[{i + 1}]  {wl:F1} nm{tag}");
             }
@@ -327,7 +359,7 @@ namespace SpecimenFX17.Imaging
         /// <summary>Construye la máscara de selección. Si no hay selección, incluye todos los píxeles.</summary>
         private bool[,] BuildSelectionMask()
         {
-            var mask         = new bool[_cube.Lines, _cube.Samples];
+            var mask = new bool[_cube.Lines, _cube.Samples];
             bool hasSelection = _selections.Count > 0;
 
             if (!hasSelection)
@@ -351,22 +383,22 @@ namespace SpecimenFX17.Imaging
         /// <summary>Banner informativo que muestra si hay selección activa.</summary>
         private Panel BuildSelectionBanner()
         {
-            bool hasSel   = _selections.Count > 0;
-            int  selCount = _selections.Count;
+            bool hasSel = _selections.Count > 0;
+            int selCount = _selections.Count;
 
             string msg;
-            Color  bannerColor;
+            Color bannerColor;
             if (hasSel)
             {
                 var parts = new List<string>();
                 parts.Add($"{selCount} selección(es): " +
                           string.Join(", ", _selections.Select(s => s.LegendIcon + s.ShortLabel)));
-                msg         = $"  🎯  Modo selección activo:  {string.Join("  +  ", parts)}   —   solo se calculará sobre esta selección";
+                msg = $"  🎯  Modo selección activo:  {string.Join("  +  ", parts)}   —   solo se calculará sobre esta selección";
                 bannerColor = Color.FromArgb(28, 55, 28);
             }
             else
             {
-                msg         = $"  🌐  Imagen completa:  {_cube.Samples} × {_cube.Lines} px  ({(long)_cube.Samples * _cube.Lines:N0} píxeles)   —   selecciona píxeles/regiones en la ventana principal para limitar el cálculo";
+                msg = $"  🌐  Imagen completa:  {_cube.Samples} × {_cube.Lines} px  ({(long)_cube.Samples * _cube.Lines:N0} píxeles)   —   selecciona píxeles/regiones en la ventana principal para limitar el cálculo";
                 bannerColor = Color.FromArgb(25, 30, 45);
             }
 
@@ -389,7 +421,8 @@ namespace SpecimenFX17.Imaging
         {
             var fp = new Panel
             {
-                Dock = DockStyle.Top, Height = 130,
+                Dock = DockStyle.Top,
+                Height = 130,
                 BackColor = Color.FromArgb(22, 22, 34)
             };
 
@@ -397,11 +430,15 @@ namespace SpecimenFX17.Imaging
 
             _txtFormula = new RichTextBox
             {
-                Location = new Point(10, 24), Size = new Size(fp.Width - 140, 44),
+                Location = new Point(10, 24),
+                Size = new Size(fp.Width - 140, 44),
                 Anchor = AnchorStyles.Left | AnchorStyles.Right | AnchorStyles.Top,
-                BackColor = Color.FromArgb(28, 28, 50), ForeColor = Color.FromArgb(190, 240, 190),
-                Font = new Font("Consolas", 12f), BorderStyle = BorderStyle.FixedSingle,
-                WordWrap = false, Multiline = false,
+                BackColor = Color.FromArgb(28, 28, 50),
+                ForeColor = Color.FromArgb(190, 240, 190),
+                Font = new Font("Consolas", 12f),
+                BorderStyle = BorderStyle.FixedSingle,
+                WordWrap = false,
+                Multiline = false,
                 Text = "(B{800} - B{680}) / (B{800} + B{680})"
             };
             _txtFormula.TextChanged += (_, _) => UpdatePreview();
@@ -409,9 +446,11 @@ namespace SpecimenFX17.Imaging
 
             var syntaxLbl = new Label
             {
-                Location = new Point(10, 73), Size = new Size(fp.Width - 140, 50),
+                Location = new Point(10, 73),
+                Size = new Size(fp.Width - 140, 50),
                 Anchor = AnchorStyles.Left | AnchorStyles.Right | AnchorStyles.Top,
-                ForeColor = Color.FromArgb(100, 100, 140), Font = new Font("Consolas", 7.5f),
+                ForeColor = Color.FromArgb(100, 100, 140),
+                Font = new Font("Consolas", 7.5f),
                 Text = "B{λ} = banda más cercana a λ nm   •   B[n] = banda por índice\n" +
                        "Ops: + - * / ^    sqrt  log  log2  log10  exp  abs\n" +
                        "sin  cos  tan  asin  acos  atan  min(a,b)  max(a,b)  pow(a,b)  PI  E"
@@ -420,10 +459,16 @@ namespace SpecimenFX17.Imaging
 
             _btnCalc = new Button
             {
-                Text = "▶  Calcular", Location = new Point(fp.Width - 125, 24), Width = 115, Height = 28,
+                Text = "▶  Calcular",
+                Location = new Point(fp.Width - 125, 24),
+                Width = 115,
+                Height = 28,
                 Anchor = AnchorStyles.Right | AnchorStyles.Top,
-                FlatStyle = FlatStyle.Flat, BackColor = Color.FromArgb(35, 110, 55),
-                ForeColor = Color.White, Font = new Font("Segoe UI", 9f, FontStyle.Bold), Cursor = Cursors.Hand
+                FlatStyle = FlatStyle.Flat,
+                BackColor = Color.FromArgb(35, 110, 55),
+                ForeColor = Color.White,
+                Font = new Font("Segoe UI", 9f, FontStyle.Bold),
+                Cursor = Cursors.Hand
             };
             _btnCalc.FlatAppearance.BorderColor = Color.FromArgb(55, 150, 75);
             _btnCalc.Click += BtnCalc_Click;
@@ -431,10 +476,16 @@ namespace SpecimenFX17.Imaging
 
             _btnSave = new Button
             {
-                Text = "💾  Guardar imagen", Location = new Point(fp.Width - 125, 56), Width = 115, Height = 28,
+                Text = "💾  Guardar imagen",
+                Location = new Point(fp.Width - 125, 56),
+                Width = 115,
+                Height = 28,
                 Anchor = AnchorStyles.Right | AnchorStyles.Top,
-                FlatStyle = FlatStyle.Flat, BackColor = Color.FromArgb(35, 70, 115),
-                ForeColor = Color.White, Cursor = Cursors.Hand, Enabled = false
+                FlatStyle = FlatStyle.Flat,
+                BackColor = Color.FromArgb(35, 70, 115),
+                ForeColor = Color.White,
+                Cursor = Cursors.Hand,
+                Enabled = false
             };
             _btnSave.FlatAppearance.BorderColor = Color.FromArgb(55, 100, 155);
             _btnSave.Click += BtnSave_Click;
@@ -443,7 +494,7 @@ namespace SpecimenFX17.Imaging
             fp.Resize += (_, _) =>
             {
                 _txtFormula.Width = fp.Width - 140;
-                syntaxLbl.Width   = fp.Width - 140;
+                syntaxLbl.Width = fp.Width - 140;
                 _btnCalc.Location = new Point(fp.Width - 125, 24);
                 _btnSave.Location = new Point(fp.Width - 125, 56);
             };
@@ -455,15 +506,20 @@ namespace SpecimenFX17.Imaging
             var sp = new Panel { Dock = DockStyle.Top, Height = 26, BackColor = Color.FromArgb(14, 14, 24) };
             _lblPreview = new Label
             {
-                Dock = DockStyle.Left, Width = 500,
-                ForeColor = Color.FromArgb(120, 210, 120), Font = new Font("Consolas", 8.5f),
-                TextAlign = ContentAlignment.MiddleLeft, Padding = new Padding(8, 0, 0, 0)
+                Dock = DockStyle.Left,
+                Width = 500,
+                ForeColor = Color.FromArgb(120, 210, 120),
+                Font = new Font("Consolas", 8.5f),
+                TextAlign = ContentAlignment.MiddleLeft,
+                Padding = new Padding(8, 0, 0, 0)
             };
             _lblError = new Label
             {
                 Dock = DockStyle.Fill,
-                ForeColor = Color.FromArgb(255, 100, 100), Font = new Font("Consolas", 8.5f),
-                TextAlign = ContentAlignment.MiddleLeft, Padding = new Padding(4, 0, 0, 0)
+                ForeColor = Color.FromArgb(255, 100, 100),
+                Font = new Font("Consolas", 8.5f),
+                TextAlign = ContentAlignment.MiddleLeft,
+                Padding = new Padding(4, 0, 0, 0)
             };
             sp.Controls.Add(_lblError);
             sp.Controls.Add(_lblPreview);
@@ -476,9 +532,12 @@ namespace SpecimenFX17.Imaging
             AddLbl(tp, "Paleta:", 7, size: 8.5f);
             _cmbColormap = new ComboBox
             {
-                Location = new Point(48, 4), Width = 155,
+                Location = new Point(48, 4),
+                Width = 155,
                 DropDownStyle = ComboBoxStyle.DropDownList,
-                BackColor = Color.FromArgb(36, 36, 55), ForeColor = Color.White, FlatStyle = FlatStyle.Flat
+                BackColor = Color.FromArgb(36, 36, 55),
+                ForeColor = Color.White,
+                FlatStyle = FlatStyle.Flat
             };
             _cmbColormap.Items.AddRange(Enum.GetNames(typeof(BliColormap)));
             _cmbColormap.SelectedIndex = 0;
@@ -486,15 +545,21 @@ namespace SpecimenFX17.Imaging
 
             _progress = new ProgressBar
             {
-                Location = new Point(215, 7), Width = 190, Height = 16,
-                Style = ProgressBarStyle.Continuous, Visible = false
+                Location = new Point(215, 7),
+                Width = 190,
+                Height = 16,
+                Style = ProgressBarStyle.Continuous,
+                Visible = false
             };
             tp.Controls.Add(_progress);
 
             _lblStatus = new Label
             {
-                Location = new Point(415, 5), Width = 600, Height = 20,
-                ForeColor = Color.FromArgb(140, 150, 190), Font = new Font("Consolas", 8f),
+                Location = new Point(415, 5),
+                Width = 600,
+                Height = 20,
+                ForeColor = Color.FromArgb(140, 150, 190),
+                Font = new Font("Consolas", 8f),
                 TextAlign = ContentAlignment.MiddleLeft
             };
             tp.Controls.Add(_lblStatus);
@@ -515,7 +580,8 @@ namespace SpecimenFX17.Imaging
             var pgImg = new TabPage("🖼  Imagen") { BackColor = Color.FromArgb(10, 10, 18) };
             _tabImage = new PictureBox
             {
-                Dock = DockStyle.Fill, SizeMode = PictureBoxSizeMode.Zoom,
+                Dock = DockStyle.Fill,
+                SizeMode = PictureBoxSizeMode.Zoom,
                 BackColor = Color.FromArgb(10, 10, 18)
             };
             pgImg.Controls.Add(_tabImage);
@@ -525,7 +591,8 @@ namespace SpecimenFX17.Imaging
             var pgHisto = new TabPage("📊  Histograma") { BackColor = Color.FromArgb(10, 10, 18) };
             _tabHisto = new PictureBox
             {
-                Dock = DockStyle.Fill, SizeMode = PictureBoxSizeMode.Normal,
+                Dock = DockStyle.Fill,
+                SizeMode = PictureBoxSizeMode.Normal,
                 BackColor = Color.FromArgb(10, 10, 18)
             };
             _tabHisto.Resize += (_, _) => { if (_resultData != null) DrawHistogram(); };
@@ -540,22 +607,30 @@ namespace SpecimenFX17.Imaging
             AddLbl(phBar, "Fila:", 8, size: 8.5f);
             _trkRow = new TrackBar
             {
-                Location = new Point(40, 4), Width = 400, Height = 24,
-                Minimum = 0, Maximum = Math.Max(0, _cube.Lines - 1),
-                Value = _cube.Lines / 2, TickStyle = TickStyle.None,
+                Location = new Point(40, 4),
+                Width = 400,
+                Height = 24,
+                Minimum = 0,
+                Maximum = Math.Max(0, _cube.Lines - 1),
+                Value = _cube.Lines / 2,
+                TickStyle = TickStyle.None,
                 BackColor = Color.FromArgb(18, 18, 28)
             };
             _lblRow = new Label
             {
-                Location = new Point(445, 8), Width = 120, Height = 18,
-                ForeColor = Color.FromArgb(150, 200, 255), Font = new Font("Consolas", 8.5f),
+                Location = new Point(445, 8),
+                Width = 120,
+                Height = 18,
+                ForeColor = Color.FromArgb(150, 200, 255),
+                Font = new Font("Consolas", 8.5f),
                 Text = $"y = {_cube.Lines / 2}"
             };
             _trkRow.Scroll += (_, _) => { _lblRow.Text = $"y = {_trkRow.Value}"; if (_resultData != null) DrawProfileH(); };
             phBar.Controls.Add(_trkRow); phBar.Controls.Add(_lblRow);
             _tabProfileH = new PictureBox
             {
-                Dock = DockStyle.Fill, SizeMode = PictureBoxSizeMode.Normal,
+                Dock = DockStyle.Fill,
+                SizeMode = PictureBoxSizeMode.Normal,
                 BackColor = Color.FromArgb(10, 10, 18)
             };
             _tabProfileH.Resize += (_, _) => { if (_resultData != null) DrawProfileH(); };
@@ -572,22 +647,30 @@ namespace SpecimenFX17.Imaging
             AddLbl(pvBar, "Columna:", 8, size: 8.5f);
             _trkCol = new TrackBar
             {
-                Location = new Point(68, 4), Width = 400, Height = 24,
-                Minimum = 0, Maximum = Math.Max(0, _cube.Samples - 1),
-                Value = _cube.Samples / 2, TickStyle = TickStyle.None,
+                Location = new Point(68, 4),
+                Width = 400,
+                Height = 24,
+                Minimum = 0,
+                Maximum = Math.Max(0, _cube.Samples - 1),
+                Value = _cube.Samples / 2,
+                TickStyle = TickStyle.None,
                 BackColor = Color.FromArgb(18, 18, 28)
             };
             _lblCol = new Label
             {
-                Location = new Point(475, 8), Width = 120, Height = 18,
-                ForeColor = Color.FromArgb(150, 200, 255), Font = new Font("Consolas", 8.5f),
+                Location = new Point(475, 8),
+                Width = 120,
+                Height = 18,
+                ForeColor = Color.FromArgb(150, 200, 255),
+                Font = new Font("Consolas", 8.5f),
                 Text = $"x = {_cube.Samples / 2}"
             };
             _trkCol.Scroll += (_, _) => { _lblCol.Text = $"x = {_trkCol.Value}"; if (_resultData != null) DrawProfileV(); };
             pvBar.Controls.Add(_trkCol); pvBar.Controls.Add(_lblCol);
             _tabProfileV = new PictureBox
             {
-                Dock = DockStyle.Fill, SizeMode = PictureBoxSizeMode.Normal,
+                Dock = DockStyle.Fill,
+                SizeMode = PictureBoxSizeMode.Normal,
                 BackColor = Color.FromArgb(10, 10, 18)
             };
             _tabProfileV.Resize += (_, _) => { if (_resultData != null) DrawProfileV(); };
@@ -602,8 +685,10 @@ namespace SpecimenFX17.Imaging
             _tabStats = new RichTextBox
             {
                 Dock = DockStyle.Fill,
-                BackColor = Color.FromArgb(14, 14, 24), ForeColor = Color.FromArgb(200, 220, 200),
-                Font = new Font("Consolas", 10f), ReadOnly = true,
+                BackColor = Color.FromArgb(14, 14, 24),
+                ForeColor = Color.FromArgb(200, 220, 200),
+                Font = new Font("Consolas", 10f),
+                ReadOnly = true,
                 BorderStyle = BorderStyle.None
             };
             pgStats.Controls.Add(_tabStats);
@@ -636,18 +721,18 @@ namespace SpecimenFX17.Imaging
                 else
                 {
                     cx = _cube.Samples / 2;
-                    cy = _cube.Lines   / 2;
+                    cy = _cube.Lines / 2;
                 }
 
                 double r2 = Evaluate(f, cx, cy);
                 _lblPreview.Text = $"  Preview píxel ({cx},{cy}): {r2:G8}";
-                _lblError.Text   = "";
+                _lblError.Text = "";
                 _btnCalc.Enabled = true;
             }
             catch (Exception ex)
             {
                 _lblPreview.Text = "";
-                _lblError.Text   = $"  ⚠  {ex.Message}";
+                _lblError.Text = $"  ⚠  {ex.Message}";
                 _btnCalc.Enabled = false;
             }
         }
@@ -661,19 +746,19 @@ namespace SpecimenFX17.Imaging
             string formula = _txtFormula.Text.Trim();
             if (string.IsNullOrEmpty(formula)) return;
 
-            _btnCalc.Enabled  = false;
-            _btnSave.Enabled  = false;
+            _btnCalc.Enabled = false;
+            _btnSave.Enabled = false;
             _progress.Visible = true;
-            _progress.Value   = 0;
-            _lblStatus.Text   = "Calculando…";
-            _resultData       = null;
+            _progress.Value = 0;
+            _lblStatus.Text = "Calculando…";
+            _resultData = null;
 
             float[,]? result = null;
-            string?   error  = null;
+            string? error = null;
 
             // Construir máscara de selección (true = calcular ese píxel)
-            bool[,] mask        = BuildSelectionMask();
-            bool    hasSelection = _selections.Count > 0;
+            bool[,] mask = BuildSelectionMask();
+            bool hasSelection = _selections.Count > 0;
 
             await Task.Run(() =>
             {
@@ -707,7 +792,7 @@ namespace SpecimenFX17.Imaging
             });
 
             _progress.Visible = false;
-            _btnCalc.Enabled  = true;
+            _btnCalc.Enabled = true;
 
             if (error != null)
             {
@@ -741,10 +826,10 @@ namespace SpecimenFX17.Imaging
             DrawHistogram();
 
             // ── Pestaña 2 y 3: Perfiles ───────────────────────────────────────
-            _trkRow.Value = Math.Clamp(_cube.Lines   / 2, _trkRow.Minimum, _trkRow.Maximum);
+            _trkRow.Value = Math.Clamp(_cube.Lines / 2, _trkRow.Minimum, _trkRow.Maximum);
             _trkCol.Value = Math.Clamp(_cube.Samples / 2, _trkCol.Minimum, _trkCol.Maximum);
-            _lblRow.Text  = $"y = {_trkRow.Value}";
-            _lblCol.Text  = $"x = {_trkCol.Value}";
+            _lblRow.Text = $"y = {_trkRow.Value}";
+            _lblCol.Text = $"x = {_trkCol.Value}";
             DrawProfileH();
             DrawProfileV();
 
@@ -778,25 +863,25 @@ namespace SpecimenFX17.Imaging
         private void DrawHistogram()
         {
             if (_resultData == null) return;
-            int w = Math.Max(_tabHisto.Width,  400);
+            int w = Math.Max(_tabHisto.Width, 400);
             int h = Math.Max(_tabHisto.Height, 200);
             var zoom = _zoomHisto;
 
             const int bins = 256;
-            var stats   = CalcStats(_resultData);
+            var stats = CalcStats(_resultData);
             float range = stats.Max - stats.Min;
             if (range < 1e-10f) range = 1f;
 
             // Aplicar zoom: fracciones normalizadas → valores reales de datos
             float fullXMin = stats.Min, fullXRange = stats.Max - stats.Min;
             if (fullXRange < 1e-10f) fullXRange = 1f;
-            float histoXMin  = zoom != null ? fullXMin + zoom.X0 * fullXRange : stats.Min;
-            float histoXMax  = zoom != null ? fullXMin + zoom.X1 * fullXRange : stats.Max;
+            float histoXMin = zoom != null ? fullXMin + zoom.X0 * fullXRange : stats.Min;
+            float histoXMax = zoom != null ? fullXMin + zoom.X1 * fullXRange : stats.Max;
             float histoRange = histoXMax - histoXMin; if (histoRange < 1e-10f) histoRange = 1f;
 
             // Contar bins
             int[] counts = new int[bins];
-            int   total  = 0;
+            int total = 0;
             for (int l = 0; l < _cube.Lines; l++)
                 for (int c = 0; c < _cube.Samples; c++)
                 {
@@ -814,7 +899,7 @@ namespace SpecimenFX17.Imaging
 
             var bmp = new Bitmap(w, h);
             using var g = Graphics.FromImage(bmp);
-            g.SmoothingMode     = SmoothingMode.AntiAlias;
+            g.SmoothingMode = SmoothingMode.AntiAlias;
             g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.ClearTypeGridFit;
             g.Clear(Color.FromArgb(12, 12, 20));
 
@@ -829,11 +914,11 @@ namespace SpecimenFX17.Imaging
             for (int i = 0; i < bins; i++)
             {
                 if (counts[i] == 0) continue;
-                float t     = (float)i / (bins - 1);
+                float t = (float)i / (bins - 1);
                 float normH = Math.Clamp((counts[i] - histoYMin2) / yRangeH, 0f, 1f);
-                float barH  = normH * plot.Height;
-                float x     = plot.Left + i * binW;
-                float y     = plot.Bottom - barH;
+                float barH = normH * plot.Height;
+                float x = plot.Left + i * binW;
+                float y = plot.Bottom - barH;
 
                 var (r2, g2, b2) = GetColor(t, (BliColormap)_cmbColormap.SelectedIndex);
                 using var brush = new SolidBrush(Color.FromArgb(200, r2, g2, b2));
@@ -852,11 +937,11 @@ namespace SpecimenFX17.Imaging
             }
 
             // Percentiles
-            float p2x  = plot.Left + (stats.P2  - histoXMin) / histoRange * plot.Width;
+            float p2x = plot.Left + (stats.P2 - histoXMin) / histoRange * plot.Width;
             float p98x = plot.Left + (stats.P98 - histoXMin) / histoRange * plot.Width;
             using (var pp = new Pen(Color.FromArgb(160, 180, 180, 255), 1f) { DashStyle = DashStyle.Dot })
             {
-                if (stats.P2  >= histoXMin && stats.P2  <= histoXMax) g.DrawLine(pp, p2x,  plot.Top, p2x,  plot.Bottom);
+                if (stats.P2 >= histoXMin && stats.P2 <= histoXMax) g.DrawLine(pp, p2x, plot.Top, p2x, plot.Bottom);
                 if (stats.P98 >= histoXMin && stats.P98 <= histoXMax) g.DrawLine(pp, p98x, plot.Top, p98x, plot.Bottom);
             }
 
@@ -867,8 +952,6 @@ namespace SpecimenFX17.Imaging
             using var tb = new SolidBrush(Color.FromArgb(170, 180, 215));
             g.DrawString($"Histograma  ({bins} bins,  {total:N0} píxeles válidos)", tf, tb, padL, 6);
 
-
-
             _tabHisto.Image?.Dispose();
             _tabHisto.Image = bmp;
         }
@@ -878,8 +961,8 @@ namespace SpecimenFX17.Imaging
         {
             if (_resultData == null) return;
             int row = Math.Clamp(_trkRow.Value, 0, _cube.Lines - 1);
-            int w   = Math.Max(_tabProfileH.Width,  400);
-            int h   = Math.Max(_tabProfileH.Height, 150);
+            int w = Math.Max(_tabProfileH.Width, 400);
+            int h = Math.Max(_tabProfileH.Height, 150);
 
             float[] profile = new float[_cube.Samples];
             for (int c = 0; c < _cube.Samples; c++)
@@ -888,9 +971,9 @@ namespace SpecimenFX17.Imaging
             var bmp = DrawLinePlot(w, h, profile,
                 xLabel: $"Columna (x)   —   fila y = {row}",
                 yLabel: "Valor",
-                title:  $"Perfil horizontal  │  fila {row}",
-                color:  Color.Cyan,
-                zoom:   _zoomPH);
+                title: $"Perfil horizontal  │  fila {row}",
+                color: Color.Cyan,
+                zoom: _zoomPH);
 
             _tabProfileH.Image?.Dispose();
             _tabProfileH.Image = bmp;
@@ -901,8 +984,8 @@ namespace SpecimenFX17.Imaging
         {
             if (_resultData == null) return;
             int col = Math.Clamp(_trkCol.Value, 0, _cube.Samples - 1);
-            int w   = Math.Max(_tabProfileV.Width,  400);
-            int h   = Math.Max(_tabProfileV.Height, 150);
+            int w = Math.Max(_tabProfileV.Width, 400);
+            int h = Math.Max(_tabProfileV.Height, 150);
 
             float[] profile = new float[_cube.Lines];
             for (int l = 0; l < _cube.Lines; l++)
@@ -911,9 +994,9 @@ namespace SpecimenFX17.Imaging
             var bmp = DrawLinePlot(w, h, profile,
                 xLabel: $"Fila (y)   —   columna x = {col}",
                 yLabel: "Valor",
-                title:  $"Perfil vertical  │  columna {col}",
-                color:  Color.Orange,
-                zoom:   _zoomPV);
+                title: $"Perfil vertical  │  columna {col}",
+                color: Color.Orange,
+                zoom: _zoomPV);
 
             _tabProfileV.Image?.Dispose();
             _tabProfileV.Image = bmp;
@@ -926,7 +1009,7 @@ namespace SpecimenFX17.Imaging
         {
             var bmp = new Bitmap(w, h);
             using var g = Graphics.FromImage(bmp);
-            g.SmoothingMode     = SmoothingMode.AntiAlias;
+            g.SmoothingMode = SmoothingMode.AntiAlias;
             g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.ClearTypeGridFit;
             g.Clear(Color.FromArgb(12, 12, 20));
 
@@ -943,8 +1026,8 @@ namespace SpecimenFX17.Imaging
             // Aplicar zoom: fracciones [0..1] → valores reales
             float fullXRange = values.Length - 1;
             float fullYRange = fullVMax - fullVMin;
-            float xMin = zoom != null ? zoom.X0 * fullXRange          : 0;
-            float xMax = zoom != null ? zoom.X1 * fullXRange          : fullXRange;
+            float xMin = zoom != null ? zoom.X0 * fullXRange : 0;
+            float xMax = zoom != null ? zoom.X1 * fullXRange : fullXRange;
             float vMin = zoom != null ? fullVMin + zoom.Y0 * fullYRange : fullVMin;
             float vMax = zoom != null ? fullVMin + zoom.Y1 * fullYRange : fullVMax;
             float vRng = vMax - vMin; if (vRng < 1e-10f) vRng = 1f;
@@ -952,7 +1035,7 @@ namespace SpecimenFX17.Imaging
 
             // Índices de inicio/fin visibles
             int iStart = Math.Max(0, (int)Math.Floor(xMin));
-            int iEnd   = Math.Min(values.Length - 1, (int)Math.Ceiling(xMax));
+            int iEnd = Math.Min(values.Length - 1, (int)Math.Ceiling(xMax));
 
             DrawPlotGrid(g, plot);
 
@@ -961,7 +1044,7 @@ namespace SpecimenFX17.Imaging
             for (int i = iStart; i <= iEnd; i++)
             {
                 float px = plot.Left + (i - xMin) / xRng * plot.Width;
-                float v  = float.IsNaN(values[i]) || float.IsInfinity(values[i]) ? vMin : values[i];
+                float v = float.IsNaN(values[i]) || float.IsInfinity(values[i]) ? vMin : values[i];
                 float py = plot.Bottom - (v - vMin) / vRng * plot.Height;
                 pts.Add(new PointF(px, Math.Clamp(py, plot.Top - 5, plot.Bottom + 5)));
             }
@@ -1004,13 +1087,13 @@ namespace SpecimenFX17.Imaging
         private void FillStats(ResultStats s, string formula, bool hasSelection = false, int exclBands = 0)
         {
             _tabStats.Clear();
-            _tabStats.SelectionFont  = new Font("Consolas", 10f, FontStyle.Bold);
+            _tabStats.SelectionFont = new Font("Consolas", 10f, FontStyle.Bold);
             _tabStats.SelectionColor = Color.FromArgb(100, 180, 255);
             _tabStats.AppendText("═══════════════════════════════════════════\n");
             _tabStats.AppendText("  ESTADÍSTICAS DEL RESULTADO\n");
             _tabStats.AppendText("═══════════════════════════════════════════\n\n");
 
-            _tabStats.SelectionFont  = new Font("Consolas", 9f);
+            _tabStats.SelectionFont = new Font("Consolas", 9f);
             _tabStats.SelectionColor = Color.FromArgb(170, 200, 170);
             _tabStats.AppendText($"  Fórmula  :  {formula}\n");
             _tabStats.AppendText($"  Imagen   :  {_cube.Samples} × {_cube.Lines} px\n");
@@ -1044,12 +1127,12 @@ namespace SpecimenFX17.Imaging
 
             _tabStats.AppendText($"  Válidos  :  {s.ValidCount:N0} píxeles\n\n");
 
-            _tabStats.SelectionFont  = new Font("Consolas", 10f, FontStyle.Bold);
+            _tabStats.SelectionFont = new Font("Consolas", 10f, FontStyle.Bold);
             _tabStats.SelectionColor = Color.FromArgb(100, 180, 255);
             _tabStats.AppendText("  DISTRIBUCIÓN DE VALORES\n");
             _tabStats.AppendText("  ─────────────────────────────────────\n");
 
-            _tabStats.SelectionFont  = new Font("Consolas", 10f);
+            _tabStats.SelectionFont = new Font("Consolas", 10f);
             _tabStats.SelectionColor = Color.FromArgb(200, 220, 200);
 
             void Row(string label, string value)
@@ -1060,25 +1143,25 @@ namespace SpecimenFX17.Imaging
                 _tabStats.AppendText($"{value}\n");
             }
 
-            Row("Mínimo:",       s.Min.ToString("G8"));
-            Row("Máximo:",       s.Max.ToString("G8"));
-            Row("Rango:",        (s.Max - s.Min).ToString("G8"));
-            Row("Media (μ):",    s.Mean.ToString("G8"));
-            Row("Mediana:",      s.Median.ToString("G8"));
+            Row("Mínimo:", s.Min.ToString("G8"));
+            Row("Máximo:", s.Max.ToString("G8"));
+            Row("Rango:", (s.Max - s.Min).ToString("G8"));
+            Row("Media (μ):", s.Mean.ToString("G8"));
+            Row("Mediana:", s.Median.ToString("G8"));
             Row("Desv. típica:", s.Std.ToString("G8"));
-            Row("Varianza:",     (s.Std * s.Std).ToString("G8"));
-            Row("Sesgo:",        s.Skew.ToString("G6"));
+            Row("Varianza:", (s.Std * s.Std).ToString("G8"));
+            Row("Sesgo:", s.Skew.ToString("G6"));
             _tabStats.AppendText("\n");
 
-            _tabStats.SelectionFont  = new Font("Consolas", 10f, FontStyle.Bold);
+            _tabStats.SelectionFont = new Font("Consolas", 10f, FontStyle.Bold);
             _tabStats.SelectionColor = Color.FromArgb(100, 180, 255);
             _tabStats.AppendText("  PERCENTILES\n");
             _tabStats.AppendText("  ─────────────────────────────────────\n");
-            _tabStats.SelectionFont  = new Font("Consolas", 10f);
+            _tabStats.SelectionFont = new Font("Consolas", 10f);
 
-            Row("P1%:",  s.P1.ToString("G8"));
-            Row("P2%:",  s.P2.ToString("G8"));
-            Row("P5%:",  s.P5.ToString("G8"));
+            Row("P1%:", s.P1.ToString("G8"));
+            Row("P2%:", s.P2.ToString("G8"));
+            Row("P5%:", s.P5.ToString("G8"));
             Row("P25%:", s.P25.ToString("G8"));
             Row("P50%:", s.P50.ToString("G8"));
             Row("P75%:", s.P75.ToString("G8"));
@@ -1109,10 +1192,10 @@ namespace SpecimenFX17.Imaging
                 return new ResultStats(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
 
             float Pct(float p) => vals[Math.Clamp((int)(vals.Count * p / 100f), 0, vals.Count - 1)];
-            float mean   = vals.Average();
+            float mean = vals.Average();
             float median = Pct(50);
-            float std    = (float)Math.Sqrt(vals.Average(v => (v - mean) * (v - mean)));
-            float skew   = std < 1e-10f ? 0f
+            float std = (float)Math.Sqrt(vals.Average(v => (v - mean) * (v - mean)));
+            float skew = std < 1e-10f ? 0f
                          : vals.Average(v => (float)Math.Pow((v - mean) / std, 3));
 
             return new ResultStats(
@@ -1130,13 +1213,13 @@ namespace SpecimenFX17.Imaging
         private Bitmap RenderFloatArray(float[,] data, BliColormap colormap,
                                         string formula, ResultStats stats)
         {
-            int lines   = _cube.Lines;
+            int lines = _cube.Lines;
             int samples = _cube.Samples;
-            float lo    = stats.P2;
-            float hi    = stats.P98;
+            float lo = stats.P2;
+            float hi = stats.P98;
             float range = hi - lo; if (range < 1e-10f) range = 1f;
 
-            var bmp   = new Bitmap(samples, lines, PixelFormat.Format24bppRgb);
+            var bmp = new Bitmap(samples, lines, PixelFormat.Format24bppRgb);
             var bData = bmp.LockBits(new Rectangle(0, 0, samples, lines),
                                      ImageLockMode.WriteOnly, PixelFormat.Format24bppRgb);
             int stride = bData.Stride;
@@ -1171,9 +1254,9 @@ namespace SpecimenFX17.Imaging
                 using var pen = new Pen(Color.FromArgb(r2, gc2, b2));
                 gfx.DrawLine(pen, bx, by + i, bx + barW, by + i);
             }
-            using var brd   = new Pen(Color.White, 1f);
-            using var sf2   = new Font("Arial", 7f);
-            using var wb    = new SolidBrush(Color.White);
+            using var brd = new Pen(Color.White, 1f);
+            using var sf2 = new Font("Arial", 7f);
+            using var wb = new SolidBrush(Color.White);
             gfx.DrawRectangle(brd, bx, by, barW, barH);
             gfx.DrawString(hi.ToString("G4"), sf2, wb, bx - 2, by - 1);
             gfx.DrawString(lo.ToString("G4"), sf2, wb, bx - 2, by + barH + 1);
@@ -1196,25 +1279,25 @@ namespace SpecimenFX17.Imaging
         {
             string expr = Regex.Replace(formula, @"B\{([0-9.]+)\}", m =>
             {
-                double wl   = double.Parse(m.Groups[1].Value,
+                double wl = double.Parse(m.Groups[1].Value,
                               System.Globalization.CultureInfo.InvariantCulture);
-                int    band = FindClosestBand(wl);
+                int band = FindClosestBand(wl);
                 if (IsBandExcluded(band)) return "0";
-                float  v    = _cube[band, line, col];
+                float v = _cube[band, line, col];
                 return ToNum(v);
             });
 
             expr = Regex.Replace(expr, @"B\[([0-9]+)\]", m =>
             {
-                int   band = Math.Clamp(int.Parse(m.Groups[1].Value) - 1, 0, _cube.Bands - 1);
+                int band = Math.Clamp(int.Parse(m.Groups[1].Value) - 1, 0, _cube.Bands - 1);
                 if (IsBandExcluded(band)) return "0";
-                float v    = _cube[band, line, col];
+                float v = _cube[band, line, col];
                 return ToNum(v);
             });
 
             expr = Regex.Replace(expr, @"\bPI\b", Math.PI.ToString("R",
                    System.Globalization.CultureInfo.InvariantCulture));
-            expr = Regex.Replace(expr, @"\bE\b",  Math.E.ToString("R",
+            expr = Regex.Replace(expr, @"\bE\b", Math.E.ToString("R",
                    System.Globalization.CultureInfo.InvariantCulture));
 
             expr = EvalFunctions(expr);
@@ -1232,18 +1315,28 @@ namespace SpecimenFX17.Imaging
         {
             var f1 = new Dictionary<string, Func<double, double>>(StringComparer.OrdinalIgnoreCase)
             {
-                ["sqrt"]  = Math.Sqrt,  ["log"]   = Math.Log,
-                ["log2"]  = Math.Log2,  ["log10"] = Math.Log10,
-                ["exp"]   = Math.Exp,   ["abs"]   = Math.Abs,
-                ["sin"]   = Math.Sin,   ["cos"]   = Math.Cos,
-                ["tan"]   = Math.Tan,   ["asin"]  = Math.Asin,
-                ["acos"]  = Math.Acos,  ["atan"]  = Math.Atan,
-                ["round"] = Math.Round, ["floor"] = Math.Floor, ["ceil"] = Math.Ceiling
+                ["sqrt"] = Math.Sqrt,
+                ["log"] = Math.Log,
+                ["log2"] = Math.Log2,
+                ["log10"] = Math.Log10,
+                ["exp"] = Math.Exp,
+                ["abs"] = Math.Abs,
+                ["sin"] = Math.Sin,
+                ["cos"] = Math.Cos,
+                ["tan"] = Math.Tan,
+                ["asin"] = Math.Asin,
+                ["acos"] = Math.Acos,
+                ["atan"] = Math.Atan,
+                ["round"] = Math.Round,
+                ["floor"] = Math.Floor,
+                ["ceil"] = Math.Ceiling
             };
             var f2 = new Dictionary<string, Func<double, double, double>>(StringComparer.OrdinalIgnoreCase)
             {
-                ["min"] = Math.Min, ["max"] = Math.Max,
-                ["pow"] = Math.Pow, ["atan2"] = Math.Atan2
+                ["min"] = Math.Min,
+                ["max"] = Math.Max,
+                ["pow"] = Math.Pow,
+                ["atan2"] = Math.Atan2
             };
 
             bool changed = true; int guard = 0;
@@ -1258,8 +1351,8 @@ namespace SpecimenFX17.Imaging
                         int close = FindClose(expr, idx + name.Length);
                         if (close < 0) throw new Exception($"Paréntesis sin cerrar en {name}()");
                         string inner = expr.Substring(idx + name.Length + 1, close - idx - name.Length - 1);
-                        double res   = fn(EvalSimple(EvalFunctions(inner)));
-                        expr    = expr[..idx] + Fmt(res) + expr[(close + 1)..];
+                        double res = fn(EvalSimple(EvalFunctions(inner)));
+                        expr = expr[..idx] + Fmt(res) + expr[(close + 1)..];
                         changed = true; idx = FindFunc(expr, name);
                     }
                 }
@@ -1268,14 +1361,14 @@ namespace SpecimenFX17.Imaging
                     int idx = FindFunc(expr, name);
                     while (idx >= 0)
                     {
-                        int close  = FindClose(expr, idx + name.Length);
+                        int close = FindClose(expr, idx + name.Length);
                         if (close < 0) throw new Exception($"Paréntesis sin cerrar en {name}()");
                         string inner = expr.Substring(idx + name.Length + 1, close - idx - name.Length - 1);
-                        int    comma = TopComma(inner);
+                        int comma = TopComma(inner);
                         if (comma < 0) throw new Exception($"{name}() necesita dos argumentos");
                         double a = EvalSimple(EvalFunctions(inner[..comma]));
                         double b = EvalSimple(EvalFunctions(inner[(comma + 1)..]));
-                        expr    = expr[..idx] + Fmt(fn(a, b)) + expr[(close + 1)..];
+                        expr = expr[..idx] + Fmt(fn(a, b)) + expr[(close + 1)..];
                         changed = true; idx = FindFunc(expr, name);
                     }
                 }
@@ -1416,7 +1509,7 @@ namespace SpecimenFX17.Imaging
                 case BliColormap.ColdBlue:
                     return (ToByte(Math.Clamp(t * 2 - 1, 0, 1)),
                             ToByte(Math.Clamp(t * 2 - 1, 0, 1)),
-                            ToByte(Math.Clamp(t * 2,     0, 1)));
+                            ToByte(Math.Clamp(t * 2, 0, 1)));
                 case BliColormap.GreenFluorescent:
                     return (ToByte(Math.Clamp(t * 2 - 1, 0, 1) * 0.5f),
                             ToByte(Math.Clamp(t * 1.5f, 0, 1)),
@@ -1425,11 +1518,11 @@ namespace SpecimenFX17.Imaging
                     return (ToByte(Math.Clamp(t * 1.5f, 0, 1)),
                             ToByte(Math.Clamp(t * 0.5f, 0, 1) * 0.3f), 0);
                 default: // Rainbow
-                    if      (t < 0.125f) { r = 0;              g = 0;              b = 0.5f + t * 4f; }
-                    else if (t < 0.375f) { r = 0;              g = (t-.125f)*4f;   b = 1f; }
-                    else if (t < 0.625f) { r = (t-.375f)*4f;   g = 1f;             b = 1f-(t-.375f)*4f; }
-                    else if (t < 0.875f) { r = 1f;             g = 1f-(t-.625f)*4f;b = 0f; }
-                    else                 { r = 1f;             g = (t-.875f)*8f;   b = (t-.875f)*8f; }
+                    if (t < 0.125f) { r = 0; g = 0; b = 0.5f + t * 4f; }
+                    else if (t < 0.375f) { r = 0; g = (t - .125f) * 4f; b = 1f; }
+                    else if (t < 0.625f) { r = (t - .375f) * 4f; g = 1f; b = 1f - (t - .375f) * 4f; }
+                    else if (t < 0.875f) { r = 1f; g = 1f - (t - .625f) * 4f; b = 0f; }
+                    else { r = 1f; g = (t - .875f) * 8f; b = (t - .875f) * 8f; }
                     return (ToByte(r), ToByte(g), ToByte(b));
             }
         }
@@ -1457,8 +1550,8 @@ namespace SpecimenFX17.Imaging
             const int padL = 58, padR = 20, padT = 28, padB = 40;
 
             Point dragStart = default;
-            Point dragCur   = default;
-            bool  dragging  = false;
+            Point dragCur = default;
+            bool dragging = false;
 
             // Convierte coord de pantalla → valor de dato en el eje X (0..N-1 o xMin..xMax)
             // Lo hacemos en Screen Space directamente; la conversión real la hace el redraw.
@@ -1468,8 +1561,8 @@ namespace SpecimenFX17.Imaging
                 if (e.Button == MouseButtons.Left)
                 {
                     dragStart = e.Location;
-                    dragCur   = e.Location;
-                    dragging  = true;
+                    dragCur = e.Location;
+                    dragging = true;
                 }
                 else if (e.Button == MouseButtons.Right)
                 {
@@ -1495,12 +1588,12 @@ namespace SpecimenFX17.Imaging
                 if (dx < 6 && dy < 6) return;  // clic sin arrastre, ignorar
 
                 // Calcular el área de trazado real en píxeles de pantalla
-                int plotLeft   = padL;
-                int plotRight  = pb.Width - padR;
-                int plotTop    = padT;
+                int plotLeft = padL;
+                int plotRight = pb.Width - padR;
+                int plotTop = padT;
                 int plotBottom = pb.Height - padB;
-                int plotW      = plotRight  - plotLeft;
-                int plotH      = plotBottom - plotTop;
+                int plotW = plotRight - plotLeft;
+                int plotH = plotBottom - plotTop;
                 if (plotW < 1 || plotH < 1) return;
 
                 // Coordenadas normalizadas [0..1] dentro del área de trazado
@@ -1539,14 +1632,14 @@ namespace SpecimenFX17.Imaging
                 // Esquinas
                 int c = 7;
                 using var cp = new Pen(Color.FromArgb(220, 120, 220, 255), 2f);
-                e.Graphics.DrawLine(cp, x1,      y1,      x1 + c, y1);
-                e.Graphics.DrawLine(cp, x1,      y1,      x1,     y1 + c);
-                e.Graphics.DrawLine(cp, x1 + rw, y1,      x1 + rw - c, y1);
-                e.Graphics.DrawLine(cp, x1 + rw, y1,      x1 + rw,     y1 + c);
-                e.Graphics.DrawLine(cp, x1,      y1 + rh, x1 + c,      y1 + rh);
-                e.Graphics.DrawLine(cp, x1,      y1 + rh, x1,          y1 + rh - c);
+                e.Graphics.DrawLine(cp, x1, y1, x1 + c, y1);
+                e.Graphics.DrawLine(cp, x1, y1, x1, y1 + c);
+                e.Graphics.DrawLine(cp, x1 + rw, y1, x1 + rw - c, y1);
+                e.Graphics.DrawLine(cp, x1 + rw, y1, x1 + rw, y1 + c);
+                e.Graphics.DrawLine(cp, x1, y1 + rh, x1 + c, y1 + rh);
+                e.Graphics.DrawLine(cp, x1, y1 + rh, x1, y1 + rh - c);
                 e.Graphics.DrawLine(cp, x1 + rw, y1 + rh, x1 + rw - c, y1 + rh);
-                e.Graphics.DrawLine(cp, x1 + rw, y1 + rh, x1 + rw,     y1 + rh - c);
+                e.Graphics.DrawLine(cp, x1 + rw, y1 + rh, x1 + rw, y1 + rh - c);
             };
         }
 
@@ -1556,7 +1649,10 @@ namespace SpecimenFX17.Imaging
         {
             p.Controls.Add(new Label
             {
-                Text = text, Location = new Point(8, cy), Width = 200, Height = 18,
+                Text = text,
+                Location = new Point(8, cy),
+                Width = 200,
+                Height = 18,
                 ForeColor = color ?? Color.FromArgb(130, 130, 175),
                 Font = new Font("Segoe UI", size, bold ? FontStyle.Bold : FontStyle.Regular),
                 AutoSize = false

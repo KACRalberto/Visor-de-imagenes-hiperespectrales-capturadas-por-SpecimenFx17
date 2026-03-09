@@ -37,15 +37,16 @@ namespace SpecimenFX17.Imaging
             {
                 Dock = DockStyle.Top,
                 AutoSize = true,
+                AutoSizeMode = AutoSizeMode.GrowAndShrink,
                 Padding = new Padding(5),
                 BackColor = Color.FromArgb(22, 22, 34)
             };
 
-            var btnExport = new Button { Text = "📥 1. Exportar Espectros (CSV)", AutoSize = true, MinimumSize = new Size(230, 35), BackColor = Color.FromArgb(40, 90, 140), FlatStyle = FlatStyle.Flat, ForeColor = Color.White };
-            var btnLoadModel = new Button { Text = "📂 2. Cargar Modelo PLS", AutoSize = true, MinimumSize = new Size(200, 35), BackColor = Color.FromArgb(110, 40, 110), FlatStyle = FlatStyle.Flat, ForeColor = Color.White };
-            var btnPredict = new Button { Text = "🔥 3. Generar Mapa °Brix", AutoSize = true, MinimumSize = new Size(200, 35), BackColor = Color.FromArgb(35, 110, 55), FlatStyle = FlatStyle.Flat, Enabled = false, ForeColor = Color.White };
+            var btnExport = new Button { Text = "📥 1. Exportar Espectros (CSV)", AutoSize = true, MinimumSize = new Size(200, 35), BackColor = Color.FromArgb(40, 90, 140), FlatStyle = FlatStyle.Flat };
+            var btnLoadModel = new Button { Text = "📂 2. Cargar Modelo PLS", AutoSize = true, MinimumSize = new Size(180, 35), BackColor = Color.FromArgb(110, 40, 110), FlatStyle = FlatStyle.Flat };
+            var btnPredict = new Button { Text = "🔥 3. Generar Mapa °Brix", AutoSize = true, MinimumSize = new Size(180, 35), BackColor = Color.FromArgb(35, 110, 55), FlatStyle = FlatStyle.Flat, Enabled = false };
 
-            _pb = new ProgressBar { MinimumSize = new Size(100, 15), Visible = false, Style = ProgressBarStyle.Continuous, Margin = new Padding(15, 10, 5, 5) };
+            _pb = new ProgressBar { MinimumSize = new Size(120, 20), Visible = false, Style = ProgressBarStyle.Continuous, Margin = new Padding(15, 8, 5, 5) };
             _lblStatus = new Label { MinimumSize = new Size(250, 20), AutoSize = true, ForeColor = Color.FromArgb(150, 200, 150), Margin = new Padding(5, 10, 5, 5) };
 
             btnExport.Click += ExportSpectraToCsv;

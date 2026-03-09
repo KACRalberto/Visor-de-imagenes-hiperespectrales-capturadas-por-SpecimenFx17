@@ -97,11 +97,11 @@ namespace SpecimenFX17.Imaging
             _pb = new ProgressBar { Style = ProgressBarStyle.Continuous, Visible = false, Size = new Size(200, 14) };
             _ss.Items.Add(_slbl); _ss.Items.Add(new ToolStripControlHost(_pb));
 
-            // PANEL LATERAL (Más ancho para que entren los textos largos sin cortarse)
+            // PANEL DERECHO más ancho para asegurar que no corta los textos
             var rp = new Panel
             {
                 Dock = DockStyle.Right,
-                Width = 270,
+                Width = 280, // ANTES 240
                 BackColor = Color.FromArgb(24, 24, 36),
                 AutoScroll = true,
                 Padding = new Padding(10, 8, 8, 6)
@@ -199,11 +199,11 @@ namespace SpecimenFX17.Imaging
             Sep(p, ref cy); Sec(p, "CALIBRACIÓN (Ref. B/N)", ref cy);
 
             var btnLoadWhite = Btn(p, "⚪ Cargar Ref. Blanca", ref cy, Color.FromArgb(60, 60, 60));
-            _lblWhite = new Label { Location = new Point(8, cy), Width = 230, Height = 14, ForeColor = Color.Gray, Font = new Font("Segoe UI", 7f), Text = "Sin cargar" };
+            _lblWhite = new Label { Location = new Point(8, cy), Width = 250, Height = 14, ForeColor = Color.Gray, Font = new Font("Segoe UI", 7f), Text = "Sin cargar" };
             p.Controls.Add(_lblWhite); cy += 18;
 
             var btnLoadDark = Btn(p, "⚫ Cargar Ref. Oscura", ref cy, Color.FromArgb(25, 25, 25));
-            _lblDark = new Label { Location = new Point(8, cy), Width = 230, Height = 14, ForeColor = Color.Gray, Font = new Font("Segoe UI", 7f), Text = "Sin cargar" };
+            _lblDark = new Label { Location = new Point(8, cy), Width = 250, Height = 14, ForeColor = Color.Gray, Font = new Font("Segoe UI", 7f), Text = "Sin cargar" };
             p.Controls.Add(_lblDark); cy += 18;
 
             _btnCalibrate = Btn(p, "✨ Normalizar Imagen", ref cy, Color.FromArgb(120, 80, 40));
@@ -295,7 +295,7 @@ namespace SpecimenFX17.Imaging
             _lblTip = new Label
             {
                 Location = new Point(8, cy),
-                Width = 230,
+                Width = 250,
                 Height = 16,
                 ForeColor = Color.FromArgb(120, 200, 120),
                 Font = new Font("Segoe UI", 7f, FontStyle.Italic),
@@ -306,7 +306,7 @@ namespace SpecimenFX17.Imaging
             var grid = new TableLayoutPanel
             {
                 Location = new Point(8, cy),
-                Width = 230,
+                Width = 245,
                 Height = 85,
                 ColumnCount = 2,
                 RowCount = 3,
@@ -367,7 +367,7 @@ namespace SpecimenFX17.Imaging
             _cmbCmap = new ComboBox
             {
                 Location = new Point(8, cy),
-                Width = 230,
+                Width = 245,
                 DropDownStyle = ComboBoxStyle.DropDownList,
                 BackColor = Color.FromArgb(38, 38, 55),
                 ForeColor = Color.White,
@@ -420,7 +420,7 @@ namespace SpecimenFX17.Imaging
             _lblBandInfo = new Label
             {
                 Location = new Point(8, cy),
-                Width = 230,
+                Width = 245,
                 Height = 110,
                 ForeColor = Color.FromArgb(160, 160, 190),
                 Font = new Font("Consolas", 7.5f),
@@ -435,8 +435,8 @@ namespace SpecimenFX17.Imaging
             {
                 Text = t,
                 Location = new Point(8, cy),
-                Width = 230,
-                Height = 35,
+                Width = 245,
+                Height = 35, // Altura incrementada para comodidad
                 AutoSize = true,
                 FlatStyle = FlatStyle.Flat,
                 BackColor = bg,
@@ -444,14 +444,14 @@ namespace SpecimenFX17.Imaging
                 Cursor = Cursors.Hand
             };
             b.FlatAppearance.BorderColor = Color.FromArgb(Math.Min(255, bg.R + 35), Math.Min(255, bg.G + 35), Math.Min(255, bg.B + 35));
-            p.Controls.Add(b); cy += 38; return b;
+            p.Controls.Add(b); cy += 40; return b;
         }
         private NumericUpDown Num(Panel p, ref int cy, decimal v, decimal mn, decimal mx, decimal inc, int dec)
         {
             var n = new NumericUpDown
             {
                 Location = new Point(8, cy),
-                Width = 230,
+                Width = 245,
                 Minimum = mn,
                 Maximum = mx,
                 Value = v,
@@ -462,10 +462,10 @@ namespace SpecimenFX17.Imaging
             };
             p.Controls.Add(n); cy += 26; return n;
         }
-        private void Lbl(Panel p, string t, ref int cy) { p.Controls.Add(new Label { Text = t, Location = new Point(8, cy), Width = 230, Height = 16, ForeColor = Color.FromArgb(140, 140, 170), Font = new Font("Segoe UI", 8f) }); cy += 17; }
-        private void Sec(Panel p, string t, ref int cy) { p.Controls.Add(new Label { Text = t, Location = new Point(8, cy), Width = 230, Height = 18, ForeColor = Color.FromArgb(100, 160, 220), Font = new Font("Segoe UI", 7.5f, FontStyle.Bold), TextAlign = ContentAlignment.MiddleLeft }); cy += 20; }
-        private CheckBox Chk(Panel p, string t, ref int cy, bool v) { var c = new CheckBox { Text = t, Location = new Point(8, cy), Width = 230, Checked = v, ForeColor = Color.FromArgb(180, 180, 210), BackColor = Color.Transparent }; p.Controls.Add(c); cy += 24; return c; }
-        private void Sep(Panel p, ref int cy) { p.Controls.Add(new Label { Location = new Point(8, cy), Width = 230, Height = 1, BackColor = Color.FromArgb(55, 55, 75) }); cy += 10; }
+        private void Lbl(Panel p, string t, ref int cy) { p.Controls.Add(new Label { Text = t, Location = new Point(8, cy), Width = 245, Height = 16, ForeColor = Color.FromArgb(140, 140, 170), Font = new Font("Segoe UI", 8f) }); cy += 17; }
+        private void Sec(Panel p, string t, ref int cy) { p.Controls.Add(new Label { Text = t, Location = new Point(8, cy), Width = 245, Height = 18, ForeColor = Color.FromArgb(100, 160, 220), Font = new Font("Segoe UI", 7.5f, FontStyle.Bold), TextAlign = ContentAlignment.MiddleLeft }); cy += 20; }
+        private CheckBox Chk(Panel p, string t, ref int cy, bool v) { var c = new CheckBox { Text = t, Location = new Point(8, cy), Width = 245, Checked = v, ForeColor = Color.FromArgb(180, 180, 210), BackColor = Color.Transparent }; p.Controls.Add(c); cy += 24; return c; }
+        private void Sep(Panel p, ref int cy) { p.Controls.Add(new Label { Location = new Point(8, cy), Width = 245, Height = 1, BackColor = Color.FromArgb(55, 55, 75) }); cy += 10; }
 
         private void SetTool(SelectionTool mode, string tip)
         {

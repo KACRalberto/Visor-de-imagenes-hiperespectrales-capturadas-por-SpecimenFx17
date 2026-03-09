@@ -40,15 +40,16 @@ namespace SpecimenFX17.Imaging
             {
                 Dock = DockStyle.Top,
                 AutoSize = true,
+                AutoSizeMode = AutoSizeMode.GrowAndShrink,
                 Padding = new Padding(5),
                 BackColor = Color.FromArgb(22, 22, 34)
             };
 
-            var btnPca = new Button { Text = "📊 Ejecutar PCA (RGB Top 3)", AutoSize = true, MinimumSize = new Size(230, 35), BackColor = Color.FromArgb(40, 90, 140), FlatStyle = FlatStyle.Flat, ForeColor = Color.White };
-            var btnSam = new Button { Text = "🎯 Mapear Similitud (SAM)", AutoSize = true, MinimumSize = new Size(220, 35), BackColor = Color.FromArgb(35, 110, 55), FlatStyle = FlatStyle.Flat, ForeColor = Color.White };
-            var btnDeriv = new Button { Text = "📈 Trazar Derivadas", AutoSize = true, MinimumSize = new Size(180, 35), BackColor = Color.FromArgb(110, 40, 110), FlatStyle = FlatStyle.Flat, ForeColor = Color.White };
+            var btnPca = new Button { Text = "📊 Ejecutar PCA (RGB Top 3)", AutoSize = true, MinimumSize = new Size(180, 35), BackColor = Color.FromArgb(40, 90, 140), FlatStyle = FlatStyle.Flat };
+            var btnSam = new Button { Text = "🎯 Mapear Similitud (SAM)", AutoSize = true, MinimumSize = new Size(180, 35), BackColor = Color.FromArgb(35, 110, 55), FlatStyle = FlatStyle.Flat };
+            var btnDeriv = new Button { Text = "📈 Trazar Derivadas", AutoSize = true, MinimumSize = new Size(150, 35), BackColor = Color.FromArgb(110, 40, 110), FlatStyle = FlatStyle.Flat };
 
-            _pb = new ProgressBar { MinimumSize = new Size(150, 15), Visible = false, Style = ProgressBarStyle.Continuous, Margin = new Padding(15, 10, 5, 5) };
+            _pb = new ProgressBar { MinimumSize = new Size(150, 20), Visible = false, Style = ProgressBarStyle.Continuous, Margin = new Padding(15, 8, 5, 5) };
             _lblStatus = new Label { MinimumSize = new Size(350, 20), AutoSize = true, ForeColor = Color.FromArgb(150, 200, 150), Margin = new Padding(5, 10, 5, 5) };
 
             btnPca.Click += RunPCA;
