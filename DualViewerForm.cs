@@ -85,7 +85,16 @@ namespace SpecimenFX17.Imaging
         {
             var cube = target == 1 ? _cube1 : _cube2;
             if (cube == null) return;
-            var bmp = BliRenderer.RenderBand(cube, cube.Bands / 2);
+
+            // Opciones de renderizado para el comparador: Escala de grises simple para localizar píxeles
+            var opts = new BliRenderOptions
+            {
+                Colormap = BliColormap.Grayscale,
+                DrawColorbar = false
+            };
+
+            var bmp = BliRenderer.RenderBand(cube, cube.Bands / 2, opts);
+
             if (target == 1) { _pic1.Image?.Dispose(); _pic1.Image = bmp; _pic1.Invalidate(); }
             else { _pic2.Image?.Dispose(); _pic2.Image = bmp; _pic2.Invalidate(); }
         }

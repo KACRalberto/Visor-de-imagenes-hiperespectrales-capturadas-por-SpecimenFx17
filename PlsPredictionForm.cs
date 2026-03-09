@@ -96,7 +96,7 @@ namespace SpecimenFX17.Imaging
                 // Cabecera: X, Y, Banda_400nm, Banda_403nm...
                 var header = new StringBuilder("PixelX,PixelY,");
                 for (int b = 0; b < _cube.Bands; b++)
-                    header.Append($"Wl_{_cube.Header.Wavelengths[b]:F1}{(b == _cube.Bands - 1 ? "" : ",")}");
+                    header.Append($"Wl_{_cube.Header.Wavelengths[b].ToString("F1", System.Globalization.CultureInfo.InvariantCulture)}{(b == _cube.Bands - 1 ? "" : ",")}");
                 writer.WriteLine(header.ToString());
 
                 // Datos

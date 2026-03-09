@@ -17,10 +17,10 @@ namespace SpecimenFX17.Imaging
     public class HyperspectralCube
     {
         // ── Metadatos ─────────────────────────────────────────────────────────
-        public EnviHeader Header  { get; }
-        public int Bands          => Header.Bands;
-        public int Lines          => Header.Lines;
-        public int Samples        => Header.Samples;
+        public EnviHeader Header { get; }
+        public int Bands => Header.Bands;
+        public int Lines => Header.Lines;
+        public int Samples => Header.Samples;
 
         // ── Cubo de datos [banda, fila, col] → float ─────────────────────────
         private readonly float[,,] _cube;   // [band, line, sample]
@@ -32,7 +32,7 @@ namespace SpecimenFX17.Imaging
         private HyperspectralCube(EnviHeader header, float[,,] cube)
         {
             Header = header;
-            _cube  = cube;
+            _cube = cube;
             ComputeStats();
         }
 
@@ -87,32 +87,113 @@ namespace SpecimenFX17.Imaging
         }
 
         // ─────────────────────────────────────────────────────────────────────
+        //  CALIBRACIÓN Y NORMALIZACIÓN (White / Dark Reference)
+        // ─────────────────────────────────────────────────────────────────────
+
+        /// <summary>
+        /// Aplica la calibración radiométrica a todo el cubo usando las referencias blanca y oscura.
+        /// Formula: R = (I - D) / (W - D)
+        /// </summary>
+        public void Calibrate(HyperspectralCube whiteRef, HyperspectralCube darkRef)
+        {
+            if (whiteRef.Bands != Bands || darkRef.Bands != Bands)
+                throw new Exception("El número de bandas de las referencias no coincide con la imagen original.");
+            if (whiteRef.Samples != Samples || darkRef.Samples != Samples)
+                throw new Exception("El número de columnas (samples) de las referencias no coincide con la imagen original.");
+
+            // 1. Promediar las referencias verticalmente por si tienen varias líneas de escaneo
+            float[,] avgWhite = new float[Bands, Samples];
+            float[,] avgDark = new float[Bands, Samples];
+
+            for (int b = 0; b < Bands; b++)
+            {
+                for (int s = 0; s < Samples; s++)
+                {
+                    float sumW = 0, sumD = 0;
+                    int validW = 0, validD = 0;
+
+                    for (int l = 0; l < whiteRef.Lines; l++)
+                    {
+                        float v = whiteRef[b, l, s];
+                        if (!float.IsNaN(v) && v != (float)whiteRef.Header.DataIgnoreValue)
+                        { sumW += v; validW++; }
+                    }
+                    for (int l = 0; l < darkRef.Lines; l++)
+                    {
+                        float v = darkRef[b, l, s];
+                        if (!float.IsNaN(v) && v != (float)darkRef.Header.DataIgnoreValue)
+                        { sumD += v; validD++; }
+                    }
+
+                    avgWhite[b, s] = validW > 0 ? sumW / validW : 1f;
+                    avgDark[b, s] = validD > 0 ? sumD / validD : 0f;
+                }
+            }
+
+            // 2. Aplicar la normalización al cubo original
+            for (int b = 0; b < Bands; b++)
+            {
+                for (int l = 0; l < Lines; l++)
+                {
+                    for (int s = 0; s < Samples; s++)
+                    {
+                        float val = _cube[b, l, s];
+                        if (float.IsNaN(val) || val == (float)Header.DataIgnoreValue) continue;
+
+                        float w = avgWhite[b, s];
+                        float d = avgDark[b, s];
+
+                        float range = w - d;
+                        if (range <= 0) range = 1e-6f; // Evitar divisiones por cero o negativas
+
+                        _cube[b, l, s] = (val - d) / range;
+                    }
+                }
+            }
+
+            // 3. Recalcular las estadísticas tras cambiar los datos
+            ComputeStats();
+        }
+
+        // ─────────────────────────────────────────────────────────────────────
         //  CARGA DESDE ARCHIVO
         // ─────────────────────────────────────────────────────────────────────
 
         /// <summary>
         /// Carga el cubo desde un par de archivos .hdr / .raw
         /// </summary>
-        /// <param name="hdrOrRawPath">Ruta a cualquiera de los dos archivos (se detecta automáticamente)</param>
         public static HyperspectralCube Load(string hdrOrRawPath,
                                              IProgress<int>? progress = null)
         {
-            // Detectar rutas
+            // Detectar el nombre base quitando .hdr o .raw si los tiene al final
             string basePath = hdrOrRawPath.EndsWith(".hdr", StringComparison.OrdinalIgnoreCase)
                               ? hdrOrRawPath[..^4]
                               : hdrOrRawPath.EndsWith(".raw", StringComparison.OrdinalIgnoreCase)
                                 ? hdrOrRawPath[..^4]
                                 : hdrOrRawPath;
 
-            string hdrPath = basePath + ".hdr";
+            string hdrPath = hdrOrRawPath.EndsWith(".hdr", StringComparison.OrdinalIgnoreCase)
+                             ? hdrOrRawPath
+                             : basePath + ".hdr";
+
             string rawPath = basePath + ".raw";
 
-            // Intentar variantes comunes si no existe
+            // 1. Si no existe el nombreBase.raw...
             if (!File.Exists(rawPath))
             {
-                foreach (var ext in new[] { ".img", ".dat", ".bil", ".bip", ".bsq" })
+                // 2. Comprobamos si el propio nombre base es el archivo de datos 
+                // (Ocurre si el archivo original era ej: 'WhiteReference.bil.hdr')
+                if (File.Exists(basePath))
                 {
-                    if (File.Exists(basePath + ext)) { rawPath = basePath + ext; break; }
+                    rawPath = basePath;
+                }
+                else
+                {
+                    // 3. Probamos extensiones alternativas habituales
+                    foreach (var ext in new[] { ".img", ".dat", ".bil", ".bip", ".bsq", ".bli" })
+                    {
+                        if (File.Exists(basePath + ext)) { rawPath = basePath + ext; break; }
+                    }
                 }
             }
 
@@ -125,7 +206,6 @@ namespace SpecimenFX17.Imaging
             var cube = ReadRaw(rawPath, header, progress);
             return new HyperspectralCube(header, cube);
         }
-
         // ─────────────────────────────────────────────────────────────────────
         //  Lectura binaria
         // ─────────────────────────────────────────────────────────────────────
@@ -133,12 +213,12 @@ namespace SpecimenFX17.Imaging
         private static float[,,] ReadRaw(string rawPath, EnviHeader h,
                                           IProgress<int>? progress)
         {
-            var cube   = new float[h.Bands, h.Lines, h.Samples];
-            int bpv    = h.BytesPerValue;
+            var cube = new float[h.Bands, h.Lines, h.Samples];
+            int bpv = h.BytesPerValue;
             long total = (long)h.Bands * h.Lines * h.Samples;
             long bufferSize = Math.Min(total * bpv, 64 * 1024 * 1024); // 64 MB max buffer
 
-            using var fs     = new FileStream(rawPath, FileMode.Open, FileAccess.Read,
+            using var fs = new FileStream(rawPath, FileMode.Open, FileAccess.Read,
                                               FileShare.Read, 1 << 20);
             using var reader = new BinaryReader(fs);
 
@@ -191,11 +271,11 @@ namespace SpecimenFX17.Imaging
         {
             float v = h.DataType switch
             {
-                EnviDataType.Byte    => r.ReadByte(),
-                EnviDataType.Int16   => h.IsBigEndian ? ReadInt16BE(r) : r.ReadInt16(),
-                EnviDataType.UInt16  => h.IsBigEndian ? ReadUInt16BE(r) : r.ReadUInt16(),
-                EnviDataType.Int32   => h.IsBigEndian ? ReadInt32BE(r) : r.ReadInt32(),
-                EnviDataType.UInt32  => h.IsBigEndian ? (float)ReadUInt32BE(r) : r.ReadUInt32(),
+                EnviDataType.Byte => r.ReadByte(),
+                EnviDataType.Int16 => h.IsBigEndian ? ReadInt16BE(r) : r.ReadInt16(),
+                EnviDataType.UInt16 => h.IsBigEndian ? ReadUInt16BE(r) : r.ReadUInt16(),
+                EnviDataType.Int32 => h.IsBigEndian ? ReadInt32BE(r) : r.ReadInt32(),
+                EnviDataType.UInt32 => h.IsBigEndian ? (float)ReadUInt32BE(r) : r.ReadUInt32(),
                 EnviDataType.Float32 => h.IsBigEndian ? ReadFloat32BE(r) : r.ReadSingle(),
                 EnviDataType.Float64 => (float)(h.IsBigEndian ? ReadFloat64BE(r) : r.ReadDouble()),
                 _ => r.ReadSingle()
@@ -204,11 +284,11 @@ namespace SpecimenFX17.Imaging
         }
 
         // ── Big-Endian helpers ────────────────────────────────────────────────
-        private static short  ReadInt16BE(BinaryReader r)   { var b = r.ReadBytes(2); Array.Reverse(b); return BitConverter.ToInt16(b); }
-        private static ushort ReadUInt16BE(BinaryReader r)  { var b = r.ReadBytes(2); Array.Reverse(b); return BitConverter.ToUInt16(b); }
-        private static int    ReadInt32BE(BinaryReader r)   { var b = r.ReadBytes(4); Array.Reverse(b); return BitConverter.ToInt32(b); }
-        private static uint   ReadUInt32BE(BinaryReader r)  { var b = r.ReadBytes(4); Array.Reverse(b); return BitConverter.ToUInt32(b); }
-        private static float  ReadFloat32BE(BinaryReader r) { var b = r.ReadBytes(4); Array.Reverse(b); return BitConverter.ToSingle(b); }
+        private static short ReadInt16BE(BinaryReader r) { var b = r.ReadBytes(2); Array.Reverse(b); return BitConverter.ToInt16(b); }
+        private static ushort ReadUInt16BE(BinaryReader r) { var b = r.ReadBytes(2); Array.Reverse(b); return BitConverter.ToUInt16(b); }
+        private static int ReadInt32BE(BinaryReader r) { var b = r.ReadBytes(4); Array.Reverse(b); return BitConverter.ToInt32(b); }
+        private static uint ReadUInt32BE(BinaryReader r) { var b = r.ReadBytes(4); Array.Reverse(b); return BitConverter.ToUInt32(b); }
+        private static float ReadFloat32BE(BinaryReader r) { var b = r.ReadBytes(4); Array.Reverse(b); return BitConverter.ToSingle(b); }
         private static double ReadFloat64BE(BinaryReader r) { var b = r.ReadBytes(8); Array.Reverse(b); return BitConverter.ToDouble(b); }
 
         // ─────────────────────────────────────────────────────────────────────
