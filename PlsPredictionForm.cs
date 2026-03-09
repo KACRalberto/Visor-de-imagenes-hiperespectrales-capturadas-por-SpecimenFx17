@@ -33,14 +33,20 @@ namespace SpecimenFX17.Imaging
 
         private void BuildUI()
         {
-            var pnlTop = new Panel { Dock = DockStyle.Top, Height = 50, BackColor = Color.FromArgb(22, 22, 34) };
+            var pnlTop = new FlowLayoutPanel
+            {
+                Dock = DockStyle.Top,
+                AutoSize = true,
+                Padding = new Padding(5),
+                BackColor = Color.FromArgb(22, 22, 34)
+            };
 
-            var btnExport = new Button { Text = "📥 1. Exportar Espectros (CSV)", Location = new Point(10, 10), Width = 200, BackColor = Color.FromArgb(40, 90, 140), FlatStyle = FlatStyle.Flat };
-            var btnLoadModel = new Button { Text = "📂 2. Cargar Modelo PLS", Location = new Point(220, 10), Width = 180, BackColor = Color.FromArgb(110, 40, 110), FlatStyle = FlatStyle.Flat };
-            var btnPredict = new Button { Text = "🔥 3. Generar Mapa °Brix", Location = new Point(410, 10), Width = 180, BackColor = Color.FromArgb(35, 110, 55), FlatStyle = FlatStyle.Flat, Enabled = false };
+            var btnExport = new Button { Text = "📥 1. Exportar Espectros (CSV)", AutoSize = true, MinimumSize = new Size(230, 35), BackColor = Color.FromArgb(40, 90, 140), FlatStyle = FlatStyle.Flat, ForeColor = Color.White };
+            var btnLoadModel = new Button { Text = "📂 2. Cargar Modelo PLS", AutoSize = true, MinimumSize = new Size(200, 35), BackColor = Color.FromArgb(110, 40, 110), FlatStyle = FlatStyle.Flat, ForeColor = Color.White };
+            var btnPredict = new Button { Text = "🔥 3. Generar Mapa °Brix", AutoSize = true, MinimumSize = new Size(200, 35), BackColor = Color.FromArgb(35, 110, 55), FlatStyle = FlatStyle.Flat, Enabled = false, ForeColor = Color.White };
 
-            _pb = new ProgressBar { Location = new Point(600, 15), Width = 100, Height = 15, Visible = false, Style = ProgressBarStyle.Continuous };
-            _lblStatus = new Label { Location = new Point(710, 12), Width = 250, ForeColor = Color.FromArgb(150, 200, 150) };
+            _pb = new ProgressBar { MinimumSize = new Size(100, 15), Visible = false, Style = ProgressBarStyle.Continuous, Margin = new Padding(15, 10, 5, 5) };
+            _lblStatus = new Label { MinimumSize = new Size(250, 20), AutoSize = true, ForeColor = Color.FromArgb(150, 200, 150), Margin = new Padding(5, 10, 5, 5) };
 
             btnExport.Click += ExportSpectraToCsv;
             btnLoadModel.Click += (s, e) => { LoadPlsModel(); btnPredict.Enabled = _plsCoefs != null; };
@@ -84,7 +90,6 @@ namespace SpecimenFX17.Imaging
             {
                 string[][] rows = new string[lines][];
 
-                // Preparar strings en paralelo
                 Parallel.For(0, lines, y =>
                 {
                     rows[y] = new string[samples];
@@ -101,7 +106,6 @@ namespace SpecimenFX17.Imaging
                     }
                 });
 
-                // Escribir secuencialmente para no bloquear el archivo
                 using var writer = new StreamWriter(dlg.FileName, false, Encoding.UTF8);
                 var header = new StringBuilder("PixelX,PixelY,");
                 for (int b = 0; b < bands; b++)
@@ -153,7 +157,6 @@ namespace SpecimenFX17.Imaging
                 float minBrix = float.MaxValue, maxBrix = float.MinValue;
                 object syncObj = new object();
 
-                // Predicción Matemática en Paralelo
                 Parallel.For(0, lines, y =>
                 {
                     float lMin = float.MaxValue, lMax = float.MinValue;
@@ -179,7 +182,6 @@ namespace SpecimenFX17.Imaging
                 byte[] pixels = new byte[bd.Stride * lines];
                 float range = maxBrix - minBrix == 0 ? 1 : maxBrix - minBrix;
 
-                // Colorización en Paralelo
                 Parallel.For(0, lines, y =>
                 {
                     int row = y * bd.Stride;

@@ -36,13 +36,20 @@ namespace SpecimenFX17.Imaging
 
         private void BuildUI()
         {
-            var pnlTop = new Panel { Dock = DockStyle.Top, Height = 40, BackColor = Color.FromArgb(22, 22, 34) };
-            var btnPca = new Button { Text = "📊 Ejecutar PCA (RGB Top 3)", Location = new Point(10, 5), Width = 180, BackColor = Color.FromArgb(40, 90, 140), FlatStyle = FlatStyle.Flat };
-            var btnSam = new Button { Text = "🎯 Mapear Similitud (SAM)", Location = new Point(200, 5), Width = 180, BackColor = Color.FromArgb(35, 110, 55), FlatStyle = FlatStyle.Flat };
-            var btnDeriv = new Button { Text = "📈 Trazar Derivadas", Location = new Point(390, 5), Width = 150, BackColor = Color.FromArgb(110, 40, 110), FlatStyle = FlatStyle.Flat };
+            var pnlTop = new FlowLayoutPanel
+            {
+                Dock = DockStyle.Top,
+                AutoSize = true,
+                Padding = new Padding(5),
+                BackColor = Color.FromArgb(22, 22, 34)
+            };
 
-            _pb = new ProgressBar { Location = new Point(550, 12), Width = 150, Height = 15, Visible = false, Style = ProgressBarStyle.Continuous };
-            _lblStatus = new Label { Location = new Point(710, 10), Width = 350, ForeColor = Color.FromArgb(150, 200, 150) };
+            var btnPca = new Button { Text = "📊 Ejecutar PCA (RGB Top 3)", AutoSize = true, MinimumSize = new Size(230, 35), BackColor = Color.FromArgb(40, 90, 140), FlatStyle = FlatStyle.Flat, ForeColor = Color.White };
+            var btnSam = new Button { Text = "🎯 Mapear Similitud (SAM)", AutoSize = true, MinimumSize = new Size(220, 35), BackColor = Color.FromArgb(35, 110, 55), FlatStyle = FlatStyle.Flat, ForeColor = Color.White };
+            var btnDeriv = new Button { Text = "📈 Trazar Derivadas", AutoSize = true, MinimumSize = new Size(180, 35), BackColor = Color.FromArgb(110, 40, 110), FlatStyle = FlatStyle.Flat, ForeColor = Color.White };
+
+            _pb = new ProgressBar { MinimumSize = new Size(150, 15), Visible = false, Style = ProgressBarStyle.Continuous, Margin = new Padding(15, 10, 5, 5) };
+            _lblStatus = new Label { MinimumSize = new Size(350, 20), AutoSize = true, ForeColor = Color.FromArgb(150, 200, 150), Margin = new Padding(5, 10, 5, 5) };
 
             btnPca.Click += RunPCA;
             btnSam.Click += RunSAM;
@@ -95,9 +102,6 @@ namespace SpecimenFX17.Imaging
             return mask;
         }
 
-        // ═══════════════════════════════════════════════════════════════════
-        //  1. PCA Optimizado (Multithreading y reducción de bloqueos)
-        // ═══════════════════════════════════════════════════════════════════
         private async void RunPCA(object? sender, EventArgs e)
         {
             _tabs.SelectedIndex = 0;
@@ -112,7 +116,6 @@ namespace SpecimenFX17.Imaging
                 int n = 0;
                 object syncObj = new object();
 
-                // 1. Calcular Medias en Paralelo
                 Parallel.For(0, (lines + step - 1) / step, rowIdx =>
                 {
                     int y = rowIdx * step;
@@ -137,7 +140,6 @@ namespace SpecimenFX17.Imaging
 
                 for (int b = 0; b < bands; b++) mean[b] /= n;
 
-                // 2. Calcular Covarianza en Paralelo (O(N * B^2))
                 var cov = new double[bands, bands];
                 Parallel.For(0, (lines + step - 1) / step, rowIdx =>
                 {
@@ -178,7 +180,6 @@ namespace SpecimenFX17.Imaging
                 float[,] pc1 = new float[lines, samples], pc2 = new float[lines, samples], pc3 = new float[lines, samples];
                 float min1 = float.MaxValue, max1 = float.MinValue, min2 = float.MaxValue, max2 = float.MinValue, min3 = float.MaxValue, max3 = float.MinValue;
 
-                // 3. Proyección PCA en Paralelo
                 Parallel.For(0, lines, y =>
                 {
                     float lMin1 = float.MaxValue, lMax1 = float.MinValue, lMin2 = float.MaxValue, lMax2 = float.MinValue, lMin3 = float.MaxValue, lMax3 = float.MinValue;
@@ -210,7 +211,6 @@ namespace SpecimenFX17.Imaging
                     }
                 });
 
-                // 4. Renderizado Rápido
                 var bMap = new Bitmap(samples, lines, PixelFormat.Format24bppRgb);
                 var bd = bMap.LockBits(new Rectangle(0, 0, samples, lines), ImageLockMode.WriteOnly, PixelFormat.Format24bppRgb);
                 byte[] pixels = new byte[bd.Stride * lines];
@@ -304,9 +304,6 @@ namespace SpecimenFX17.Imaging
             return result;
         }
 
-        // ═══════════════════════════════════════════════════════════════════
-        //  2. SAM Optimizado
-        // ═══════════════════════════════════════════════════════════════════
         private async void RunSAM(object? sender, EventArgs e)
         {
             if (_selections.Count == 0)
@@ -331,7 +328,6 @@ namespace SpecimenFX17.Imaging
                 float maxAngle = 0;
                 object syncObj = new object();
 
-                // Calcular Ángulos en Paralelo
                 Parallel.For(0, lines, y =>
                 {
                     float localMaxAngle = 0;
@@ -407,9 +403,6 @@ namespace SpecimenFX17.Imaging
             _pb.Visible = false; _lblStatus.Text = "SAM completado. Se ha evaluado solo el área seleccionada.";
         }
 
-        // ═══════════════════════════════════════════════════════════════════
-        //  3. DERIVADAS ESPECTRALES (Ya es suficientemente rápido)
-        // ═══════════════════════════════════════════════════════════════════
         private void RunDerivatives(object? sender, EventArgs e)
         {
             if (_selections.Count == 0)

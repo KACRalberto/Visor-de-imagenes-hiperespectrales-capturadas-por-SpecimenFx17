@@ -37,12 +37,22 @@ namespace SpecimenFX17.Imaging
 
         private void BuildUI()
         {
-            var pnlTop = new Panel { Dock = DockStyle.Top, Height = 40, BackColor = Color.FromArgb(22, 22, 34) };
-            _btnLoad1 = new Button { Text = "📂 Cargar Cubo Izquierdo", Location = new Point(10, 5), Width = 180, BackColor = Color.FromArgb(50, 90, 140), FlatStyle = FlatStyle.Flat };
-            _btnLoad2 = new Button { Text = "📂 Cargar Cubo Derecho", Location = new Point(200, 5), Width = 180, BackColor = Color.FromArgb(140, 90, 50), FlatStyle = FlatStyle.Flat };
+            var pnlTop = new FlowLayoutPanel
+            {
+                Dock = DockStyle.Top,
+                AutoSize = true,
+                Padding = new Padding(5),
+                BackColor = Color.FromArgb(22, 22, 34)
+            };
+
+            _btnLoad1 = new Button { Text = "📂 Cargar Cubo Izquierdo", AutoSize = true, MinimumSize = new Size(200, 35), BackColor = Color.FromArgb(50, 90, 140), FlatStyle = FlatStyle.Flat, ForeColor = Color.White };
+            _btnLoad2 = new Button { Text = "📂 Cargar Cubo Derecho", AutoSize = true, MinimumSize = new Size(200, 35), BackColor = Color.FromArgb(140, 90, 50), FlatStyle = FlatStyle.Flat, ForeColor = Color.White };
+
             _btnLoad1.Click += (s, e) => LoadCube(1);
             _btnLoad2.Click += (s, e) => LoadCube(2);
-            pnlTop.Controls.Add(_btnLoad1); pnlTop.Controls.Add(_btnLoad2);
+
+            pnlTop.Controls.Add(_btnLoad1);
+            pnlTop.Controls.Add(_btnLoad2);
 
             var splitImages = new SplitContainer { Dock = DockStyle.Fill, Orientation = Orientation.Vertical, SplitterWidth = 4 };
             _pic1 = new PictureBox { Dock = DockStyle.Fill, SizeMode = PictureBoxSizeMode.Zoom, BackColor = Color.Black, Cursor = Cursors.Cross };
@@ -86,7 +96,6 @@ namespace SpecimenFX17.Imaging
             var cube = target == 1 ? _cube1 : _cube2;
             if (cube == null) return;
 
-            // Opciones de renderizado para el comparador: Escala de grises simple para localizar píxeles
             var opts = new BliRenderOptions
             {
                 Colormap = BliColormap.Grayscale,
@@ -143,7 +152,6 @@ namespace SpecimenFX17.Imaging
 
             var rect = new Rectangle(70, 20, bmp.Width - 100, bmp.Height - 60);
 
-            // 1. Dibujar Cuadrícula y Fondo
             using (var gp = new Pen(Color.FromArgb(28, 255, 255, 255), 1f) { DashStyle = DashStyle.Dot })
             {
                 for (int i = 0; i <= 5; i++) g.DrawLine(gp, rect.Left, rect.Bottom - (float)i / 5 * rect.Height, rect.Right, rect.Bottom - (float)i / 5 * rect.Height);
@@ -154,7 +162,6 @@ namespace SpecimenFX17.Imaging
             float[]? s1 = null, s2 = null;
             float yMin = float.MaxValue, yMax = float.MinValue;
 
-            // 2. Extraer datos bloqueando valores Infinity/NaN
             if (_cube1 != null && _pt1.HasValue)
             {
                 s1 = _cube1.GetSpectrum(_pt1.Value.Y, _pt1.Value.X);
@@ -167,21 +174,20 @@ namespace SpecimenFX17.Imaging
             }
 
             if (yMin == float.MaxValue) { yMin = 0; yMax = 1; }
+            if (yMin == yMax) { yMin -= 0.5f; yMax += 0.5f; } // Salvaguarda si la línea es plana
+
             float yRng = yMax - yMin;
             if (yRng < 1e-10f) yRng = 1f;
             yMin -= yRng * 0.05f;
             yMax += yRng * 0.05f;
             yRng = yMax - yMin;
 
-            // 3. Dibujar curvas
             if (s1 != null && _cube1 != null) DrawLine(g, rect, s1, _cube1.Header.Wavelengths, yMin, yRng, Color.Cyan, $"Izquierda ({_pt1!.Value.X}, {_pt1!.Value.Y})", 0);
             if (s2 != null && _cube2 != null) DrawLine(g, rect, s2, _cube2.Header.Wavelengths, yMin, yRng, Color.Orange, $"Derecha ({_pt2!.Value.X}, {_pt2!.Value.Y})", 1);
 
-            // 4. Dibujar Textos de Ejes
             using var font = new Font("Consolas", 8f);
             using var brush = new SolidBrush(Color.FromArgb(180, 180, 200));
 
-            // Eje Y
             for (int i = 0; i <= 5; i++)
             {
                 float py = rect.Bottom - (float)i / 5 * rect.Height;
@@ -191,9 +197,10 @@ namespace SpecimenFX17.Imaging
                 g.DrawString(lb, font, brush, rect.Left - sz.Width - 5, py - sz.Height / 2);
             }
 
-            // Eje X (Aproximación para las longitudes de onda)
             double wMin = 0, wMax = s1?.Length ?? s2?.Length ?? 100;
             if (_cube1 != null && _cube1.Header.Wavelengths.Count > 0) { wMin = _cube1.Header.Wavelengths[0]; wMax = _cube1.Header.Wavelengths[^1]; }
+            else if (_cube2 != null && _cube2.Header.Wavelengths.Count > 0) { wMin = _cube2.Header.Wavelengths[0]; wMax = _cube2.Header.Wavelengths[^1]; }
+
             for (int i = 0; i <= 6; i++)
             {
                 float px = rect.Left + (float)i / 6 * rect.Width;
@@ -204,11 +211,14 @@ namespace SpecimenFX17.Imaging
 
             _plot.Image?.Dispose();
             _plot.Image = bmp;
+            _plot.Invalidate();
         }
 
         private void DrawLine(Graphics g, Rectangle rect, float[] spec, List<double> wls, float yMin, float yRng, Color col, string legend, int legendLine)
         {
             if (spec.Length < 2) return;
+
+            // Salvaguarda para asegurar que siempre haya coordenadas X
             if (wls == null || wls.Count < spec.Length)
                 wls = Enumerable.Range(0, spec.Length).Select(i => (double)i).ToList();
 
@@ -218,14 +228,13 @@ namespace SpecimenFX17.Imaging
             var pts = new List<PointF>();
             for (int i = 0; i < spec.Length; i++)
             {
-                // PROTECCIÓN FINAL: Ignorar cualquier valor matemáticamente inválido
                 if (float.IsNaN(spec[i]) || float.IsInfinity(spec[i])) continue;
 
                 float px = rect.Left + (float)((wls[i] - xMin) / xRng * rect.Width);
                 float py = rect.Bottom - ((spec[i] - yMin) / yRng * rect.Height);
 
-                // Limitar la coordenada Y para que GDI+ no colapse
-                py = Math.Clamp(py, rect.Top - 50, rect.Bottom + 50);
+                // Evitar crashes severos de GDI+ limitando coordenadas excesivas
+                py = Math.Clamp(py, -10000f, 10000f);
                 pts.Add(new PointF(px, py));
             }
 

@@ -66,7 +66,7 @@ namespace SpecimenFX17.Imaging
         private NumericUpDown _nudLo = null!;
         private NumericUpDown _nudHi = null!;
         private NumericUpDown _nudThr = null!;
-        private NumericUpDown _nudAutoTol = null!; // Tolerancia Auto ROI
+        private NumericUpDown _nudAutoTol = null!;
 
         private Button _btnLoad = null!;
         private Label _lblWhite = null!;
@@ -89,10 +89,6 @@ namespace SpecimenFX17.Imaging
             BuildUI();
         }
 
-        // ═══════════════════════════════════════════════════════════════════
-        //  CONSTRUCCIÓN DE INTERFAZ
-        // ═══════════════════════════════════════════════════════════════════
-
         private void BuildUI()
         {
             _ss = new StatusStrip { BackColor = Color.FromArgb(12, 12, 20), SizingGrip = false };
@@ -101,10 +97,11 @@ namespace SpecimenFX17.Imaging
             _pb = new ProgressBar { Style = ProgressBarStyle.Continuous, Visible = false, Size = new Size(200, 14) };
             _ss.Items.Add(_slbl); _ss.Items.Add(new ToolStripControlHost(_pb));
 
+            // PANEL LATERAL (Más ancho para que entren los textos largos sin cortarse)
             var rp = new Panel
             {
                 Dock = DockStyle.Right,
-                Width = 240,
+                Width = 270,
                 BackColor = Color.FromArgb(24, 24, 36),
                 AutoScroll = true,
                 Padding = new Padding(10, 8, 8, 6)
@@ -199,15 +196,14 @@ namespace SpecimenFX17.Imaging
             _btnLoad = Btn(p, "📂  Cargar Cubo .hdr/.raw", ref cy, Color.FromArgb(40, 90, 140));
             _btnLoad.Click += BtnLoad_Click;
 
-            // ── Calibración y Normalización ───────────────────────────────────
             Sep(p, ref cy); Sec(p, "CALIBRACIÓN (Ref. B/N)", ref cy);
 
             var btnLoadWhite = Btn(p, "⚪ Cargar Ref. Blanca", ref cy, Color.FromArgb(60, 60, 60));
-            _lblWhite = new Label { Location = new Point(8, cy), Width = 210, Height = 14, ForeColor = Color.Gray, Font = new Font("Segoe UI", 7f), Text = "Sin cargar" };
+            _lblWhite = new Label { Location = new Point(8, cy), Width = 230, Height = 14, ForeColor = Color.Gray, Font = new Font("Segoe UI", 7f), Text = "Sin cargar" };
             p.Controls.Add(_lblWhite); cy += 18;
 
             var btnLoadDark = Btn(p, "⚫ Cargar Ref. Oscura", ref cy, Color.FromArgb(25, 25, 25));
-            _lblDark = new Label { Location = new Point(8, cy), Width = 210, Height = 14, ForeColor = Color.Gray, Font = new Font("Segoe UI", 7f), Text = "Sin cargar" };
+            _lblDark = new Label { Location = new Point(8, cy), Width = 230, Height = 14, ForeColor = Color.Gray, Font = new Font("Segoe UI", 7f), Text = "Sin cargar" };
             p.Controls.Add(_lblDark); cy += 18;
 
             _btnCalibrate = Btn(p, "✨ Normalizar Imagen", ref cy, Color.FromArgb(120, 80, 40));
@@ -272,7 +268,6 @@ namespace SpecimenFX17.Imaging
                 }
             };
 
-            // ── Sesiones y Comparación ────────────────────────────────
             Sep(p, ref cy); Sec(p, "DATOS Y SESIONES", ref cy);
             var btnSaveSes = Btn(p, "💾  Guardar Sesión", ref cy, Color.FromArgb(50, 80, 60));
             var btnLoadSes = Btn(p, "📂  Cargar Sesión", ref cy, Color.FromArgb(60, 60, 80));
@@ -295,13 +290,12 @@ namespace SpecimenFX17.Imaging
             };
             btnDual.Click += (_, _) => new DualViewerForm(_cube).Show();
 
-            // ── Herramienta de selección ──────────────────────────────────────
             Sep(p, ref cy); Sec(p, "HERRAMIENTA DE SELECCIÓN", ref cy);
 
             _lblTip = new Label
             {
                 Location = new Point(8, cy),
-                Width = 210,
+                Width = 230,
                 Height = 16,
                 ForeColor = Color.FromArgb(120, 200, 120),
                 Font = new Font("Segoe UI", 7f, FontStyle.Italic),
@@ -312,7 +306,7 @@ namespace SpecimenFX17.Imaging
             var grid = new TableLayoutPanel
             {
                 Location = new Point(8, cy),
-                Width = 212,
+                Width = 230,
                 Height = 85,
                 ColumnCount = 2,
                 RowCount = 3,
@@ -359,7 +353,6 @@ namespace SpecimenFX17.Imaging
             Lbl(p, "Tolerancia SAM (%):", ref cy);
             _nudAutoTol = Num(p, ref cy, 10m, 1m, 100m, 1m, 0);
 
-            // ── Calculadora y Avanzado ────────────────────────────────────────
             Sep(p, ref cy); Sec(p, "ANÁLISIS ESPECTRAL", ref cy);
             var bc = Btn(p, "🧮  Calculadora de Fórmulas", ref cy, Color.FromArgb(70, 45, 110));
             var ba = Btn(p, "🔬  Herramientas Avanzadas", ref cy, Color.FromArgb(140, 70, 45));
@@ -369,13 +362,12 @@ namespace SpecimenFX17.Imaging
             ba.Click += (_, _) => { if (_cube != null) new AdvancedAnalysisForm(_cube, _selections.AsReadOnly()).Show(); };
             bp.Click += (_, _) => { if (_cube != null) new PlsPredictionForm(_cube, _selections.AsReadOnly()).Show(); };
 
-            // ── Visualización ─────────────────────────────────────────────────
             Sep(p, ref cy); Sec(p, "VISUALIZACIÓN", ref cy);
             Lbl(p, "Paleta de color:", ref cy);
             _cmbCmap = new ComboBox
             {
                 Location = new Point(8, cy),
-                Width = 210,
+                Width = 230,
                 DropDownStyle = ComboBoxStyle.DropDownList,
                 BackColor = Color.FromArgb(38, 38, 55),
                 ForeColor = Color.White,
@@ -394,20 +386,19 @@ namespace SpecimenFX17.Imaging
 
             _chkGray.CheckedChanged += (_, _) => {
                 _grayscaleMode = _chkGray.Checked;
-                if (_grayscaleMode) _chkRgb.Checked = false; // Mutuamente excluyentes
+                if (_grayscaleMode) _chkRgb.Checked = false;
                 _cmbCmap.Enabled = !_grayscaleMode && !_rgbMode;
                 RefreshDisplay();
             };
 
             _chkRgb.CheckedChanged += (_, _) => {
                 _rgbMode = _chkRgb.Checked;
-                if (_rgbMode) _chkGray.Checked = false; // Mutuamente excluyentes
+                if (_rgbMode) _chkGray.Checked = false;
                 _cmbCmap.Enabled = !_grayscaleMode && !_rgbMode;
-                _slider.Enabled = !_rgbMode; // En RGB el slider no hace nada
+                _slider.Enabled = !_rgbMode;
                 RefreshDisplay();
             };
 
-            // ── Ajustes ───────────────────────────────────────────────────────
             Sep(p, ref cy); Sec(p, "AJUSTES DE IMAGEN", ref cy);
             Lbl(p, "Gamma (1 = lineal):", ref cy); _nudGamma = Num(p, ref cy, 1.0m, 0.1m, 5.0m, 0.1m, 1);
             Lbl(p, "Percentil bajo (%):", ref cy); _nudLo = Num(p, ref cy, 2m, 0m, 49m, 1m, 0);
@@ -416,7 +407,6 @@ namespace SpecimenFX17.Imaging
             foreach (var n in new[] { _nudGamma, _nudLo, _nudHi, _nudThr })
                 n.ValueChanged += (_, _) => RefreshDisplay();
 
-            // ── Exportar ──────────────────────────────────────────────────────
             Sep(p, ref cy); Sec(p, "EXPORTAR IMÁGENES", ref cy);
             _btnExport = Btn(p, "💾  Exportar vista actual", ref cy, Color.FromArgb(35, 95, 55));
             _btnExpAll = Btn(p, "📦  Exportar todas las bandas", ref cy, Color.FromArgb(30, 75, 45));
@@ -426,12 +416,11 @@ namespace SpecimenFX17.Imaging
             _btnExpAll.Click += BtnExportAll_Click;
             _btnClear.Click += (_, _) => ClearAll();
 
-            // ── Info de banda ─────────────────────────────────────────────────
             Sep(p, ref cy); Sec(p, "INFO DE BANDA", ref cy);
             _lblBandInfo = new Label
             {
                 Location = new Point(8, cy),
-                Width = 210,
+                Width = 230,
                 Height = 110,
                 ForeColor = Color.FromArgb(160, 160, 190),
                 Font = new Font("Consolas", 7.5f),
@@ -440,29 +429,29 @@ namespace SpecimenFX17.Imaging
             p.Controls.Add(_lblBandInfo);
         }
 
-        // ── Helpers de layout ─────────────────────────────────────────────────
         private Button Btn(Panel p, string t, ref int cy, Color bg)
         {
             var b = new Button
             {
                 Text = t,
                 Location = new Point(8, cy),
-                Width = 210,
-                Height = 30,
+                Width = 230,
+                Height = 35,
+                AutoSize = true,
                 FlatStyle = FlatStyle.Flat,
                 BackColor = bg,
                 ForeColor = Color.White,
                 Cursor = Cursors.Hand
             };
             b.FlatAppearance.BorderColor = Color.FromArgb(Math.Min(255, bg.R + 35), Math.Min(255, bg.G + 35), Math.Min(255, bg.B + 35));
-            p.Controls.Add(b); cy += 36; return b;
+            p.Controls.Add(b); cy += 38; return b;
         }
         private NumericUpDown Num(Panel p, ref int cy, decimal v, decimal mn, decimal mx, decimal inc, int dec)
         {
             var n = new NumericUpDown
             {
                 Location = new Point(8, cy),
-                Width = 210,
+                Width = 230,
                 Minimum = mn,
                 Maximum = mx,
                 Value = v,
@@ -473,10 +462,10 @@ namespace SpecimenFX17.Imaging
             };
             p.Controls.Add(n); cy += 26; return n;
         }
-        private void Lbl(Panel p, string t, ref int cy) { p.Controls.Add(new Label { Text = t, Location = new Point(8, cy), Width = 210, Height = 16, ForeColor = Color.FromArgb(140, 140, 170), Font = new Font("Segoe UI", 8f) }); cy += 17; }
-        private void Sec(Panel p, string t, ref int cy) { p.Controls.Add(new Label { Text = t, Location = new Point(8, cy), Width = 210, Height = 18, ForeColor = Color.FromArgb(100, 160, 220), Font = new Font("Segoe UI", 7.5f, FontStyle.Bold), TextAlign = ContentAlignment.MiddleLeft }); cy += 20; }
-        private CheckBox Chk(Panel p, string t, ref int cy, bool v) { var c = new CheckBox { Text = t, Location = new Point(8, cy), Width = 210, Checked = v, ForeColor = Color.FromArgb(180, 180, 210), BackColor = Color.Transparent }; p.Controls.Add(c); cy += 24; return c; }
-        private void Sep(Panel p, ref int cy) { p.Controls.Add(new Label { Location = new Point(8, cy), Width = 210, Height = 1, BackColor = Color.FromArgb(55, 55, 75) }); cy += 10; }
+        private void Lbl(Panel p, string t, ref int cy) { p.Controls.Add(new Label { Text = t, Location = new Point(8, cy), Width = 230, Height = 16, ForeColor = Color.FromArgb(140, 140, 170), Font = new Font("Segoe UI", 8f) }); cy += 17; }
+        private void Sec(Panel p, string t, ref int cy) { p.Controls.Add(new Label { Text = t, Location = new Point(8, cy), Width = 230, Height = 18, ForeColor = Color.FromArgb(100, 160, 220), Font = new Font("Segoe UI", 7.5f, FontStyle.Bold), TextAlign = ContentAlignment.MiddleLeft }); cy += 20; }
+        private CheckBox Chk(Panel p, string t, ref int cy, bool v) { var c = new CheckBox { Text = t, Location = new Point(8, cy), Width = 230, Checked = v, ForeColor = Color.FromArgb(180, 180, 210), BackColor = Color.Transparent }; p.Controls.Add(c); cy += 24; return c; }
+        private void Sep(Panel p, ref int cy) { p.Controls.Add(new Label { Location = new Point(8, cy), Width = 230, Height = 1, BackColor = Color.FromArgb(55, 55, 75) }); cy += 10; }
 
         private void SetTool(SelectionTool mode, string tip)
         {
@@ -513,10 +502,6 @@ namespace SpecimenFX17.Imaging
         {
             _btnCalibrate.Enabled = _cube != null && _whiteCube != null && _darkCube != null;
         }
-
-        // ═══════════════════════════════════════════════════════════════════
-        //  EVENTOS DE RATÓN
-        // ═══════════════════════════════════════════════════════════════════
 
         private void Pic_Down(object? s, MouseEventArgs e)
         {
@@ -700,15 +685,10 @@ namespace SpecimenFX17.Imaging
             g.DrawRectangle(new Pen(col, 1.5f) { DashStyle = DashStyle.Dash }, x, y, w, h);
         }
 
-        // ── Gestión de selecciones ────────────────────────────────────────────
         private Color NextColor() => SelColors[_selections.Count % SelColors.Length];
         private void AddShape(SelectionShape sh) { if (_selections.Count >= SelColors.Length) _selections.RemoveAt(0); _selections.Add(sh); _btnClear.Enabled = true; RefreshDisplay(); }
         private void CommitPolygon() { if (_polyImg.Count >= 3) AddShape(new PolygonShape(_polyImg, NextColor())); _polyActive = false; _polyImg.Clear(); _polyScr.Clear(); _pictureBox.Invalidate(); }
         private void ClearAll() { _selections.Clear(); _polyActive = false; _polyImg.Clear(); _polyScr.Clear(); _freeImg.Clear(); _freeScr.Clear(); _btnClear.Enabled = false; ClearSpectrumPlot(); _pictureBox.Invalidate(); }
-
-        // ═══════════════════════════════════════════════════════════════════
-        //  AUTO ROI (SPECTRAL ANGLE MAPPER - HIPER-OPTIMIZADO)
-        // ═══════════════════════════════════════════════════════════════════
 
         private async void RunAutoRoi(int startX, int startY)
         {
@@ -720,7 +700,6 @@ namespace SpecimenFX17.Imaging
             _pictureBox.Enabled = false;
 
             float tolPercent = (float)_nudAutoTol.Value / 100f;
-            // Mapeamos el % a radianes. Un 10% equivale a 0.15 radianes (bastante estricto para SAM)
             float maxAngleRads = tolPercent * 1.5f;
             float minCos = (float)Math.Cos(maxAngleRads);
 
@@ -733,14 +712,11 @@ namespace SpecimenFX17.Imaging
                 int h = _cube.Lines;
                 mask = new bool[h, w];
 
-                // OPTIMIZACIÓN 1: Para la distancia espectral no necesitamos calcular 128 bandas. 
-                // Usaremos 16 bandas distribuidas equitativamente para capturar la "forma" rapidísimo.
                 int numBands = 16;
                 int step = Math.Max(1, _cube.Bands / numBands);
                 var bandsToUse = new List<int>();
                 for (int b = 0; b < _cube.Bands; b += step) bandsToUse.Add(b);
 
-                // Pre-calculamos el espectro de referencia (el píxel clicado)
                 float[] refSpec = new float[bandsToUse.Count];
                 float normRef = 0f;
                 for (int i = 0; i < bandsToUse.Count; i++)
@@ -751,14 +727,12 @@ namespace SpecimenFX17.Imaging
                 }
                 normRef = (float)Math.Sqrt(normRef);
 
-                // Si hacemos clic en el vacío absoluto (fuera de la bandeja de escaneo)
                 if (normRef < 1e-6f) return;
 
                 var stack = new Stack<(int x, int y)>(w * h / 4);
                 stack.Push((startX, startY));
                 mask[startY, startX] = true;
 
-                // Función súper optimizada usando SAM (Spectral Angle Mapper)
                 bool IsSimilar(int cx, int cy)
                 {
                     float dot = 0f;
@@ -774,14 +748,13 @@ namespace SpecimenFX17.Imaging
 
                     normB = (float)Math.Sqrt(normB);
                     float cosTheta = dot / (normRef * normB);
-                    return cosTheta >= minCos; // Evitamos calcular ArcCos para ganar velocidad pura
+                    return cosTheta >= minCos;
                 }
 
                 while (stack.Count > 0)
                 {
                     var (cx, cy) = stack.Pop();
 
-                    // Comprobar vecinos
                     if (cx > 0 && !mask[cy, cx - 1] && IsSimilar(cx - 1, cy))
                     {
                         mask[cy, cx - 1] = true; stack.Push((cx - 1, cy));
@@ -810,10 +783,6 @@ namespace SpecimenFX17.Imaging
         }
 
 
-        // ═══════════════════════════════════════════════════════════════════
-        //  CARGA DEL CUBO
-        // ═══════════════════════════════════════════════════════════════════
-
         private async void BtnLoad_Click(object? s, EventArgs e)
         {
             using var dlg = new OpenFileDialog { Title = "Abrir imagen hiperespectral ENVI", Filter = "ENVI Header (*.hdr)|*.hdr|Todos|*.*" };
@@ -836,10 +805,6 @@ namespace SpecimenFX17.Imaging
             catch (Exception ex) { MessageBox.Show(ex.Message, "Error"); _slbl.Text = "Error"; }
             finally { _pb.Visible = false; _btnLoad.Enabled = true; }
         }
-
-        // ═══════════════════════════════════════════════════════════════════
-        //  RENDERIZADO
-        // ═══════════════════════════════════════════════════════════════════
 
         private void RefreshDisplay()
         {
@@ -907,10 +872,6 @@ namespace SpecimenFX17.Imaging
             _specPlot.Image?.Dispose(); _specPlot.Image = null;
             if (_cube != null) RefreshDisplay();
         }
-
-        // ═══════════════════════════════════════════════════════════════════
-        //  GRÁFICO ESPECTRAL
-        // ═══════════════════════════════════════════════════════════════════
 
         private void RedrawSpectrumPlot()
         {
