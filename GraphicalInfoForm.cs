@@ -22,7 +22,7 @@ namespace SpecimenFX17.Imaging
             _cube = cube;
             Text = "Información Gráfica (Estilo Hyper)";
             Size = new Size(400, 800);
-            BackColor = Color.FromArgb(240, 240, 240); // Fondo claro como Hyper
+            BackColor = Color.FromArgb(240, 240, 240);
             FormBorderStyle = FormBorderStyle.SizableToolWindow;
             TopMost = true;
 
@@ -91,11 +91,11 @@ namespace SpecimenFX17.Imaging
                 pStdNeg[i] = new PointF(x, h - margin - ((st.Mean - st.Std) - minVal) * fy);
             }
 
-            g.DrawLines(Pens.Blue, pMin);          // Mínimo
-            g.DrawLines(Pens.Red, pMax);           // Máximo
-            g.DrawLines(Pens.Green, pMean);        // Media
-            g.DrawLines(Pens.Orange, pStdPos);     // Media + Std
-            g.DrawLines(Pens.Cyan, pStdNeg);       // Media - Std
+            g.DrawLines(Pens.Blue, pMin);
+            g.DrawLines(Pens.Red, pMax);
+            g.DrawLines(Pens.Green, pMean);
+            g.DrawLines(Pens.Orange, pStdPos);
+            g.DrawLines(Pens.Cyan, pStdNeg);
 
             g.DrawString("Estadísticos ROI (Min, Max, Media, ±Std)", new Font("Arial", 8), Brushes.Black, margin, margin);
         }
@@ -106,7 +106,10 @@ namespace SpecimenFX17.Imaging
             int w = _picHisto.Width, h = _picHisto.Height;
             float margin = 10f;
 
-            var data = _cube.GetBand(CurrentBand);
+            // PROTECCIÓN CONTRA ÍNDICE FUERA DE RANGO SI EL CUBO PIERDE LAS BANDAS PCA
+            int safeBand = Math.Clamp(CurrentBand, 0, _cube.Bands - 1);
+            var data = _cube.GetBand(safeBand);
+
             int bins = 256;
             int[] counts = new int[bins];
             float min = float.MaxValue, max = float.MinValue;
@@ -140,7 +143,7 @@ namespace SpecimenFX17.Imaging
                 float barH = counts[i] * fy;
                 g.FillRectangle(Brushes.DarkGray, margin + i * binW, h - margin - barH, Math.Max(1, binW), barH);
             }
-            g.DrawString($"Histograma Banda {CurrentBand + 1}", new Font("Arial", 8), Brushes.Black, margin, margin);
+            g.DrawString($"Histograma Banda {safeBand + 1}", new Font("Arial", 8), Brushes.Black, margin, margin);
         }
 
         private void PaintPixel(object? sender, PaintEventArgs e)
@@ -152,7 +155,7 @@ namespace SpecimenFX17.Imaging
 
             if (CurrentPixel.X < 0 || CurrentPixel.X >= _cube.Samples || CurrentPixel.Y < 0 || CurrentPixel.Y >= _cube.Lines) return;
 
-            int bands = _cube.Header.Bands; // Solo bandas físicas
+            int bands = _cube.Header.Bands;
             float[] spec = new float[bands];
             float min = float.MaxValue, max = float.MinValue;
 
@@ -172,12 +175,11 @@ namespace SpecimenFX17.Imaging
                 pts[i] = new PointF(margin + i * fx, h - margin - (spec[i] - min) * fy);
             }
 
-            g.DrawLine(Pens.LightGray, margin, h / 2, w - margin, h / 2); // Eje 0 central de referencia
+            g.DrawLine(Pens.LightGray, margin, h / 2, w - margin, h / 2);
             if (pts.Length > 1) g.DrawLines(Pens.Black, pts);
 
             g.DrawString($"Píxel ({CurrentPixel.X}, {CurrentPixel.Y})", new Font("Arial", 8), Brushes.Black, margin, margin);
 
-            // Dibujar la barra vertical de la banda actual
             if (CurrentBand < bands)
             {
                 float bx = margin + CurrentBand * fx;

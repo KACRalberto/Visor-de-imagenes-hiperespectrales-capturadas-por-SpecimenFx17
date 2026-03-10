@@ -270,7 +270,6 @@ namespace SpecimenFX17.Imaging
                 catch (Exception ex) { MessageBox.Show(ex.Message, "Error"); _btnCalibrate.Enabled = true; }
             };
 
-            // NUEVA SECCIÓN DE QUIMIOMETRÍA
             Sep(p, ref cy); Sec(p, "PREPROCESAMIENTO QUIMIOMÉTRICO", ref cy);
             var btnSnv = Btn(p, "📈  Aplicar SNV", ref cy, Color.FromArgb(40, 80, 90));
             var btnMsc = Btn(p, "📉  Aplicar MSC", ref cy, Color.FromArgb(50, 60, 90));
@@ -386,7 +385,6 @@ namespace SpecimenFX17.Imaging
                 else _graphicalInfoForm.BringToFront();
             };
 
-            // BOTONES RESTAURADOS: Calculadora, Avanzados, PLS
             var bc = Btn(p, "🧮  Calculadora de Fórmulas", ref cy, Color.FromArgb(70, 45, 110));
             var ba = Btn(p, "🔬  Herramientas Avanzadas", ref cy, Color.FromArgb(140, 70, 45));
             var bp = Btn(p, "🍊  Predecir °Brix (PLS)", ref cy, Color.FromArgb(140, 90, 30));
@@ -888,7 +886,7 @@ namespace SpecimenFX17.Imaging
                 g.DrawLine(new Pen(Color.FromArgb(110, 255, 255, 80), 1f) { DashStyle = DashStyle.Dash }, curPx, plot.Top, curPx, plot.Bottom);
             }
 
-            if (hoverSpec != null)
+            if (hoverSpec != null && hoverSpec.Length > 1)
             {
                 var hp = new PointF[hoverSpec.Length];
                 for (int i = 0; i < hoverSpec.Length; i++)
@@ -902,13 +900,17 @@ namespace SpecimenFX17.Imaging
 
             foreach (var sh in _selections)
             {
-                var spec = sh.GetSpectrum(_cube).Take(plotBands).ToArray(); var pts = new PointF[spec.Length];
-                for (int i = 0; i < spec.Length; i++)
+                var spec = sh.GetSpectrum(_cube).Take(plotBands).ToArray();
+                if (spec.Length > 1)
                 {
-                    float px = plot.Left + (float)(((i < wls.Count ? wls[i] : xMin + i * xRng / spec.Length) - xMin) / xRng * plot.Width);
-                    float py = Math.Clamp(plot.Bottom - (spec[i] - yMin) / yRng * plot.Height, plot.Top - 8, plot.Bottom + 8); pts[i] = new PointF(px, py);
+                    var pts = new PointF[spec.Length];
+                    for (int i = 0; i < spec.Length; i++)
+                    {
+                        float px = plot.Left + (float)(((i < wls.Count ? wls[i] : xMin + i * xRng / spec.Length) - xMin) / xRng * plot.Width);
+                        float py = Math.Clamp(plot.Bottom - (spec[i] - yMin) / yRng * plot.Height, plot.Top - 8, plot.Bottom + 8); pts[i] = new PointF(px, py);
+                    }
+                    g.DrawLines(new Pen(sh.Color, 1.8f), pts);
                 }
-                g.DrawLines(new Pen(sh.Color, 1.8f), pts);
             }
 
             using var tf = new Font("Consolas", 7.5f); using var tb = new SolidBrush(Color.FromArgb(160, 160, 195));

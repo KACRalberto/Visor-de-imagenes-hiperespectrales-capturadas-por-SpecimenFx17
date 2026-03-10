@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.Linq;
+using System.Threading.Tasks;
 
 namespace SpecimenFX17.Imaging
 {
@@ -19,6 +20,10 @@ namespace SpecimenFX17.Imaging
         public float? MeasuredBrix { get; set; } = null;
         public string Notes { get; set; } = "";
 
+        // ── CACHÉ DE RENDIMIENTO PARA EVITAR LAG EN EL MOUSEMOVE ──
+        private float[]? _cachedSpectrum;
+        private Guid _cachedVersion;
+
         protected SelectionShape(Color c) => Color = c;
 
         public abstract bool[,] GetMask(int lines, int samples);
@@ -27,11 +32,20 @@ namespace SpecimenFX17.Imaging
 
         public virtual float[] GetSpectrum(HyperspectralCube cube)
         {
+            // Si el cubo no ha cambiado y ya lo calculamos, devolvemos la caché instantáneamente (0 lag)
+            if (_cachedSpectrum != null && _cachedVersion == cube.Version)
+                return _cachedSpectrum;
+
             var mask = GetMask(cube.Lines, cube.Samples);
-            var res = new float[cube.Bands];
+            var res = new double[cube.Bands];
             int count = 0;
-            for (int l = 0; l < cube.Lines; l++)
+            object sync = new object();
+
+            // Cálculo en paralelo ultra-rápido la primera vez
+            Parallel.For(0, cube.Lines, l =>
             {
+                var localRes = new double[cube.Bands];
+                int localCount = 0;
                 for (int s = 0; s < cube.Samples; s++)
                 {
                     if (mask[l, s])
@@ -39,15 +53,25 @@ namespace SpecimenFX17.Imaging
                         for (int b = 0; b < cube.Bands; b++)
                         {
                             float v = cube[b, l, s];
-                            if (!float.IsNaN(v)) res[b] += v;
+                            if (!float.IsNaN(v)) localRes[b] += v;
                         }
-                        count++;
+                        localCount++;
                     }
                 }
-            }
+                lock (sync)
+                {
+                    for (int b = 0; b < cube.Bands; b++) res[b] += localRes[b];
+                    count += localCount;
+                }
+            });
+
+            var finalRes = new float[cube.Bands];
             if (count > 0)
-                for (int b = 0; b < cube.Bands; b++) res[b] /= count;
-            return res;
+                for (int b = 0; b < cube.Bands; b++) finalRes[b] = (float)(res[b] / count);
+
+            _cachedVersion = cube.Version;
+            _cachedSpectrum = finalRes;
+            return finalRes;
         }
 
         protected void Lbl(Graphics g, string text, int x, int y, Color c)
@@ -268,15 +292,11 @@ namespace SpecimenFX17.Imaging
         {
             if (_edgePoints.Count == 0) return;
 
-            // INYECCIÓN DE TRANSPARENCIA: 
-            // 70 de nivel de Alfa (escala 0-255) hace que sea muy transparente para poder ver el aguacate debajo.
             using var brush = new SolidBrush(Color.FromArgb(70, Color));
 
-            // OPTIMIZACIÓN GDI+: Batch Rendering. 
             const int batchSize = 2000;
             for (int i = 0; i < _edgePoints.Count; i += batchSize)
             {
-                // También se reduce el tamaño del punto de 1.5f a 1.0f para no saturar visualmente
                 var batch = _edgePoints.Skip(i).Take(batchSize).Select(p => new RectangleF(p.X, p.Y, 1.0f, 1.0f)).ToArray();
                 g.FillRectangles(brush, batch);
             }

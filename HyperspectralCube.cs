@@ -32,6 +32,9 @@ namespace SpecimenFX17.Imaging
         public List<BandStat> BandStats { get; private set; } = new();
         public string AnalysisReport { get; set; } = "";
 
+        // ── CONTROL DE VERSIONES (Para la caché de gráficos y selecciones) ──
+        public Guid Version { get; private set; } = Guid.NewGuid();
+
         public HyperspectralCube(EnviHeader header, float[,,] cube)
         {
             Header = header;
@@ -75,7 +78,6 @@ namespace SpecimenFX17.Imaging
             return (min == float.MaxValue ? 0f : min, max == float.MinValue ? 1f : max);
         }
 
-        // --- NORMALIZACIÓN EXACTA AL PROGRAMA HYPER.CS ---
         public void Calibrate(HyperspectralCube whiteRef, HyperspectralCube darkRef)
         {
             float[,] maxWhite = new float[Bands, Samples];
@@ -131,6 +133,7 @@ namespace SpecimenFX17.Imaging
             IsCalibrated = true;
             IsAbsorbance = false;
             ComputeStats();
+            Version = Guid.NewGuid();
         }
 
         public void ConvertToAbsorbance()
@@ -147,9 +150,9 @@ namespace SpecimenFX17.Imaging
             });
             IsAbsorbance = true;
             ComputeStats();
+            Version = Guid.NewGuid();
         }
 
-        // ── PREPROCESAMIENTO QUIMIOMÉTRICO ──────────────────────────────────
         public void ApplySNV()
         {
             Parallel.For(0, Lines, l => {
@@ -169,6 +172,7 @@ namespace SpecimenFX17.Imaging
                 }
             });
             ComputeStats();
+            Version = Guid.NewGuid();
         }
 
         public void ApplyMSC()
@@ -194,6 +198,7 @@ namespace SpecimenFX17.Imaging
                 }
             });
             ComputeStats();
+            Version = Guid.NewGuid();
         }
 
         public void ApplySavitzkyGolay(int windowSize, int polyOrder, int derivOrder)
@@ -227,6 +232,7 @@ namespace SpecimenFX17.Imaging
             });
             Array.Copy(newCube, _cube, newCube.Length);
             ComputeStats();
+            Version = Guid.NewGuid();
         }
 
         private static double[] GetSavitzkyGolayCoefficients(int windowSize, int polyOrder, int derivOrder)
@@ -253,7 +259,7 @@ namespace SpecimenFX17.Imaging
             for (int i = 0; i < n; i++) { for (int j = 0; j < n; j++) aug[i, j] = matrix[i, j]; aug[i, n + i] = 1.0; }
             for (int i = 0; i < n; i++)
             {
-                double pivot = aug[i, i]; if (Math.Abs(pivot) < 1e-9) throw new Exception("Matriz singular en Savitzky-Golay (Reduce orden o amplía ventana).");
+                double pivot = aug[i, i]; if (Math.Abs(pivot) < 1e-9) throw new Exception("Matriz singular en Savitzky-Golay.");
                 for (int j = 0; j < 2 * n; j++) aug[i, j] /= pivot;
                 for (int k = 0; k < n; k++) if (k != i) { double factor = aug[k, i]; for (int j = 0; j < 2 * n; j++) aug[k, j] -= factor * aug[i, j]; }
             }
@@ -291,9 +297,9 @@ namespace SpecimenFX17.Imaging
             });
             Array.Copy(newCube, _cube, newCube.Length);
             ComputeStats();
+            Version = Guid.NewGuid();
         }
 
-        // --- ANÁLISIS MASIVO CON COMPORTAMIENTO IDÉNTICO A HYPER.CS ---
         public HyperspectralCube GenerateAnalyzedCube(int numPca = 10, bool[,]? mask = null)
         {
             var sw = System.Diagnostics.Stopwatch.StartNew();
@@ -308,7 +314,6 @@ namespace SpecimenFX17.Imaging
                 for (int l = 0; l < Lines; l++) for (int s = 0; s < Samples; s++) mask[l, s] = true;
             }
 
-            // 1. Copiar bandas originales y calcular Media, Min, Max, Rango
             Parallel.For(0, Lines, y => {
                 for (int x = 0; x < Samples; x++)
                 {
@@ -337,15 +342,14 @@ namespace SpecimenFX17.Imaging
                     }
                     else if (valid > 0)
                     {
-                        newCube[origBands, y, x] = sum / valid;      // Media
-                        newCube[origBands + 1, y, x] = min;          // Mínima
-                        newCube[origBands + 2, y, x] = max;          // Máxima
-                        newCube[origBands + 3, y, x] = max - min;    // Rango
+                        newCube[origBands, y, x] = sum / valid;
+                        newCube[origBands + 1, y, x] = min;
+                        newCube[origBands + 2, y, x] = max;
+                        newCube[origBands + 3, y, x] = max - min;
                     }
                 }
             });
 
-            // 2. Setup PCA
             var mean = new double[origBands];
             int n = 0;
             object syncObj = new object();
@@ -439,7 +443,6 @@ namespace SpecimenFX17.Imaging
                 {
                     float r = pcMaxs[pc] - pcMins[pc];
                     if (r > globalRan) globalRan = r;
-                    // AQUÍ ESTÁ EL CAMBIO A :G5 PARA MOSTRAR DECIMALES REALES
                     report += $"PC{pc + 1}: [{pcMins[pc]:G5}, {pcMaxs[pc]:G5}], {r:G5}\n";
                 }
 
