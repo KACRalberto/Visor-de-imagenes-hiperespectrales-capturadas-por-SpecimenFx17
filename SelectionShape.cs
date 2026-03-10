@@ -267,14 +267,17 @@ namespace SpecimenFX17.Imaging
         public override void DrawOn(Graphics g)
         {
             if (_edgePoints.Count == 0) return;
-            using var brush = new SolidBrush(Color);
+
+            // INYECCIÓN DE TRANSPARENCIA: 
+            // 70 de nivel de Alfa (escala 0-255) hace que sea muy transparente para poder ver el aguacate debajo.
+            using var brush = new SolidBrush(Color.FromArgb(70, Color));
 
             // OPTIMIZACIÓN GDI+: Batch Rendering. 
-            // Previene el crasheo de OutOfMemory si la máscara captura miles de puntos de ruido en el fondo.
             const int batchSize = 2000;
             for (int i = 0; i < _edgePoints.Count; i += batchSize)
             {
-                var batch = _edgePoints.Skip(i).Take(batchSize).Select(p => new RectangleF(p.X - 0.5f, p.Y - 0.5f, 1.5f, 1.5f)).ToArray();
+                // También se reduce el tamaño del punto de 1.5f a 1.0f para no saturar visualmente
+                var batch = _edgePoints.Skip(i).Take(batchSize).Select(p => new RectangleF(p.X, p.Y, 1.0f, 1.0f)).ToArray();
                 g.FillRectangles(brush, batch);
             }
 
