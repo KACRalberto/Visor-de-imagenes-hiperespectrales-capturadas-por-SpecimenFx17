@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.ComponentModel;
 using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.Linq;
@@ -14,7 +15,12 @@ namespace SpecimenFX17.Imaging
         private PictureBox _picHisto;
         private PictureBox _picPixel;
 
+        [Browsable(false)]
+        [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
         public int CurrentBand { get; set; } = 0;
+
+        [Browsable(false)]
+        [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
         public Point CurrentPixel { get; set; } = new Point(0, 0);
 
         public GraphicalInfoForm(HyperspectralCube cube)
@@ -106,7 +112,6 @@ namespace SpecimenFX17.Imaging
             int w = _picHisto.Width, h = _picHisto.Height;
             float margin = 10f;
 
-            // PROTECCIÓN CONTRA ÍNDICE FUERA DE RANGO SI EL CUBO PIERDE LAS BANDAS PCA
             int safeBand = Math.Clamp(CurrentBand, 0, _cube.Bands - 1);
             var data = _cube.GetBand(safeBand);
 

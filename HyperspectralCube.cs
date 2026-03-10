@@ -32,7 +32,6 @@ namespace SpecimenFX17.Imaging
         public List<BandStat> BandStats { get; private set; } = new();
         public string AnalysisReport { get; set; } = "";
 
-        // ── CONTROL DE VERSIONES (Para la caché de gráficos y selecciones) ──
         public Guid Version { get; private set; } = Guid.NewGuid();
 
         public HyperspectralCube(EnviHeader header, float[,,] cube)
@@ -40,6 +39,22 @@ namespace SpecimenFX17.Imaging
             Header = header;
             _cube = cube;
             ComputeStats();
+        }
+
+        public HyperspectralCube Clone()
+        {
+            int b = Bands, l = Lines, s = Samples;
+            float[,,] newCube = new float[b, l, s];
+            Array.Copy(_cube, newCube, _cube.Length);
+
+            var clone = new HyperspectralCube(Header, newCube)
+            {
+                IsCalibrated = this.IsCalibrated,
+                IsAbsorbance = this.IsAbsorbance,
+                AnalysisReport = this.AnalysisReport,
+                Version = Guid.NewGuid()
+            };
+            return clone;
         }
 
         public float this[int band, int line, int sample] => _cube[band, line, sample];
@@ -467,7 +482,8 @@ namespace SpecimenFX17.Imaging
             {
                 IsCalibrated = this.IsCalibrated,
                 IsAbsorbance = this.IsAbsorbance,
-                AnalysisReport = report
+                AnalysisReport = report,
+                Version = Guid.NewGuid()
             };
             return resultCube;
         }
@@ -601,6 +617,51 @@ namespace SpecimenFX17.Imaging
             };
         }
         private static byte[] Reverse(byte[] b) { Array.Reverse(b); return b; }
+
+        public float[] GetGlobalMeanSpectrum()
+        {
+            float[] meanSpectrum = new float[Bands];
+            int[] validCounts = new int[Bands];
+            object syncObj = new object();
+
+            Parallel.For(0, Lines, l =>
+            {
+                float[] localSum = new float[Bands];
+                int[] localCounts = new int[Bands];
+
+                for (int s = 0; s < Samples; s++)
+                {
+                    for (int b = 0; b < Bands; b++)
+                    {
+                        float val = _cube[b, l, s];
+                        if (!float.IsNaN(val) && !float.IsInfinity(val))
+                        {
+                            localSum[b] += val;
+                            localCounts[b]++;
+                        }
+                    }
+                }
+
+                lock (syncObj)
+                {
+                    for (int b = 0; b < Bands; b++)
+                    {
+                        meanSpectrum[b] += localSum[b];
+                        validCounts[b] += localCounts[b];
+                    }
+                }
+            });
+
+            for (int b = 0; b < Bands; b++)
+            {
+                if (validCounts[b] > 0)
+                    meanSpectrum[b] /= validCounts[b];
+                else
+                    meanSpectrum[b] = 0f;
+            }
+
+            return meanSpectrum;
+        }
 
         private void ComputeStats()
         {

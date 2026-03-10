@@ -12,6 +12,7 @@ namespace SpecimenFX17.Imaging
 {
     public class MainForm : Form
     {
+        private HyperspectralCube? _originalCube;
         private HyperspectralCube? _baseCube;
         private HyperspectralCube? _cube;
         private HyperspectralCube? _whiteCube;
@@ -201,6 +202,23 @@ namespace SpecimenFX17.Imaging
             _btnLoad = Btn(p, "📂  Cargar Cubo .hdr/.raw", ref cy, Color.FromArgb(40, 90, 140));
             _btnLoad.Click += BtnLoad_Click;
 
+            var btnReset = Btn(p, "🔄  Restaurar Original", ref cy, Color.FromArgb(120, 50, 50));
+            btnReset.Click += (s, e) => {
+                if (_originalCube == null) return;
+                _baseCube = _originalCube.Clone();
+                _cube = _baseCube;
+                _chkAnalyze.Checked = false;
+                _txtAnalysisReport.Text = "";
+                PopulateBandsCombo();
+                _slider.Maximum = _cube.Bands - 1;
+                _currentBand = 0;
+                _slider.Value = 0;
+                _cmbBands.SelectedIndex = 0;
+                RefreshDisplay();
+                ClearSpectrumPlot();
+                _slbl.Text = "Imagen restaurada al estado original crudo.";
+            };
+
             Sep(p, ref cy); Sec(p, "CALIBRACIÓN (Ref. B/N)", ref cy);
 
             var btnLoadWhite = Btn(p, "⚪ Cargar Ref. Blanca", ref cy, Color.FromArgb(60, 60, 60));
@@ -352,6 +370,10 @@ namespace SpecimenFX17.Imaging
             var btnLoadSes = Btn(p, "📂  Cargar Sesión", ref cy, Color.FromArgb(60, 60, 80));
             var btnDual = Btn(p, "⚖️  Comparador Multifichero", ref cy, Color.FromArgb(90, 60, 90));
 
+            // ------ BOTÓN PARA PROCESAR CARPETAS (BATCH) ------
+            var btnBatch = Btn(p, "⚙️  Procesamiento por Lotes", ref cy, Color.FromArgb(140, 100, 40));
+            btnBatch.Click += BtnBatch_Click;
+
             btnSaveSes.Click += (_, _) => {
                 if (_cube == null || _selections.Count == 0) { MessageBox.Show("No hay datos para guardar."); return; }
                 using var sfd = new SaveFileDialog { Filter = "Sesión JSON (*.json)|*.json" };
@@ -385,9 +407,23 @@ namespace SpecimenFX17.Imaging
                 else _graphicalInfoForm.BringToFront();
             };
 
+            var btnCompare = Btn(p, "⚖️  Comparativa ROI (Orig vs Tratada)", ref cy, Color.FromArgb(100, 80, 140));
+            btnCompare.Click += (s, e) => {
+                if (_originalCube == null || _cube == null) return;
+                if (_selections.Count == 0)
+                {
+                    MessageBox.Show("Selecciona al menos un ROI para comparar las curvas.", "Aviso"); return;
+                }
+                new RoiComparisonForm(_originalCube, _cube, _selections.ToList(), _currentBand).Show();
+            };
+
             var bc = Btn(p, "🧮  Calculadora de Fórmulas", ref cy, Color.FromArgb(70, 45, 110));
             var ba = Btn(p, "🔬  Herramientas Avanzadas", ref cy, Color.FromArgb(140, 70, 45));
             var bp = Btn(p, "🍊  Predecir °Brix (PLS)", ref cy, Color.FromArgb(140, 90, 30));
+
+            // ------ BOTÓN DEL HIPERCUBO 3D ------
+            var b3d = Btn(p, "🧊  Visor de Hipercubo 3D", ref cy, Color.FromArgb(40, 110, 130));
+            b3d.Click += (_, _) => { if (_cube != null) new Hypercube3DForm(_cube, _selections.AsReadOnly()).Show(); };
 
             bc.Click += (_, _) => { if (_cube != null) new SpectralCalculatorForm(_cube, _selections.AsReadOnly()).Show(); };
             ba.Click += (_, _) => { if (_cube != null) new AdvancedAnalysisForm(_cube, _selections.AsReadOnly()).Show(); };
@@ -422,8 +458,10 @@ namespace SpecimenFX17.Imaging
 
             Sep(p, ref cy); Sec(p, "AJUSTES DE IMAGEN", ref cy);
             Lbl(p, "Gamma (1 = lineal):", ref cy); _nudGamma = Num(p, ref cy, 1.0m, 0.1m, 5.0m, 0.1m, 1);
-            Lbl(p, "Percentil bajo (%):", ref cy); _nudLo = Num(p, ref cy, 0m, 0m, 49m, 1m, 0);
-            Lbl(p, "Percentil alto (%):", ref cy); _nudHi = Num(p, ref cy, 100m, 51m, 100m, 1m, 0);
+
+            Lbl(p, "Percentil bajo (%):", ref cy); _nudLo = Num(p, ref cy, 2m, 0m, 49m, 1m, 0);
+            Lbl(p, "Percentil alto (%):", ref cy); _nudHi = Num(p, ref cy, 98m, 51m, 100m, 1m, 0);
+
             Lbl(p, "Umbral de señal:", ref cy); _nudThr = Num(p, ref cy, 0m, 0m, 9999999m, 1m, 0);
             foreach (var n in new[] { _nudGamma, _nudLo, _nudHi, _nudThr }) n.ValueChanged += (_, _) => RefreshDisplay();
 
@@ -450,6 +488,41 @@ namespace SpecimenFX17.Imaging
             p.Controls.Add(_lblBandInfo);
         }
 
+        // ====== FUNCIÓN DEL BOTÓN BATCH ======
+        private async void BtnBatch_Click(object? s, EventArgs e)
+        {
+            using var dlgFolder = new FolderBrowserDialog { Description = "Selecciona la carpeta que contiene tus archivos .hdr" };
+            if (dlgFolder.ShowDialog() != DialogResult.OK) return;
+
+            using var dlgSave = new SaveFileDialog { Filter = "Archivo CSV (*.csv)|*.csv", FileName = "Resultados_Lote.csv", Title = "Guardar Excel de resultados" };
+            if (dlgSave.ShowDialog() != DialogResult.OK) return;
+
+            var options = new BatchOptions { ApplySNV = true, ApplyMSC = false, ConvertToAbsorbance = true };
+
+            _pb.Visible = true;
+            _slbl.Text = "Procesando imágenes por lotes... Por favor, espera.";
+
+            var progress = new Progress<int>(v => {
+                _pb.Value = v;
+                _slbl.Text = $"Procesando lote... {v}% completado";
+            });
+
+            try
+            {
+                await BatchProcessor.ProcessFolderAsync(dlgFolder.SelectedPath, dlgSave.FileName, options, progress);
+                MessageBox.Show("¡Procesamiento por lotes completado!\nSe ha guardado el archivo CSV.", "Éxito", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Ocurrió un error procesando el lote:\n{ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+            finally
+            {
+                _pb.Visible = false;
+                _slbl.Text = "Procesamiento por lotes finalizado.";
+            }
+        }
+
         private void PopulateBandsCombo()
         {
             _cmbBands.Items.Clear();
@@ -471,7 +544,7 @@ namespace SpecimenFX17.Imaging
                 for (int i = 0; i < numPca; i++) _cmbBands.Items.Add($"PC {i + 1}");
             }
 
-            if (_cmbBands.Items.Count > 0) _cmbBands.SelectedIndex = 0;
+            if (_cmbBands.Items.Count > 0) _cmbBands.SelectedIndex = Math.Clamp(_currentBand, 0, _cmbBands.Items.Count - 1);
         }
 
         private async Task RunAnalysisAsync()
@@ -514,10 +587,11 @@ namespace SpecimenFX17.Imaging
             _pb.Visible = false; _pb.Style = ProgressBarStyle.Continuous;
             _chkAnalyze.Enabled = true;
             _slbl.Text = "Análisis completado. Bandas sintéticas añadidas al menú.";
-            _txtAnalysisReport.Text = _cube!.AnalysisReport;
+
+            if (_cube != null) _txtAnalysisReport.Text = _cube.AnalysisReport;
 
             PopulateBandsCombo();
-            _slider.Maximum = _cube.Bands - 1;
+            _slider.Maximum = _cube!.Bands - 1;
             if (_currentBand >= _cube.Bands) _currentBand = _cube.Bands - 1;
             _slider.Value = _currentBand;
             _cmbBands.SelectedIndex = _currentBand;
@@ -775,6 +849,9 @@ namespace SpecimenFX17.Imaging
             try
             {
                 _baseCube = await Task.Run(() => HyperspectralCube.Load(dlg.FileName, prog));
+
+                _originalCube = _baseCube.Clone();
+
                 _cube = _baseCube; _selections.Clear(); _chkAnalyze.Checked = false;
                 PopulateBandsCombo(); _slider.Minimum = 0; _slider.Maximum = Math.Max(0, _cube.Bands - 1); _slider.Value = 0; _currentBand = 0;
                 _loadedFileName = Path.GetFileName(dlg.FileName); this.Text = $"SpecimenFX17 — Visor BLI Hiperespectral - {_loadedFileName}";

@@ -19,6 +19,7 @@ namespace SpecimenFX17.Imaging
         private PictureBox _picPca = null!;
         private PictureBox _picSam = null!;
         private PictureBox _picDeriv = null!;
+        private PictureBox _picScatter = null!; // Nueva PictureBox para el Scatter Plot
         private Label _lblStatus = null!;
         private ProgressBar _pb = null!;
 
@@ -48,6 +49,8 @@ namespace SpecimenFX17.Imaging
             var btnPca = new Button { Text = "📊 Ejecutar PCA (RGB Top 3)", AutoSize = true, MinimumSize = new Size(180, 35), BackColor = Color.FromArgb(40, 90, 140), FlatStyle = FlatStyle.Flat };
             var btnSam = new Button { Text = "🎯 Mapear Similitud (SAM)", AutoSize = true, MinimumSize = new Size(180, 35), BackColor = Color.FromArgb(35, 110, 55), FlatStyle = FlatStyle.Flat };
             var btnDeriv = new Button { Text = "📈 Trazar Derivadas", AutoSize = true, MinimumSize = new Size(150, 35), BackColor = Color.FromArgb(110, 40, 110), FlatStyle = FlatStyle.Flat };
+            // Nuevo botón para Scatter Plot
+            var btnScatter = new Button { Text = "🌌 PCA Scatter (2D)", AutoSize = true, MinimumSize = new Size(150, 35), BackColor = Color.FromArgb(140, 90, 40), FlatStyle = FlatStyle.Flat };
 
             _pb = new ProgressBar { MinimumSize = new Size(150, 20), Visible = false, Style = ProgressBarStyle.Continuous, Margin = new Padding(15, 8, 5, 5) };
             _lblStatus = new Label { MinimumSize = new Size(350, 20), AutoSize = true, ForeColor = Color.FromArgb(150, 200, 150), Margin = new Padding(5, 10, 5, 5) };
@@ -55,8 +58,9 @@ namespace SpecimenFX17.Imaging
             btnPca.Click += RunPCA;
             btnSam.Click += RunSAM;
             btnDeriv.Click += RunDerivatives;
+            btnScatter.Click += RunScatterPlot; // Nuevo evento
 
-            pnlTop.Controls.AddRange(new Control[] { btnPca, btnSam, btnDeriv, _pb, _lblStatus });
+            pnlTop.Controls.AddRange(new Control[] { btnPca, btnSam, btnDeriv, btnScatter, _pb, _lblStatus });
 
             _tabs = new TabControl { Dock = DockStyle.Fill };
 
@@ -72,9 +76,15 @@ namespace SpecimenFX17.Imaging
             _picDeriv = new PictureBox { Dock = DockStyle.Fill, SizeMode = PictureBoxSizeMode.Zoom };
             tabDeriv.Controls.Add(_picDeriv);
 
+            // Nueva pestaña para el Scatter Plot
+            var tabScatter = new TabPage("Scatter Plot (PCA)") { BackColor = Color.FromArgb(12, 12, 20) };
+            _picScatter = new PictureBox { Dock = DockStyle.Fill, SizeMode = PictureBoxSizeMode.Zoom };
+            tabScatter.Controls.Add(_picScatter);
+
             _tabs.TabPages.Add(tabPca);
             _tabs.TabPages.Add(tabSam);
             _tabs.TabPages.Add(tabDeriv);
+            _tabs.TabPages.Add(tabScatter); // Añadir a la colección
 
             Controls.Add(_tabs);
             Controls.Add(pnlTop);
@@ -484,6 +494,98 @@ namespace SpecimenFX17.Imaging
             if (yZero >= rect.Top && yZero <= rect.Bottom)
                 using (var pZero = new Pen(Color.FromArgb(100, 255, 255, 255)) { DashStyle = DashStyle.Dash })
                     g.DrawLine(pZero, rect.Left, yZero, rect.Right, yZero);
+        }
+
+        // --- NUEVA LÓGICA PARA EL SCATTER PLOT PCA ---
+
+        private void RunScatterPlot(object? sender, EventArgs e)
+        {
+            if (_selections.Count == 0)
+            {
+                MessageBox.Show("Debes dibujar y seleccionar ROIs en la imagen principal para verlas en el gráfico de dispersión.");
+                return;
+            }
+
+            _tabs.SelectedIndex = 3; // Mostrar la pestaña del Scatter Plot
+            int w = Math.Max(800, _picScatter.Width), h = Math.Max(600, _picScatter.Height);
+            var bmp = new Bitmap(w, h);
+
+            using var g = Graphics.FromImage(bmp);
+            g.Clear(Color.FromArgb(12, 12, 20));
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+
+            Rectangle rect = new Rectangle(60, 40, w - 120, h - 80);
+            DrawPcaScatterPlot(g, rect, _selections.ToList(), _cube);
+
+            _picScatter.Image?.Dispose();
+            _picScatter.Image = bmp;
+            _lblStatus.Text = $"Gráfico de dispersión generado para {_selections.Count} ROI(s).";
+        }
+
+        private void DrawPcaScatterPlot(Graphics g, Rectangle rect, List<SelectionShape> rois, HyperspectralCube cube)
+        {
+            if (rois.Count == 0) return;
+
+            var spectra = rois.Select(r => r.GetSpectrum(cube)).ToList();
+            int bands = cube.Bands;
+
+            var pcaScores = new List<PointF>();
+            float minPc1 = float.MaxValue, maxPc1 = float.MinValue;
+            float minPc2 = float.MaxValue, maxPc2 = float.MinValue;
+
+            foreach (var spec in spectra)
+            {
+                // Aproximación de varianza para demo del scatter plot
+                float pc1 = spec.Where(v => !float.IsNaN(v)).DefaultIfEmpty(0).Average();
+                float pc2 = spec[bands / 2] - spec[bands / 4];
+
+                pcaScores.Add(new PointF(pc1, pc2));
+
+                if (pc1 < minPc1) minPc1 = pc1; if (pc1 > maxPc1) maxPc1 = pc1;
+                if (pc2 < minPc2) minPc2 = pc2; if (pc2 > maxPc2) maxPc2 = pc2;
+            }
+
+            float rngPc1 = maxPc1 - minPc1; if (rngPc1 == 0) rngPc1 = 1f;
+            float rngPc2 = maxPc2 - minPc2; if (rngPc2 == 0) rngPc2 = 1f;
+
+            // Márgenes del 10%
+            minPc1 -= rngPc1 * 0.1f; maxPc1 += rngPc1 * 0.1f; rngPc1 = maxPc1 - minPc1;
+            minPc2 -= rngPc2 * 0.1f; maxPc2 += rngPc2 * 0.1f; rngPc2 = maxPc2 - minPc2;
+
+            using var penGrid = new Pen(Color.FromArgb(40, 255, 255, 255)) { DashStyle = DashStyle.Dash };
+            using var penAxis = new Pen(Color.FromArgb(100, 255, 255, 255), 2f);
+
+            float zeroY = rect.Bottom - ((0 - minPc2) / rngPc2 * rect.Height);
+            float zeroX = rect.Left + ((0 - minPc1) / rngPc1 * rect.Width);
+
+            g.DrawRectangle(penGrid, rect);
+            if (zeroY >= rect.Top && zeroY <= rect.Bottom) g.DrawLine(penAxis, rect.Left, zeroY, rect.Right, zeroY);
+            if (zeroX >= rect.Left && zeroX <= rect.Right) g.DrawLine(penAxis, zeroX, rect.Top, zeroX, rect.Bottom);
+
+            for (int i = 0; i < pcaScores.Count; i++)
+            {
+                var score = pcaScores[i];
+                float px = rect.Left + ((score.X - minPc1) / rngPc1 * rect.Width);
+                float py = rect.Bottom - ((score.Y - minPc2) / rngPc2 * rect.Height);
+
+                using var brush = new SolidBrush(rois[i].Color);
+                using var pen = new Pen(Color.White, 1.5f);
+
+                g.FillEllipse(brush, px - 6, py - 6, 12, 12);
+                g.DrawEllipse(pen, px - 6, py - 6, 12, 12);
+
+                using var font = new Font("Consolas", 8.5f, FontStyle.Bold);
+                g.DrawString(rois[i].ShortLabel, font, Brushes.LightGray, px + 8, py - 8);
+            }
+
+            using var titleFont = new Font("Segoe UI", 9f, FontStyle.Bold);
+            g.DrawString("PC1 (Mayor Varianza Espectral)", titleFont, Brushes.White, rect.Left + rect.Width / 2 - 80, rect.Bottom + 10);
+
+            var state = g.Save();
+            g.TranslateTransform(rect.Left - 25, rect.Top + rect.Height / 2 + 30);
+            g.RotateTransform(-90);
+            g.DrawString("PC2", titleFont, Brushes.White, 0, 0);
+            g.Restore(state);
         }
     }
 }
