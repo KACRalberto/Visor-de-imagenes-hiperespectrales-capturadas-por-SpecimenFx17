@@ -13,6 +13,7 @@ namespace SpecimenFX17.Imaging
     public class MainForm : Form
     {
         // ── Datos ─────────────────────────────────────────────────────────────
+        private HyperspectralCube? _baseCube;
         private HyperspectralCube? _cube;
         private HyperspectralCube? _whiteCube;
         private HyperspectralCube? _darkCube;
@@ -38,26 +39,25 @@ namespace SpecimenFX17.Imaging
         private Button[] _toolBtns = null!;
         private Label _lblTip = null!;
 
-        // ── Estado arrastre (Rect / Circle / Freehand) ────────────────────────
+        // ── Estado arrastre ───────────────────────────────────────────────────
         private bool _isDragging;
         private Point _dragStartScr, _dragStartImg, _dragCurScr;
-
-        // ── Estado polígono en construcción ───────────────────────────────────
         private bool _polyActive;
         private List<Point> _polyImg = new(), _polyScr = new();
         private Point _polyMouse;
-
-        // ── Estado trazo libre ────────────────────────────────────────────────
         private List<Point> _freeImg = new(), _freeScr = new();
 
         // ── Controles ─────────────────────────────────────────────────────────
         private PictureBox _pictureBox = null!;
         private PictureBox _specPlot = null!;
         private Label _lblCoords = null!;
-        private Label _lblWl = null!;
         private Label _lblSpecInfo = null!;
         private Label _lblBandInfo = null!;
+
+        private ComboBox _cmbBands = null!; // Selector de Banda (BIR)
         private TrackBar _slider = null!;
+        private CheckBox _chkAnalyze = null!; // Checkbox Análisis
+
         private ComboBox _cmbCmap = null!;
         private CheckBox _chkCbar = null!;
         private CheckBox _chkGray = null!;
@@ -97,11 +97,10 @@ namespace SpecimenFX17.Imaging
             _pb = new ProgressBar { Style = ProgressBarStyle.Continuous, Visible = false, Size = new Size(200, 14) };
             _ss.Items.Add(_slbl); _ss.Items.Add(new ToolStripControlHost(_pb));
 
-            // PANEL DERECHO más ancho para asegurar que no corta los textos
             var rp = new Panel
             {
                 Dock = DockStyle.Right,
-                Width = 280, // ANTES 240
+                Width = 280,
                 BackColor = Color.FromArgb(24, 24, 36),
                 AutoScroll = true,
                 Padding = new Padding(10, 8, 8, 6)
@@ -110,16 +109,29 @@ namespace SpecimenFX17.Imaging
 
             var cp = new Panel { Dock = DockStyle.Fill, BackColor = Color.Black };
 
+            // Panel Superior (Slider + ComboBox Banda BIR)
             var slPan = new Panel { Dock = DockStyle.Top, Height = 46, BackColor = Color.FromArgb(22, 22, 34) };
-            _lblWl = new Label
+
+            var cmbContainer = new Panel { Dock = DockStyle.Left, Width = 260, Padding = new Padding(8, 10, 8, 10) };
+            _cmbBands = new ComboBox
             {
-                Dock = DockStyle.Bottom,
-                Height = 18,
-                ForeColor = Color.FromArgb(100, 210, 255),
-                Font = new Font("Consolas", 8.5f, FontStyle.Bold),
-                Text = "  Carga un archivo .hdr",
-                TextAlign = ContentAlignment.MiddleLeft
+                Dock = DockStyle.Fill,
+                DropDownStyle = ComboBoxStyle.DropDownList,
+                BackColor = Color.FromArgb(38, 38, 55),
+                ForeColor = Color.White,
+                FlatStyle = FlatStyle.Flat,
+                Font = new Font("Consolas", 10f)
             };
+            _cmbBands.SelectedIndexChanged += (_, _) => {
+                if (_cmbBands.SelectedIndex >= 0 && _slider.Value != _cmbBands.SelectedIndex)
+                {
+                    _slider.Value = _cmbBands.SelectedIndex;
+                    _currentBand = _slider.Value;
+                    RefreshDisplay();
+                }
+            };
+            cmbContainer.Controls.Add(_cmbBands);
+
             _slider = new TrackBar
             {
                 Dock = DockStyle.Fill,
@@ -128,8 +140,17 @@ namespace SpecimenFX17.Imaging
                 TickStyle = TickStyle.None,
                 BackColor = Color.FromArgb(22, 22, 34)
             };
-            _slider.Scroll += (_, _) => { _currentBand = _slider.Value; RefreshDisplay(); };
-            slPan.Controls.Add(_slider); slPan.Controls.Add(_lblWl);
+            _slider.Scroll += (_, _) => {
+                _currentBand = _slider.Value;
+                if (_cmbBands.Items.Count > _slider.Value)
+                {
+                    _cmbBands.SelectedIndex = _slider.Value;
+                }
+                RefreshDisplay();
+            };
+
+            slPan.Controls.Add(_slider);
+            slPan.Controls.Add(cmbContainer);
 
             var spCon = new Panel { Dock = DockStyle.Bottom, Height = 200, BackColor = Color.FromArgb(12, 12, 20) };
             _lblSpecInfo = new Label
@@ -209,6 +230,22 @@ namespace SpecimenFX17.Imaging
             _btnCalibrate = Btn(p, "✨ Normalizar Imagen", ref cy, Color.FromArgb(120, 80, 40));
             _btnCalibrate.Enabled = false;
 
+            var btnAbsorbance = Btn(p, "🧪 Convertir a Absorbancia", ref cy, Color.FromArgb(100, 40, 80));
+            btnAbsorbance.Enabled = false;
+
+            btnAbsorbance.Click += async (s, e) => {
+                if (_baseCube == null || !_baseCube.IsCalibrated || _baseCube.IsAbsorbance) return;
+                _slbl.Text = "Convirtiendo a Absorbancia...";
+                btnAbsorbance.Enabled = false;
+                await Task.Run(() => _baseCube.ConvertToAbsorbance());
+
+                if (_chkAnalyze.Checked) await RunAnalysisAsync();
+                else { _cube = _baseCube; RefreshDisplay(); }
+
+                ClearSpectrumPlot();
+                _slbl.Text = "Imagen convertida a Absorbancia (-log(R)).";
+            };
+
             btnLoadWhite.Click += async (s, e) => {
                 using var dlg = new OpenFileDialog { Filter = "ENVI Header (*.hdr)|*.hdr|Todos|*.*" };
                 if (dlg.ShowDialog() == DialogResult.OK)
@@ -249,14 +286,18 @@ namespace SpecimenFX17.Imaging
                 }
             };
 
-            _btnCalibrate.Click += (s, e) => {
-                if (_cube == null || _whiteCube == null || _darkCube == null) return;
+            _btnCalibrate.Click += async (s, e) => {
+                if (_baseCube == null || _whiteCube == null || _darkCube == null) return;
                 _slbl.Text = "Normalizando cubo... Esto puede tardar unos segundos.";
                 _btnCalibrate.Enabled = false;
                 try
                 {
-                    _cube.Calibrate(_whiteCube, _darkCube);
-                    RefreshDisplay();
+                    await Task.Run(() => _baseCube.Calibrate(_whiteCube, _darkCube));
+                    btnAbsorbance.Enabled = true;
+
+                    if (_chkAnalyze.Checked) await RunAnalysisAsync();
+                    else { _cube = _baseCube; RefreshDisplay(); }
+
                     ClearSpectrumPlot();
                     _slbl.Text = "Imagen normalizada correctamente.";
                 }
@@ -354,6 +395,10 @@ namespace SpecimenFX17.Imaging
             _nudAutoTol = Num(p, ref cy, 10m, 1m, 100m, 1m, 0);
 
             Sep(p, ref cy); Sec(p, "ANÁLISIS ESPECTRAL", ref cy);
+
+            _chkAnalyze = Chk(p, "Analizar bandas (Media, Min/Max, PCA)", ref cy, false);
+            _chkAnalyze.CheckedChanged += ChkAnalyze_CheckedChanged;
+
             var bc = Btn(p, "🧮  Calculadora de Fórmulas", ref cy, Color.FromArgb(70, 45, 110));
             var ba = Btn(p, "🔬  Herramientas Avanzadas", ref cy, Color.FromArgb(140, 70, 45));
             var bp = Btn(p, "🍊  Predecir °Brix (PLS)", ref cy, Color.FromArgb(140, 90, 30));
@@ -396,16 +441,32 @@ namespace SpecimenFX17.Imaging
                 if (_rgbMode) _chkGray.Checked = false;
                 _cmbCmap.Enabled = !_grayscaleMode && !_rgbMode;
                 _slider.Enabled = !_rgbMode;
+                _cmbBands.Enabled = !_rgbMode;
                 RefreshDisplay();
             };
 
             Sep(p, ref cy); Sec(p, "AJUSTES DE IMAGEN", ref cy);
             Lbl(p, "Gamma (1 = lineal):", ref cy); _nudGamma = Num(p, ref cy, 1.0m, 0.1m, 5.0m, 0.1m, 1);
-            Lbl(p, "Percentil bajo (%):", ref cy); _nudLo = Num(p, ref cy, 2m, 0m, 49m, 1m, 0);
-            Lbl(p, "Percentil alto (%):", ref cy); _nudHi = Num(p, ref cy, 98m, 51m, 100m, 1m, 0);
+            Lbl(p, "Percentil bajo (%):", ref cy); _nudLo = Num(p, ref cy, 0m, 0m, 49m, 1m, 0); // Ajuste por defecto para ser idéntico a Hyper.cs
+            Lbl(p, "Percentil alto (%):", ref cy); _nudHi = Num(p, ref cy, 100m, 51m, 100m, 1m, 0);
             Lbl(p, "Umbral de señal:", ref cy); _nudThr = Num(p, ref cy, 0m, 0m, 9999999m, 1m, 0);
             foreach (var n in new[] { _nudGamma, _nudLo, _nudHi, _nudThr })
                 n.ValueChanged += (_, _) => RefreshDisplay();
+
+            var btnMedian = Btn(p, "🌫️ Aplicar Filtro Mediana (3x3)", ref cy, Color.FromArgb(70, 90, 110));
+            btnMedian.Click += async (s, e) => {
+                if (_baseCube == null) return;
+                _slbl.Text = "Aplicando filtro mediana multihilo...";
+                btnMedian.Enabled = false;
+                await Task.Run(() => _baseCube.ApplySpatialMedianFilter(3));
+
+                if (_chkAnalyze.Checked) await RunAnalysisAsync();
+                else { _cube = _baseCube; RefreshDisplay(); }
+
+                ClearSpectrumPlot();
+                _slbl.Text = "Filtro mediana 3x3 aplicado correctamente.";
+                btnMedian.Enabled = true;
+            };
 
             Sep(p, ref cy); Sec(p, "EXPORTAR IMÁGENES", ref cy);
             _btnExport = Btn(p, "💾  Exportar vista actual", ref cy, Color.FromArgb(35, 95, 55));
@@ -429,6 +490,105 @@ namespace SpecimenFX17.Imaging
             p.Controls.Add(_lblBandInfo);
         }
 
+        private void PopulateBandsCombo()
+        {
+            _cmbBands.Items.Clear();
+            if (_cube == null) return;
+
+            int origBands = _baseCube != null ? _baseCube.Header.Bands : _cube.Header.Bands;
+
+            for (int i = 0; i < origBands; i++)
+            {
+                double wl = _cube.Header.Wavelengths.Count > i ? _cube.Header.Wavelengths[i] : 0;
+                _cmbBands.Items.Add($"Banda {i + 1} - {wl:F1} nm");
+            }
+
+            if (_cube.Bands > origBands)
+            {
+                _cmbBands.Items.Add("Media");
+                _cmbBands.Items.Add("Mínima");
+                _cmbBands.Items.Add("Máxima");
+                _cmbBands.Items.Add("Rango");
+                int numPca = _cube.Bands - origBands - 4;
+                for (int i = 0; i < numPca; i++)
+                {
+                    _cmbBands.Items.Add($"PC {i + 1}");
+                }
+            }
+
+            if (_cmbBands.Items.Count > 0) _cmbBands.SelectedIndex = 0;
+        }
+
+        private async Task RunAnalysisAsync()
+        {
+            if (_baseCube == null) return;
+            _slbl.Text = "Calculando análisis de bandas y PCA... (Esto puede tardar)";
+            _pb.Visible = true; _pb.Style = ProgressBarStyle.Marquee;
+            _chkAnalyze.Enabled = false;
+
+            await Task.Run(() => {
+                bool[,] mask = new bool[_baseCube.Lines, _baseCube.Samples];
+                if (_selections.Count > 0)
+                {
+                    foreach (var sh in _selections)
+                    {
+                        var m = sh.GetMask(_baseCube.Lines, _baseCube.Samples);
+                        for (int l = 0; l < _baseCube.Lines; l++)
+                            for (int c = 0; c < _baseCube.Samples; c++)
+                                if (m[l, c]) mask[l, c] = true;
+                    }
+                }
+                else
+                {
+                    // Si no hay selección, usar el margen automático exacto que usaba Hyper.cs
+                    int xMin = _baseCube.Samples < 1000 ? 40 : 200;
+                    int xMax = _baseCube.Samples - (_baseCube.Samples < 1000 ? 60 : 200);
+                    int yMin = _baseCube.Lines < 600 ? 70 : 300;
+                    int yMax = _baseCube.Lines - (_baseCube.Lines < 600 ? 40 : 100);
+
+                    for (int l = 0; l < _baseCube.Lines; l++)
+                    {
+                        for (int s = 0; s < _baseCube.Samples; s++)
+                        {
+                            mask[l, s] = (l >= yMin && l <= yMax && s >= xMin && s <= xMax);
+                        }
+                    }
+                }
+                _cube = _baseCube.GenerateAnalyzedCube(10, mask);
+            });
+
+            _pb.Visible = false; _pb.Style = ProgressBarStyle.Continuous;
+            _chkAnalyze.Enabled = true;
+            _slbl.Text = "Análisis completado. Bandas sintéticas añadidas al menú.";
+
+            PopulateBandsCombo();
+            _slider.Maximum = _cube!.Bands - 1;
+            if (_currentBand >= _cube.Bands) _currentBand = _cube.Bands - 1;
+            _slider.Value = _currentBand;
+            _cmbBands.SelectedIndex = _currentBand;
+            RefreshDisplay();
+        }
+
+        private async void ChkAnalyze_CheckedChanged(object? s, EventArgs e)
+        {
+            if (_baseCube == null) return;
+            if (_chkAnalyze.Checked)
+            {
+                await RunAnalysisAsync();
+            }
+            else
+            {
+                _cube = _baseCube;
+                _slbl.Text = "Análisis desactivado. Restaurado cubo original.";
+                PopulateBandsCombo();
+                _slider.Maximum = _cube!.Bands - 1;
+                if (_currentBand >= _cube.Bands) _currentBand = _cube.Bands - 1;
+                _slider.Value = _currentBand;
+                _cmbBands.SelectedIndex = _currentBand;
+                RefreshDisplay();
+            }
+        }
+
         private Button Btn(Panel p, string t, ref int cy, Color bg)
         {
             var b = new Button
@@ -436,7 +596,7 @@ namespace SpecimenFX17.Imaging
                 Text = t,
                 Location = new Point(8, cy),
                 Width = 245,
-                Height = 35, // Altura incrementada para comodidad
+                Height = 35,
                 AutoSize = true,
                 FlatStyle = FlatStyle.Flat,
                 BackColor = bg,
@@ -500,7 +660,7 @@ namespace SpecimenFX17.Imaging
 
         private void CheckCalibrationReady()
         {
-            _btnCalibrate.Enabled = _cube != null && _whiteCube != null && _darkCube != null;
+            _btnCalibrate.Enabled = _baseCube != null && _whiteCube != null && _darkCube != null;
         }
 
         private void Pic_Down(object? s, MouseEventArgs e)
@@ -539,8 +699,9 @@ namespace SpecimenFX17.Imaging
                 int x = pt.Value.X, y = pt.Value.Y;
                 if (x >= 0 && x < _cube.Samples && y >= 0 && y < _cube.Lines)
                 {
-                    float v = _cube[_currentBand, y, x]; double wl = WlAt(_currentBand);
-                    _lblCoords.Text = $"  X:{x}  Y:{y}  │  λ={wl:F1} nm  │  val={v:G5}";
+                    float v = _cube[_currentBand, y, x];
+                    string bandStr = _cmbBands.Items.Count > _currentBand ? _cmbBands.Items[_currentBand].ToString()! : "N/A";
+                    _lblCoords.Text = $"  X:{x}  Y:{y}  │  {bandStr}  │  val={v:G5}";
                 }
                 else _lblCoords.Text = "";
             }
@@ -782,7 +943,6 @@ namespace SpecimenFX17.Imaging
             _slbl.Text = "✔ Auto ROI completado";
         }
 
-
         private async void BtnLoad_Click(object? s, EventArgs e)
         {
             using var dlg = new OpenFileDialog { Title = "Abrir imagen hiperespectral ENVI", Filter = "ENVI Header (*.hdr)|*.hdr|Todos|*.*" };
@@ -792,9 +952,14 @@ namespace SpecimenFX17.Imaging
             var prog = new Progress<int>(v => { _pb.Value = v; _slbl.Text = $"Cargando… {v} %"; });
             try
             {
-                _cube = await Task.Run(() => HyperspectralCube.Load(dlg.FileName, prog));
+                _baseCube = await Task.Run(() => HyperspectralCube.Load(dlg.FileName, prog));
+                _cube = _baseCube;
                 _selections.Clear();
+                _chkAnalyze.Checked = false;
+
+                PopulateBandsCombo();
                 _slider.Minimum = 0; _slider.Maximum = Math.Max(0, _cube.Bands - 1); _slider.Value = 0; _currentBand = 0;
+
                 _loadedFileName = Path.GetFileName(dlg.FileName);
                 this.Text = $"SpecimenFX17 — Visor BLI Hiperespectral - {_loadedFileName}";
                 CheckCalibrationReady();
@@ -825,6 +990,8 @@ namespace SpecimenFX17.Imaging
 
             Bitmap? newBitmap;
 
+            string bandName = _cmbBands.Items.Count > _currentBand ? _cmbBands.Items[_currentBand].ToString()! : $"Banda {_currentBand + 1}";
+
             if (_rgbMode)
             {
                 int bR = GetClosestBand(640);
@@ -832,15 +999,13 @@ namespace SpecimenFX17.Imaging
                 int bB = GetClosestBand(460);
 
                 newBitmap = BliRenderer.RenderRGB(_cube, bR, bG, bB, opts);
-                _lblWl.Text = $"  Modo RGB (Falso color real)   │   R:{WlAt(bR):F0} nm, G:{WlAt(bG):F0} nm, B:{WlAt(bB):F0} nm";
                 _lblBandInfo.Text = $"Modo RGB\nR: {WlAt(bR):F1} nm\nG: {WlAt(bG):F1} nm\nB: {WlAt(bB):F1} nm\nPx: {_cube.Samples}x{_cube.Lines}";
             }
             else
             {
                 newBitmap = BliRenderer.RenderBand(_cube, _currentBand, opts);
-                _lblWl.Text = $"  Banda {_currentBand + 1} / {_cube.Bands}   │   λ = {WlAt(_currentBand):F2} {_cube.Header.WavelengthUnits}";
                 var (mn, mx) = _cube.GetBandStats(_currentBand);
-                _lblBandInfo.Text = $"Banda: {_currentBand + 1}\nλ: {WlAt(_currentBand):F2} {_cube.Header.WavelengthUnits}\nMín: {mn:G5}\nMáx: {mx:G5}\nPx: {_cube.Samples}x{_cube.Lines}";
+                _lblBandInfo.Text = $"{bandName}\nMín: {mn:G5}\nMáx: {mx:G5}\nPx: {_cube.Samples}x{_cube.Lines}";
             }
 
             if (_selections.Count > 0)
@@ -886,10 +1051,12 @@ namespace SpecimenFX17.Imaging
             var plot = new Rectangle(pL, pT, w - pL - pR, h - pT - pB);
             if (plot.Width < 20 || plot.Height < 10) { _specPlot.Image = bmp; return; }
 
+            int plotBands = _baseCube != null ? _baseCube.Bands : _cube.Bands;
+
             float yMin = float.MaxValue, yMax = float.MinValue;
             foreach (var sh in _selections)
             {
-                foreach (float v in sh.GetSpectrum(_cube))
+                foreach (float v in sh.GetSpectrum(_cube).Take(plotBands))
                 {
                     if (!float.IsNaN(v) && v < yMin) yMin = v;
                     if (!float.IsNaN(v) && v > yMax) yMax = v;
@@ -902,7 +1069,7 @@ namespace SpecimenFX17.Imaging
                 int hx = _hoverImgPt.Value.X, hy = _hoverImgPt.Value.Y;
                 if (hx >= 0 && hx < _cube.Samples && hy >= 0 && hy < _cube.Lines)
                 {
-                    hoverSpec = _cube.GetSpectrum(hy, hx);
+                    hoverSpec = _cube.GetSpectrum(hy, hx).Take(plotBands).ToArray();
                     foreach (float v in hoverSpec)
                     {
                         if (!float.IsNaN(v) && v < yMin) yMin = v;
@@ -915,7 +1082,7 @@ namespace SpecimenFX17.Imaging
             float yRng = yMax - yMin; if (yRng < 1e-10f) yRng = 1f; yMin -= yRng * 0.05f; yMax += yRng * 0.05f; yRng = yMax - yMin;
 
             var wls = _cube.Header.Wavelengths;
-            double xMin = wls.Count > 0 ? wls[0] : 0, xMax = wls.Count > 0 ? wls[^1] : _cube.Bands - 1, xRng = xMax - xMin;
+            double xMin = wls.Count > 0 ? wls[0] : 0, xMax = wls.Count > 0 ? wls[^1] : plotBands - 1, xRng = xMax - xMin;
 
             using (var gp = new Pen(Color.FromArgb(28, 255, 255, 255), 1f) { DashStyle = DashStyle.Dash })
             {
@@ -924,8 +1091,11 @@ namespace SpecimenFX17.Imaging
             }
             g.DrawRectangle(new Pen(Color.FromArgb(65, 255, 255, 255)), plot);
 
-            double curWl = WlAt(_currentBand); float curPx = plot.Left + (float)((curWl - xMin) / xRng * plot.Width);
-            g.DrawLine(new Pen(Color.FromArgb(110, 255, 255, 80), 1f) { DashStyle = DashStyle.Dash }, curPx, plot.Top, curPx, plot.Bottom);
+            if (_currentBand < plotBands)
+            {
+                double curWl = WlAt(_currentBand); float curPx = plot.Left + (float)((curWl - xMin) / xRng * plot.Width);
+                g.DrawLine(new Pen(Color.FromArgb(110, 255, 255, 80), 1f) { DashStyle = DashStyle.Dash }, curPx, plot.Top, curPx, plot.Bottom);
+            }
 
             if (hoverSpec != null)
             {
@@ -942,7 +1112,7 @@ namespace SpecimenFX17.Imaging
 
             foreach (var sh in _selections)
             {
-                var spec = sh.GetSpectrum(_cube);
+                var spec = sh.GetSpectrum(_cube).Take(plotBands).ToArray();
                 var pts = new PointF[spec.Length];
                 for (int i = 0; i < spec.Length; i++)
                 {
