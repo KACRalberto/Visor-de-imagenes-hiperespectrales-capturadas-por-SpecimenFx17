@@ -282,6 +282,8 @@ namespace SpecimenFX17.Imaging
             return result;
         }
 
+        // --- MEJORA 1: PROCESAMIENTO ESPACIAL PARA REDUCCIÓN DE RUIDO ---
+        // Elimina ruido impulsivo (sal y pimienta) evaluando la vecindad espacial de los píxeles
         public void ApplySpatialMedianFilter(int kernelSize)
         {
             if (kernelSize <= 1) return;
@@ -305,6 +307,7 @@ namespace SpecimenFX17.Imaging
                                 window[count++] = _cube[b, yy, xx];
                             }
                         }
+                        // Encontrar la mediana de la ventana
                         Array.Sort(window, 0, count);
                         newCube[b, l, s] = window[count / 2];
                     }

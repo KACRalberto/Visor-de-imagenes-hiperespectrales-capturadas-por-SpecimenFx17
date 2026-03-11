@@ -71,6 +71,16 @@ namespace SpecimenFX17.Imaging
         private Label _lblDark = null!;
         private Button _btnCalibrate = null!;
 
+        // ── Estado del pipeline quimiométrico (siempre se reconstruye desde _originalCube) ──
+        private bool _stepNormalize = false;
+        private bool _stepAbsorbance = false;
+        private enum ScatterCorrection { None, SNV, MSC }
+        private ScatterCorrection _stepScatter = ScatterCorrection.None;
+        private bool _stepSG = false;
+        private int _sgWindow = 15, _sgPoly = 2, _sgDeriv = 1;
+        private bool _stepMedian = false;
+        private Label _lblPipeline = null!;
+
         private Button _btnExport = null!;
         private Button _btnExpAll = null!;
         private Button _btnClear = null!;
@@ -207,15 +217,17 @@ namespace SpecimenFX17.Imaging
                 if (_originalCube == null) return;
                 _baseCube = _originalCube.Clone();
                 _cube = _baseCube;
+                // Resetear estado del pipeline
+                _stepNormalize = false; _stepAbsorbance = false;
+                _stepScatter = ScatterCorrection.None;
+                _stepSG = false; _stepMedian = false;
                 _chkAnalyze.Checked = false;
                 _txtAnalysisReport.Text = "";
                 PopulateBandsCombo();
                 _slider.Maximum = _cube.Bands - 1;
-                _currentBand = 0;
-                _slider.Value = 0;
-                _cmbBands.SelectedIndex = 0;
-                RefreshDisplay();
-                ClearSpectrumPlot();
+                _currentBand = 0; _slider.Value = 0; _cmbBands.SelectedIndex = 0;
+                RefreshDisplay(); ClearSpectrumPlot();
+                UpdatePipelineLabel();
                 _slbl.Text = "Imagen restaurada al estado original crudo.";
             };
 
@@ -235,62 +247,67 @@ namespace SpecimenFX17.Imaging
             var btnAbsorbance = Btn(p, "🧪 Convertir a Absorbancia", ref cy, Color.FromArgb(100, 40, 80));
             btnAbsorbance.Enabled = false;
 
-            btnAbsorbance.Click += async (s, e) => {
-                if (_baseCube == null || !_baseCube.IsCalibrated || _baseCube.IsAbsorbance) return;
-                _slbl.Text = "Convirtiendo a Absorbancia...";
-                btnAbsorbance.Enabled = false;
-                await Task.Run(() => _baseCube.ConvertToAbsorbance());
-                if (_chkAnalyze.Checked) await RunAnalysisAsync(); else { _cube = _baseCube; RefreshDisplay(); }
-                ClearSpectrumPlot();
-                _slbl.Text = "Imagen convertida a Absorbancia (-log(R)).";
-            };
-
             btnLoadWhite.Click += async (s, e) => {
                 using var dlg = new OpenFileDialog { Filter = "ENVI Header (*.hdr)|*.hdr|Todos|*.*" };
                 if (dlg.ShowDialog() == DialogResult.OK)
                 {
                     _slbl.Text = "Cargando referencia blanca...";
-                    try
-                    {
-                        _whiteCube = await Task.Run(() => HyperspectralCube.Load(dlg.FileName));
-                        _lblWhite.Text = Path.GetFileName(dlg.FileName); CheckCalibrationReady();
-                        _slbl.Text = "Referencia blanca cargada.";
-                    }
+                    try { _whiteCube = await Task.Run(() => HyperspectralCube.Load(dlg.FileName)); _lblWhite.Text = Path.GetFileName(dlg.FileName); CheckCalibrationReady(); _slbl.Text = "Referencia blanca cargada."; }
                     catch (Exception ex) { MessageBox.Show(ex.Message, "Error"); _slbl.Text = "Error."; }
                 }
             };
-
             btnLoadDark.Click += async (s, e) => {
                 using var dlg = new OpenFileDialog { Filter = "ENVI Header (*.hdr)|*.hdr|Todos|*.*" };
                 if (dlg.ShowDialog() == DialogResult.OK)
                 {
                     _slbl.Text = "Cargando referencia oscura...";
-                    try
-                    {
-                        _darkCube = await Task.Run(() => HyperspectralCube.Load(dlg.FileName));
-                        _lblDark.Text = Path.GetFileName(dlg.FileName); CheckCalibrationReady();
-                        _slbl.Text = "Referencia oscura cargada.";
-                    }
+                    try { _darkCube = await Task.Run(() => HyperspectralCube.Load(dlg.FileName)); _lblDark.Text = Path.GetFileName(dlg.FileName); CheckCalibrationReady(); _slbl.Text = "Referencia oscura cargada."; }
                     catch (Exception ex) { MessageBox.Show(ex.Message, "Error"); _slbl.Text = "Error."; }
                 }
             };
 
+            // ── Calibración: toggle. Activa/desactiva la normalización en el pipeline ──
             _btnCalibrate.Click += async (s, e) => {
-                if (_baseCube == null || _whiteCube == null || _darkCube == null) return;
-                _slbl.Text = "Normalizando cubo..."; _btnCalibrate.Enabled = false;
-                try
-                {
-                    await Task.Run(() => _baseCube.Calibrate(_whiteCube, _darkCube));
-                    btnAbsorbance.Enabled = true;
-                    if (_chkAnalyze.Checked) await RunAnalysisAsync(); else { _cube = _baseCube; RefreshDisplay(); }
-                    ClearSpectrumPlot(); _slbl.Text = "Normalizada correctamente.";
-                }
-                catch (Exception ex) { MessageBox.Show(ex.Message, "Error"); _btnCalibrate.Enabled = true; }
+                if (_originalCube == null || _whiteCube == null || _darkCube == null) return;
+                _stepNormalize = !_stepNormalize;
+                if (!_stepNormalize) { _stepAbsorbance = false; }   // Absorbancia requiere normalización
+                btnAbsorbance.Enabled = _stepNormalize;
+                UpdateToggleButton(_btnCalibrate, _stepNormalize, Color.FromArgb(120, 80, 40));
+                UpdateToggleButton(btnAbsorbance, _stepAbsorbance, Color.FromArgb(100, 40, 80));
+                await RebuildWorkingCube();
             };
 
+            // ── Absorbancia: toggle. Solo activo si normalización está activa ──
+            btnAbsorbance.Click += async (s, e) => {
+                if (!_stepNormalize) return;
+                _stepAbsorbance = !_stepAbsorbance;
+                UpdateToggleButton(btnAbsorbance, _stepAbsorbance, Color.FromArgb(100, 40, 80));
+                await RebuildWorkingCube();
+            };
+
+            // ── Sección preprocesamiento quimiométrico ──────────────────────────────
             Sep(p, ref cy); Sec(p, "PREPROCESAMIENTO QUIMIOMÉTRICO", ref cy);
-            var btnSnv = Btn(p, "📈  Aplicar SNV", ref cy, Color.FromArgb(40, 80, 90));
-            var btnMsc = Btn(p, "📉  Aplicar MSC", ref cy, Color.FromArgb(50, 60, 90));
+
+            // Pipeline visual: muestra los pasos activos en orden
+            _lblPipeline = new Label
+            {
+                Location = new Point(8, cy),
+                Width = 245,
+                Height = 28,
+                AutoSize = false,
+                ForeColor = Color.FromArgb(100, 200, 130),
+                BackColor = Color.FromArgb(18, 32, 22),
+                Font = new Font("Consolas", 7.5f),
+                Text = "Pipeline: Original",
+                TextAlign = ContentAlignment.MiddleLeft,
+                Padding = new Padding(4, 0, 0, 0)
+            };
+            p.Controls.Add(_lblPipeline); cy += 32;
+
+            Lbl(p, "⚠ SNV y MSC son mutuamente excluyentes:", ref cy);
+
+            var btnSnv = Btn(p, "📈  SNV (activo: NO)", ref cy, Color.FromArgb(40, 80, 90));
+            var btnMsc = Btn(p, "📉  MSC (activo: NO)", ref cy, Color.FromArgb(50, 60, 90));
 
             Lbl(p, "Savitzky-Golay (Vent | Ord | Deriv):", ref cy);
             var pnlSg = new FlowLayoutPanel { Location = new Point(8, cy), Width = 245, Height = 28 };
@@ -299,41 +316,44 @@ namespace SpecimenFX17.Imaging
             var nudSgDer = new NumericUpDown { Width = 60, Minimum = 0, Maximum = 2, Value = 1, BackColor = Color.FromArgb(36, 36, 52), ForeColor = Color.White };
             pnlSg.Controls.Add(nudSgWin); pnlSg.Controls.Add(nudSgPol); pnlSg.Controls.Add(nudSgDer);
             p.Controls.Add(pnlSg); cy += 32;
+            var btnSg = Btn(p, "〰️  Savitzky-Golay (activo: NO)", ref cy, Color.FromArgb(90, 70, 50));
 
-            var btnSg = Btn(p, "〰️  Aplicar Savitzky-Golay", ref cy, Color.FromArgb(90, 70, 50));
-
+            // SNV: toggle. Si se activa, desactiva MSC ──────────────────────────────
             btnSnv.Click += async (s, e) => {
-                if (_baseCube == null) return;
-                _slbl.Text = "Aplicando Normalización SNV..."; btnSnv.Enabled = false;
-                await Task.Run(() => _baseCube.ApplySNV());
-                if (_chkAnalyze.Checked) await RunAnalysisAsync(); else { _cube = _baseCube; RefreshDisplay(); }
-                ClearSpectrumPlot(); _slbl.Text = "SNV aplicado correctamente."; btnSnv.Enabled = true;
+                if (_originalCube == null) return;
+                _stepScatter = (_stepScatter == ScatterCorrection.SNV) ? ScatterCorrection.None : ScatterCorrection.SNV;
+                UpdateToggleButton(btnSnv, _stepScatter == ScatterCorrection.SNV, Color.FromArgb(40, 80, 90));
+                UpdateToggleButton(btnMsc, _stepScatter == ScatterCorrection.MSC, Color.FromArgb(50, 60, 90));
+                btnSnv.Text = $"📈  SNV (activo: {(_stepScatter == ScatterCorrection.SNV ? "SÍ" : "NO")})";
+                btnMsc.Text = $"📉  MSC (activo: {(_stepScatter == ScatterCorrection.MSC ? "SÍ" : "NO")})";
+                await RebuildWorkingCube();
             };
 
+            // MSC: toggle. Si se activa, desactiva SNV ──────────────────────────────
             btnMsc.Click += async (s, e) => {
-                if (_baseCube == null) return;
-                _slbl.Text = "Aplicando Corrección MSC..."; btnMsc.Enabled = false;
-                await Task.Run(() => _baseCube.ApplyMSC());
-                if (_chkAnalyze.Checked) await RunAnalysisAsync(); else { _cube = _baseCube; RefreshDisplay(); }
-                ClearSpectrumPlot(); _slbl.Text = "MSC aplicado correctamente."; btnMsc.Enabled = true;
+                if (_originalCube == null) return;
+                _stepScatter = (_stepScatter == ScatterCorrection.MSC) ? ScatterCorrection.None : ScatterCorrection.MSC;
+                UpdateToggleButton(btnSnv, _stepScatter == ScatterCorrection.SNV, Color.FromArgb(40, 80, 90));
+                UpdateToggleButton(btnMsc, _stepScatter == ScatterCorrection.MSC, Color.FromArgb(50, 60, 90));
+                btnSnv.Text = $"📈  SNV (activo: {(_stepScatter == ScatterCorrection.SNV ? "SÍ" : "NO")})";
+                btnMsc.Text = $"📉  MSC (activo: {(_stepScatter == ScatterCorrection.MSC ? "SÍ" : "NO")})";
+                await RebuildWorkingCube();
             };
 
+            // Savitzky-Golay: toggle con parámetros actuales ─────────────────────────
             btnSg.Click += async (s, e) => {
-                if (_baseCube == null) return;
-                int win = (int)nudSgWin.Value, pol = (int)nudSgPol.Value, der = (int)nudSgDer.Value;
-                _slbl.Text = $"Aplicando Savitzky-Golay (W:{win}, P:{pol}, D:{der})..."; btnSg.Enabled = false;
-                try
-                {
-                    await Task.Run(() => _baseCube.ApplySavitzkyGolay(win, pol, der));
-                    if (_chkAnalyze.Checked) await RunAnalysisAsync(); else { _cube = _baseCube; RefreshDisplay(); }
-                    ClearSpectrumPlot(); _slbl.Text = "Savitzky-Golay aplicado correctamente.";
-                }
-                catch (Exception ex)
-                {
-                    MessageBox.Show(ex.Message, "Error en Savitzky-Golay"); _slbl.Text = "Error al aplicar filtro.";
-                }
-                btnSg.Enabled = true;
+                if (_originalCube == null) return;
+                _stepSG = !_stepSG;
+                if (_stepSG) { _sgWindow = (int)nudSgWin.Value; _sgPoly = (int)nudSgPol.Value; _sgDeriv = (int)nudSgDer.Value; }
+                UpdateToggleButton(btnSg, _stepSG, Color.FromArgb(90, 70, 50));
+                btnSg.Text = $"〰️  Savitzky-Golay (activo: {(_stepSG ? "SÍ" : "NO")})";
+                await RebuildWorkingCube();
             };
+
+            // Al cambiar parámetros SG, si está activo, reconstruir automáticamente
+            nudSgWin.ValueChanged += async (_, _) => { if (_stepSG) { _sgWindow = (int)nudSgWin.Value; await RebuildWorkingCube(); } };
+            nudSgPol.ValueChanged += async (_, _) => { if (_stepSG) { _sgPoly = (int)nudSgPol.Value; await RebuildWorkingCube(); } };
+            nudSgDer.ValueChanged += async (_, _) => { if (_stepSG) { _sgDeriv = (int)nudSgDer.Value; await RebuildWorkingCube(); } };
 
             Sep(p, ref cy); Sec(p, "HERRAMIENTA DE SELECCIÓN", ref cy);
             _lblTip = new Label { Location = new Point(8, cy), Width = 250, Height = 16, ForeColor = Color.FromArgb(120, 200, 120), Font = new Font("Segoe UI", 7f, FontStyle.Italic), Text = "Arrastra para seleccionar un rectángulo" };
@@ -348,7 +368,7 @@ namespace SpecimenFX17.Imaging
                 ("⬟ Polígono",   SelectionTool.Polygon,   "Clic = vértice • Enter = cerrar"),
                 ("○ Círculo",    SelectionTool.Circle,    "Arrastra desde el centro"),
                 ("✏ Lasso",      SelectionTool.Freehand,  "Mantén pulsado y dibuja"),
-                ("🪄 Auto ROI",  SelectionTool.AutoDetect,"Clic en un objeto")
+                ("🪄 Auto ROI",  SelectionTool.AutoDetect,"Clic=Nuevo • Shift=Sumar • Alt=Restar")
             };
 
             _toolBtns = new Button[5];
@@ -365,12 +385,20 @@ namespace SpecimenFX17.Imaging
             Lbl(p, "Tolerancia SAM (%):", ref cy);
             _nudAutoTol = Num(p, ref cy, 10m, 1m, 100m, 1m, 0);
 
+            // ------ BOTONES DE MORFOLOGÍA MEJORADOS ------
+            var btnErode = Btn(p, "➖ Contraer Auto-ROI (Erosión)", ref cy, Color.FromArgb(80, 50, 50));
+            var btnDilate = Btn(p, "➕ Expandir Auto-ROI (Dilatación)", ref cy, Color.FromArgb(50, 80, 50));
+            var btnFill = Btn(p, "🕳️ Rellenar Huecos Internos", ref cy, Color.FromArgb(70, 60, 90));
+
+            btnErode.Click += (_, _) => ApplyMorphologyToMasks("erode");
+            btnDilate.Click += (_, _) => ApplyMorphologyToMasks("dilate");
+            btnFill.Click += (_, _) => ApplyMorphologyToMasks("fill");
+
             Sep(p, ref cy); Sec(p, "DATOS Y SESIONES", ref cy);
             var btnSaveSes = Btn(p, "💾  Guardar Sesión", ref cy, Color.FromArgb(50, 80, 60));
             var btnLoadSes = Btn(p, "📂  Cargar Sesión", ref cy, Color.FromArgb(60, 60, 80));
             var btnDual = Btn(p, "⚖️  Comparador Multifichero", ref cy, Color.FromArgb(90, 60, 90));
 
-            // ------ BOTÓN PARA PROCESAR CARPETAS (BATCH) ------
             var btnBatch = Btn(p, "⚙️  Procesamiento por Lotes", ref cy, Color.FromArgb(140, 100, 40));
             btnBatch.Click += BtnBatch_Click;
 
@@ -421,7 +449,6 @@ namespace SpecimenFX17.Imaging
             var ba = Btn(p, "🔬  Herramientas Avanzadas", ref cy, Color.FromArgb(140, 70, 45));
             var bp = Btn(p, "🍊  Predecir °Brix (PLS)", ref cy, Color.FromArgb(140, 90, 30));
 
-            // ------ BOTÓN DEL HIPERCUBO 3D ------
             var b3d = Btn(p, "🧊  Visor de Hipercubo 3D", ref cy, Color.FromArgb(40, 110, 130));
             b3d.Click += (_, _) => { if (_cube != null) new Hypercube3DForm(_cube, _selections.AsReadOnly()).Show(); };
 
@@ -465,13 +492,13 @@ namespace SpecimenFX17.Imaging
             Lbl(p, "Umbral de señal:", ref cy); _nudThr = Num(p, ref cy, 0m, 0m, 9999999m, 1m, 0);
             foreach (var n in new[] { _nudGamma, _nudLo, _nudHi, _nudThr }) n.ValueChanged += (_, _) => RefreshDisplay();
 
-            var btnMedian = Btn(p, "🌫️ Aplicar Filtro Mediana (3x3)", ref cy, Color.FromArgb(70, 90, 110));
+            var btnMedian = Btn(p, "🌫️ Filtro Mediana 3x3 (activo: NO)", ref cy, Color.FromArgb(70, 90, 110));
             btnMedian.Click += async (s, e) => {
-                if (_baseCube == null) return;
-                _slbl.Text = "Aplicando filtro mediana..."; btnMedian.Enabled = false;
-                await Task.Run(() => _baseCube.ApplySpatialMedianFilter(3));
-                if (_chkAnalyze.Checked) await RunAnalysisAsync(); else { _cube = _baseCube; RefreshDisplay(); }
-                ClearSpectrumPlot(); _slbl.Text = "Filtro mediana aplicado."; btnMedian.Enabled = true;
+                if (_originalCube == null) return;
+                _stepMedian = !_stepMedian;
+                UpdateToggleButton(btnMedian, _stepMedian, Color.FromArgb(70, 90, 110));
+                btnMedian.Text = $"🌫️ Filtro Mediana 3x3 (activo: {(_stepMedian ? "SÍ" : "NO")})";
+                await RebuildWorkingCube();
             };
 
             Sep(p, ref cy); Sec(p, "EXPORTAR IMÁGENES", ref cy);
@@ -488,7 +515,25 @@ namespace SpecimenFX17.Imaging
             p.Controls.Add(_lblBandInfo);
         }
 
-        // ====== FUNCIÓN DEL BOTÓN BATCH ======
+        // ====== FUNCIÓN PARA APLICAR MORFOLOGÍA ======
+        private void ApplyMorphologyToMasks(string operation)
+        {
+            bool changed = false;
+
+            // SOLUCIÓN: Añadimos .ToList() para iterar sobre una copia segura y evitar el crash
+            foreach (var sh in _selections.ToList())
+            {
+                if (sh is MaskShape mask)
+                {
+                    if (operation == "dilate") mask.Dilate(1);
+                    else if (operation == "erode") mask.Erode(1);
+                    else if (operation == "fill") mask.FillHoles();
+                    changed = true;
+                }
+            }
+            if (changed) RefreshDisplay();
+        }
+
         private async void BtnBatch_Click(object? s, EventArgs e)
         {
             using var dlgFolder = new FolderBrowserDialog { Description = "Selecciona la carpeta que contiene tus archivos .hdr" };
@@ -654,7 +699,76 @@ namespace SpecimenFX17.Imaging
             return base.ProcessCmdKey(ref msg, key);
         }
 
-        private void CheckCalibrationReady() => _btnCalibrate.Enabled = _baseCube != null && _whiteCube != null && _darkCube != null;
+        private void CheckCalibrationReady() => _btnCalibrate.Enabled = _originalCube != null && _whiteCube != null && _darkCube != null;
+
+        private async Task RebuildWorkingCube()
+        {
+            if (_originalCube == null) return;
+
+            _slbl.Text = "Reconstruyendo pipeline desde el original...";
+            _pb.Visible = true; _pb.Style = ProgressBarStyle.Marquee;
+
+            try
+            {
+                await Task.Run(() =>
+                {
+                    _baseCube = _originalCube.Clone();
+
+                    if (_stepNormalize && _whiteCube != null && _darkCube != null)
+                        _baseCube.Calibrate(_whiteCube, _darkCube);
+
+                    if (_stepAbsorbance && _baseCube.IsCalibrated)
+                        _baseCube.ConvertToAbsorbance();
+
+                    if (_stepScatter == ScatterCorrection.SNV)
+                        _baseCube.ApplySNV();
+                    else if (_stepScatter == ScatterCorrection.MSC)
+                        _baseCube.ApplyMSC();
+
+                    if (_stepSG)
+                        _baseCube.ApplySavitzkyGolay(_sgWindow, _sgPoly, _sgDeriv);
+
+                    if (_stepMedian)
+                        _baseCube.ApplySpatialMedianFilter(3);
+                });
+
+                UpdatePipelineLabel();
+
+                if (_chkAnalyze.Checked) await RunAnalysisAsync();
+                else { _cube = _baseCube; RefreshDisplay(); }
+                ClearSpectrumPlot();
+                _slbl.Text = "Pipeline aplicado correctamente.";
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(ex.Message, "Error en pipeline"); _slbl.Text = "Error al reconstruir pipeline.";
+            }
+            finally
+            {
+                _pb.Visible = false; _pb.Style = ProgressBarStyle.Continuous;
+            }
+        }
+
+        private void UpdatePipelineLabel()
+        {
+            if (_lblPipeline == null) return;
+            var steps = new System.Collections.Generic.List<string> { "Original" };
+            if (_stepNormalize) steps.Add("Norm.");
+            if (_stepAbsorbance) steps.Add("Abs.");
+            if (_stepScatter == ScatterCorrection.SNV) steps.Add("SNV");
+            else if (_stepScatter == ScatterCorrection.MSC) steps.Add("MSC");
+            if (_stepSG) steps.Add($"SG(W{_sgWindow})");
+            if (_stepMedian) steps.Add("Med.");
+            _lblPipeline.Text = "Pipeline: " + string.Join(" → ", steps);
+        }
+
+        private static void UpdateToggleButton(Button btn, bool active, Color baseColor)
+        {
+            btn.BackColor = active
+                ? Color.FromArgb(Math.Min(255, baseColor.R + 60), Math.Min(255, baseColor.G + 60), Math.Min(255, baseColor.B + 60))
+                : baseColor;
+            btn.FlatAppearance.BorderColor = active ? Color.FromArgb(100, 220, 120) : Color.FromArgb(70, 70, 100);
+        }
 
         private void Pic_Down(object? s, MouseEventArgs e)
         {
@@ -761,7 +875,16 @@ namespace SpecimenFX17.Imaging
                         if (_freeImg.Count >= 3) AddShape(new FreehandShape(_freeImg, NextColor()));
                         _freeImg.Clear(); _freeScr.Clear(); break;
                     }
-                case SelectionTool.AutoDetect: { if (pt != null) RunAutoRoi(pt.Value.X, pt.Value.Y); break; }
+                case SelectionTool.AutoDetect:
+                    {
+                        if (pt != null)
+                        {
+                            bool addMode = (Control.ModifierKeys & Keys.Shift) == Keys.Shift;
+                            bool subMode = (Control.ModifierKeys & Keys.Alt) == Keys.Alt;
+                            RunAutoRoi(pt.Value.X, pt.Value.Y, addMode, subMode);
+                        }
+                        break;
+                    }
             }
         }
 
@@ -801,12 +924,21 @@ namespace SpecimenFX17.Imaging
         private void CommitPolygon() { if (_polyImg.Count >= 3) AddShape(new PolygonShape(_polyImg, NextColor())); _polyActive = false; _polyImg.Clear(); _polyScr.Clear(); _pictureBox.Invalidate(); }
         private void ClearAll() { _selections.Clear(); _polyActive = false; _polyImg.Clear(); _polyScr.Clear(); _freeImg.Clear(); _freeScr.Clear(); _btnClear.Enabled = false; ClearSpectrumPlot(); _pictureBox.Invalidate(); }
 
-        private async void RunAutoRoi(int startX, int startY)
+        // --- MOTOR DE SAM PARA AUTO-ROI ADAPTADO PARA SUMAR/RESTAR ---
+        private async void RunAutoRoi(int startX, int startY, bool addMode = false, bool subMode = false)
         {
             if (_cube == null) return;
+
+            MaskShape? targetMask = null;
+            if ((addMode || subMode) && _selections.Count > 0 && _selections.Last() is MaskShape lastMask)
+            {
+                targetMask = lastMask;
+            }
+
             _slbl.Text = "🪄 Analizando firma espectral (SAM)..."; _pb.Visible = true; _pb.Style = ProgressBarStyle.Marquee; _pictureBox.Enabled = false;
             float tolPercent = (float)_nudAutoTol.Value / 100f, maxAngleRads = tolPercent * 1.5f, minCos = (float)Math.Cos(maxAngleRads);
-            Color col = NextColor(); bool[,] mask = null!;
+            Color col = targetMask?.Color ?? NextColor();
+            bool[,] mask = null!;
 
             await Task.Run(() => {
                 int w = _cube.Samples, h = _cube.Lines; mask = new bool[h, w];
@@ -836,7 +968,19 @@ namespace SpecimenFX17.Imaging
                 }
             });
 
-            if (mask != null) AddShape(new MaskShape(mask, col));
+            if (mask != null)
+            {
+                if (targetMask != null)
+                {
+                    if (addMode) targetMask.AddMask(mask);
+                    else if (subMode) targetMask.RemoveMask(mask);
+                    RefreshDisplay();
+                }
+                else
+                {
+                    AddShape(new MaskShape(mask, col));
+                }
+            }
             _pictureBox.Enabled = true; _pb.Visible = false; _pb.Style = ProgressBarStyle.Continuous; _slbl.Text = "✔ Auto ROI completado";
         }
 

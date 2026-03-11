@@ -3,6 +3,8 @@ using System.Collections.Generic;
 using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.Drawing.Imaging;
+using System.IO;
+using System.Text;
 using System.Threading.Tasks;
 using System.Windows.Forms;
 
@@ -30,6 +32,8 @@ namespace SpecimenFX17.Imaging
         private TrackBar _trkXMin = null!, _trkXMax = null!;
         private TrackBar _trkYMin = null!, _trkYMax = null!;
         private TrackBar _trkZMin = null!, _trkZMax = null!;
+        private TrackBar _trkActiveBand = null!;
+        private Label _lblActiveBand = null!;
 
         private PictureBox _canvas = null!;
 
@@ -115,7 +119,7 @@ namespace SpecimenFX17.Imaging
 
         private void BuildUI()
         {
-            var pnlLeft = new Panel { Dock = DockStyle.Left, Width = 300, BackColor = Color.FromArgb(24, 24, 34), Padding = new Padding(10) };
+            var pnlLeft = new Panel { Dock = DockStyle.Left, Width = 300, BackColor = Color.FromArgb(24, 24, 34), Padding = new Padding(10), AutoScroll = true };
 
             int cy = 15;
             AddLabel(pnlLeft, "📐 CORTES ESPACIALES 3D", cy, true); cy += 30;
@@ -146,6 +150,51 @@ namespace SpecimenFX17.Imaging
             _trkZMax = new TrackBar { Location = new Point(145, cy), Width = 135, Minimum = 0, Maximum = _cube.Bands - 1, Value = _cube.Bands - 1, TickStyle = TickStyle.None };
             LinkTrackbars(_trkZMin, _trkZMax);
             pnlLeft.Controls.Add(_trkZMin); pnlLeft.Controls.Add(_trkZMax); cy += 50;
+
+            // BANDA ACTIVA
+            AddLabel(pnlLeft, "🔬 BANDA FRONTAL ACTIVA", cy, true); cy += 28;
+
+            _lblActiveBand = new Label
+            {
+                Location = new Point(10, cy),
+                Width = 270,
+                Height = 32,
+                ForeColor = Color.LightGreen,
+                Font = new Font("Consolas", 9f, FontStyle.Bold),
+                Text = GetBandLabel(_cube.Bands - 1)
+            };
+            pnlLeft.Controls.Add(_lblActiveBand); cy += 36;
+
+            _trkActiveBand = new TrackBar
+            {
+                Location = new Point(5, cy),
+                Width = 275,
+                Minimum = 0,
+                Maximum = _cube.Bands - 1,
+                Value = _cube.Bands - 1,
+                TickStyle = TickStyle.None,
+                LargeChange = Math.Max(1, _cube.Bands / 20)
+            };
+            _trkActiveBand.Scroll += (_, _) =>
+            {
+                _lblActiveBand.Text = GetBandLabel(_trkActiveBand.Value);
+                UpdateBitmapsAsync();
+            };
+            pnlLeft.Controls.Add(_trkActiveBand); cy += 45;
+
+            // MEJORA: SECCIÓN EXPORTAR / GUARDAR ROI
+            AddLabel(pnlLeft, "💾 EXPORTACIÓN Y ROI", cy, true); cy += 30;
+
+            var btnExportRoi = new Button { Text = "📦 Guardar ROI (Exportar ENVI)", Location = new Point(10, cy), Width = 265, Height = 35, BackColor = Color.FromArgb(140, 90, 40), FlatStyle = FlatStyle.Flat, Cursor = Cursors.Hand };
+            btnExportRoi.FlatAppearance.BorderColor = Color.FromArgb(180, 130, 80);
+            btnExportRoi.Click += BtnExportRoi_Click;
+            pnlLeft.Controls.Add(btnExportRoi); cy += 45;
+
+            var btnExportImg = new Button { Text = "📸 Exportar Vista 3D (PNG)", Location = new Point(10, cy), Width = 265, Height = 35, BackColor = Color.FromArgb(40, 90, 140), FlatStyle = FlatStyle.Flat, Cursor = Cursors.Hand };
+            btnExportImg.FlatAppearance.BorderColor = Color.FromArgb(80, 130, 180);
+            btnExportImg.Click += BtnExportImg_Click;
+            pnlLeft.Controls.Add(btnExportImg); cy += 45;
+
 
             AddLabel(pnlLeft, "💡 Controles de Cámara Orbital:", cy, true); cy += 25;
             AddLabel(pnlLeft, "• Clic Izq + Arrastrar:\n   Rotación 360º Orbital\n\n• Clic Derecho + Arrastrar:\n   Mover la cámara (Pan)\n\n• Rueda del Ratón:\n   Acercar / Alejar zoom", cy);
@@ -186,6 +235,116 @@ namespace SpecimenFX17.Imaging
 
         private void AddLabel(Control p, string text, int y, bool title = false) => p.Controls.Add(new Label { Text = text, Location = new Point(10, y), AutoSize = true, ForeColor = title ? Color.LightSkyBlue : Color.LightGray, Font = new Font("Segoe UI", title ? 10f : 9f, title ? FontStyle.Bold : FontStyle.Regular) });
 
+        // MÉTODO: Guardar sub-cubo ENVI (Cubo recortado) - VERSIÓN CORREGIDA
+        private async void BtnExportRoi_Click(object? sender, EventArgs e)
+        {
+            using var sfd = new SaveFileDialog { Filter = "Archivo ENVI Raw (*.raw)|*.raw", FileName = "ROI_CuboRecortado.raw", Title = "Guardar ROI (Cubo Recortado ENVI)" };
+            if (sfd.ShowDialog() != DialogResult.OK) return;
+
+            string rawPath = sfd.FileName;
+            string hdrPath = Path.ChangeExtension(rawPath, ".hdr");
+
+            int x0 = _trkXMin.Value, x1 = _trkXMax.Value;
+            int y0 = _trkYMin.Value, y1 = _trkYMax.Value;
+            int z0 = _trkZMin.Value, z1 = _trkZMax.Value;
+
+            int newSamples = x1 - x0 + 1;
+            int newLines = y1 - y0 + 1;
+            int newBands = z1 - z0 + 1;
+
+            // 1. Generar la cabecera (.hdr) con formato ENVI estricto (sin espacios extra)
+            var sb = new StringBuilder();
+            sb.AppendLine("ENVI");
+            sb.AppendLine("description = { ROI Recortada desde SpecimenFX17 3D Viewer }");
+            sb.AppendLine($"samples = {newSamples}");
+            sb.AppendLine($"lines = {newLines}");
+            sb.AppendLine($"bands = {newBands}");
+            sb.AppendLine("header offset = 0");
+            sb.AppendLine("file type = ENVI Standard");
+            sb.AppendLine("data type = 4");
+            sb.AppendLine("interleave = BSQ");
+            sb.AppendLine("sensor type = Unknown");
+            sb.AppendLine("byte order = 0");
+
+            if (_cube.Header.Wavelengths != null && _cube.Header.Wavelengths.Count > 0)
+            {
+                sb.AppendLine($"wavelength units = {_cube.Header.WavelengthUnits ?? "nm"}");
+                var wls = new List<string>();
+                for (int b = z0; b <= z1; b++)
+                {
+                    if (b < _cube.Header.Wavelengths.Count)
+                        wls.Add(_cube.Header.Wavelengths[b].ToString("G", System.Globalization.CultureInfo.InvariantCulture));
+                    else
+                        wls.Add("0"); // Relleno de seguridad para bandas sintéticas/PCA
+                }
+                sb.AppendLine("wavelength = { " + string.Join(", ", wls) + " }");
+            }
+            File.WriteAllText(hdrPath, sb.ToString());
+
+            // 2. Extraer datos binarios (.raw) de forma segura y vaciar buffers
+            var btn = (Button)sender!;
+            string oldText = btn.Text;
+            btn.Text = "⏳ Guardando datos...";
+            btn.Enabled = false;
+
+            try
+            {
+                await Task.Run(() => {
+                    // Usamos FileShare.None para asegurarnos que nadie toque el archivo mientras lo creamos
+                    using var fs = new FileStream(rawPath, FileMode.Create, FileAccess.Write, FileShare.None);
+                    using var bw = new BinaryWriter(fs);
+
+                    // El orden BSQ es Banda -> Fila -> Columna
+                    for (int b = z0; b <= z1; b++)
+                    {
+                        for (int y = y0; y <= y1; y++)
+                        {
+                            for (int x = x0; x <= x1; x++)
+                            {
+                                float val = _cube[b, y, x];
+                                // Transformamos los NaN a 0 para evitar fallos de lectura en float32
+                                bw.Write(float.IsNaN(val) ? 0f : val);
+                            }
+                        }
+                    }
+
+                    // Obligamos al sistema a escribir físicamente los datos antes de cerrar
+                    bw.Flush();
+                    fs.Flush();
+                });
+
+                MessageBox.Show($"Cubo ROI guardado exitosamente.\n\nPuedes abrirlo de nuevo desde SpecimenFX17:\n{rawPath}", "Exportación Completada", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Ocurrió un error al escribir el archivo: {ex.Message}", "Error de Exportación", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+            finally
+            {
+                btn.Text = oldText;
+                btn.Enabled = true;
+            }
+        }
+
+        // MÉTODO: Capturar la vista actual 3D y guardarla en PNG
+        private void BtnExportImg_Click(object? sender, EventArgs e)
+        {
+            if (_texFront == null) return;
+
+            using var sfd = new SaveFileDialog { Filter = "Imagen PNG (*.png)|*.png", FileName = "Vista3D.png", Title = "Exportar Captura 3D" };
+            if (sfd.ShowDialog() != DialogResult.OK) return;
+
+            // Creamos un bitmap en memoria del mismo tamaño que el canvas y le pedimos que dibuje la escena ahí.
+            using var bmp = new Bitmap(_canvas.Width, _canvas.Height, PixelFormat.Format32bppArgb);
+            using var g = Graphics.FromImage(bmp);
+
+            g.Clear(_canvas.BackColor);
+            Draw3DScene(g, _canvas.Width, _canvas.Height);
+
+            bmp.Save(sfd.FileName, ImageFormat.Png);
+            MessageBox.Show("Imagen 3D exportada correctamente.", "Éxito", MessageBoxButtons.OK, MessageBoxIcon.Information);
+        }
+
         private async void UpdateBitmapsAsync()
         {
             if (_isRendering) { _needsRender = true; return; }
@@ -194,10 +353,11 @@ namespace SpecimenFX17.Imaging
             int x0 = _trkXMin.Value, x1 = _trkXMax.Value;
             int y0 = _trkYMin.Value, y1 = _trkYMax.Value;
             int z0 = _trkZMin.Value, z1 = _trkZMax.Value;
+            int activeBand = _trkActiveBand.Value;
 
             try
             {
-                var (bF, bB, bT, bBo, bL, bR) = await Task.Run(() => Build6Textures(x0, x1, y0, y1, z0, z1));
+                var (bF, bB, bT, bBo, bL, bR) = await Task.Run(() => Build6Textures(x0, x1, y0, y1, z0, z1, activeBand));
 
                 var of = _texFront; var ob = _texBack; var ot = _texTop; var obo = _texBottom; var ol = _texLeft; var or = _texRight;
                 _texFront = bF; _texBack = bB; _texTop = bT; _texBottom = bBo; _texLeft = bL; _texRight = bR;
@@ -213,10 +373,13 @@ namespace SpecimenFX17.Imaging
             }
         }
 
-        private unsafe (Bitmap, Bitmap, Bitmap, Bitmap, Bitmap, Bitmap) Build6Textures(int x0, int x1, int y0, int y1, int z0, int z1)
+        private unsafe (Bitmap, Bitmap, Bitmap, Bitmap, Bitmap, Bitmap) Build6Textures(int x0, int x1, int y0, int y1, int z0, int z1, int activeBand)
         {
             float range = _vmax - _vmin; if (range <= 0) range = 1f;
             int cx = x1 - x0 + 1, cy = y1 - y0 + 1, cz = z1 - z0 + 1;
+
+            // Asegurar que activeBand esté dentro del rango z0-z1
+            int frontBand = Math.Clamp(activeBand, 0, _cube.Bands - 1);
 
             var bF = new Bitmap(cx, cy, PixelFormat.Format32bppArgb);
             var bB = new Bitmap(cx, cy, PixelFormat.Format32bppArgb);
@@ -225,7 +388,7 @@ namespace SpecimenFX17.Imaging
             var bR = new Bitmap(cz, cy, PixelFormat.Format32bppArgb);
             var bL = new Bitmap(cz, cy, PixelFormat.Format32bppArgb);
 
-            // 1. FRONT
+            // 1. FRONT — usa la banda activa seleccionada por el usuario
             var bdF = bF.LockBits(new Rectangle(0, 0, cx, cy), ImageLockMode.WriteOnly, PixelFormat.Format32bppArgb);
             Parallel.For(0, cy, y => {
                 byte* row = (byte*)bdF.Scan0 + y * bdF.Stride;
@@ -233,7 +396,7 @@ namespace SpecimenFX17.Imaging
                 {
                     if (_mask[y + y0, x + x0])
                     {
-                        float t = Math.Clamp((_cube[z1, y + y0, x + x0] - _vmin) / range, 0, 1);
+                        float t = Math.Clamp((_cube[frontBand, y + y0, x + x0] - _vmin) / range, 0, 1);
                         var c = GetRainbowColor(t);
                         row[x * 4] = c.B; row[x * 4 + 1] = c.G; row[x * 4 + 2] = c.R; row[x * 4 + 3] = 255;
                     }
@@ -355,9 +518,14 @@ namespace SpecimenFX17.Imaging
 
         private void Canvas_Paint(object? sender, PaintEventArgs e)
         {
+            Draw3DScene(e.Graphics, _canvas.Width, _canvas.Height);
+        }
+
+        // MOTOR REFACTORIZADO: Permite dibujar el 3D tanto en la pantalla como en una imagen a exportar
+        private void Draw3DScene(Graphics g, float canvasWidth, float canvasHeight)
+        {
             if (_texFront == null) return;
 
-            var g = e.Graphics;
             g.SmoothingMode = SmoothingMode.AntiAlias;
             g.InterpolationMode = InterpolationMode.HighQualityBilinear;
 
@@ -368,19 +536,19 @@ namespace SpecimenFX17.Imaging
             // 8 Vértices del cubo centrados en 0,0,0
             Vector3[] V = new Vector3[8];
             V[0] = new Vector3(-W / 2, -H / 2, -D / 2); // Top-Left-Front
-            V[1] = new Vector3(W / 2, -H / 2, -D / 2); // Top-Right-Front
-            V[2] = new Vector3(W / 2, H / 2, -D / 2); // Bottom-Right-Front
-            V[3] = new Vector3(-W / 2, H / 2, -D / 2); // Bottom-Left-Front
-            V[4] = new Vector3(-W / 2, -H / 2, D / 2); // Top-Left-Back
-            V[5] = new Vector3(W / 2, -H / 2, D / 2); // Top-Right-Back
-            V[6] = new Vector3(W / 2, H / 2, D / 2); // Bottom-Right-Back
-            V[7] = new Vector3(-W / 2, H / 2, D / 2); // Bottom-Left-Back
+            V[1] = new Vector3(W / 2, -H / 2, -D / 2);  // Top-Right-Front
+            V[2] = new Vector3(W / 2, H / 2, -D / 2);   // Bottom-Right-Front
+            V[3] = new Vector3(-W / 2, H / 2, -D / 2);  // Bottom-Left-Front
+            V[4] = new Vector3(-W / 2, -H / 2, D / 2);  // Top-Left-Back
+            V[5] = new Vector3(W / 2, -H / 2, D / 2);   // Top-Right-Back
+            V[6] = new Vector3(W / 2, H / 2, D / 2);    // Bottom-Right-Back
+            V[7] = new Vector3(-W / 2, H / 2, D / 2);   // Bottom-Left-Back
 
             Vector3[] pV = new Vector3[8];
             for (int i = 0; i < 8; i++) pV[i] = Rotate(V[i]);
 
-            float oX = _canvas.Width / 2f + _panX;
-            float oY = _canvas.Height / 2f + _panY;
+            float oX = canvasWidth / 2f + _panX;
+            float oY = canvasHeight / 2f + _panY;
 
             PointF P(int idx) => new PointF(oX + pV[idx].X, oY + pV[idx].Y);
 
@@ -456,6 +624,15 @@ namespace SpecimenFX17.Imaging
             else if (h < 300) { r = x; g = 0; b = c; }
             else { r = c; g = 0; b = x; }
             return Color.FromArgb((int)((r + m) * 255), (int)((g + m) * 255), (int)((b + m) * 255));
+        }
+
+        private string GetBandLabel(int bandIndex)
+        {
+            double wl = (_cube.Header.Wavelengths != null && _cube.Header.Wavelengths.Count > bandIndex)
+                ? _cube.Header.Wavelengths[bandIndex]
+                : 0;
+            string unit = _cube.Header.WavelengthUnits ?? "nm";
+            return $"Banda {bandIndex + 1} / {_cube.Bands}\nλ = {wl:F1} {unit}";
         }
     }
 }

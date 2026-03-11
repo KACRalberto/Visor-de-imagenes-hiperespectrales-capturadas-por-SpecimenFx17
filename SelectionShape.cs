@@ -21,8 +21,8 @@ namespace SpecimenFX17.Imaging
         public string Notes { get; set; } = "";
 
         // ── CACHÉ DE RENDIMIENTO PARA EVITAR LAG EN EL MOUSEMOVE ──
-        private float[]? _cachedSpectrum;
-        private Guid _cachedVersion;
+        protected float[]? _cachedSpectrum;
+        protected Guid _cachedVersion;
 
         protected SelectionShape(Color c) => Color = c;
 
@@ -30,9 +30,14 @@ namespace SpecimenFX17.Imaging
         public abstract void DrawOn(Graphics g);
         public abstract bool Contains(Point pt);
 
+        // Método para invalidar la caché cuando la máscara cambia dinámicamente
+        public void InvalidateCache()
+        {
+            _cachedSpectrum = null;
+        }
+
         public virtual float[] GetSpectrum(HyperspectralCube cube)
         {
-            // Si el cubo no ha cambiado y ya lo calculamos, devolvemos la caché instantáneamente (0 lag)
             if (_cachedSpectrum != null && _cachedVersion == cube.Version)
                 return _cachedSpectrum;
 
@@ -41,7 +46,6 @@ namespace SpecimenFX17.Imaging
             int count = 0;
             object sync = new object();
 
-            // Cálculo en paralelo ultra-rápido la primera vez
             Parallel.For(0, cube.Lines, l =>
             {
                 var localRes = new double[cube.Bands];
@@ -258,7 +262,7 @@ namespace SpecimenFX17.Imaging
 
     public class MaskShape : SelectionShape
     {
-        private readonly bool[,] _mask;
+        private bool[,] _mask;
         private readonly List<Point> _edgePoints = new();
         public int Width { get; }
         public int Height { get; }
@@ -268,7 +272,12 @@ namespace SpecimenFX17.Imaging
             _mask = mask;
             Height = mask.GetLength(0);
             Width = mask.GetLength(1);
+            CalculateEdges();
+        }
 
+        private void CalculateEdges()
+        {
+            _edgePoints.Clear();
             for (int y = 0; y < Height; y++)
             {
                 for (int x = 0; x < Width; x++)
@@ -281,6 +290,110 @@ namespace SpecimenFX17.Imaging
                     }
                 }
             }
+        }
+
+        // --- MÉTODOS DE EDICIÓN DINÁMICA DE MÁSCARA ---
+        public void AddMask(bool[,] extraMask)
+        {
+            for (int y = 0; y < Height; y++)
+                for (int x = 0; x < Width; x++)
+                    if (extraMask[y, x]) _mask[y, x] = true;
+            CalculateEdges();
+            InvalidateCache();
+        }
+
+        public void RemoveMask(bool[,] extraMask)
+        {
+            for (int y = 0; y < Height; y++)
+                for (int x = 0; x < Width; x++)
+                    if (extraMask[y, x]) _mask[y, x] = false;
+            CalculateEdges();
+            InvalidateCache();
+        }
+
+        // --- MÉTODO DE RELLENO INTELIGENTE DE HUECOS ---
+        public void FillHoles()
+        {
+            bool[,] background = new bool[Height, Width];
+            var stack = new Stack<Point>();
+
+            for (int y = 0; y < Height; y++)
+            {
+                if (!_mask[y, 0]) { background[y, 0] = true; stack.Push(new Point(0, y)); }
+                if (!_mask[y, Width - 1]) { background[y, Width - 1] = true; stack.Push(new Point(Width - 1, y)); }
+            }
+            for (int x = 0; x < Width; x++)
+            {
+                if (!_mask[0, x]) { background[0, x] = true; stack.Push(new Point(x, 0)); }
+                if (!_mask[Height - 1, x]) { background[Height - 1, x] = true; stack.Push(new Point(x, Height - 1)); }
+            }
+
+            while (stack.Count > 0)
+            {
+                var p = stack.Pop();
+                int cx = p.X, cy = p.Y;
+                if (cx > 0 && !background[cy, cx - 1] && !_mask[cy, cx - 1]) { background[cy, cx - 1] = true; stack.Push(new Point(cx - 1, cy)); }
+                if (cx < Width - 1 && !background[cy, cx + 1] && !_mask[cy, cx + 1]) { background[cy, cx + 1] = true; stack.Push(new Point(cx + 1, cy)); }
+                if (cy > 0 && !background[cy - 1, cx] && !_mask[cy - 1, cx]) { background[cy - 1, cx] = true; stack.Push(new Point(cx, cy - 1)); }
+                if (cy < Height - 1 && !background[cy + 1, cx] && !_mask[cy + 1, cx]) { background[cy + 1, cx] = true; stack.Push(new Point(cx, cy + 1)); }
+            }
+
+            for (int y = 0; y < Height; y++)
+                for (int x = 0; x < Width; x++)
+                    if (!background[y, x]) _mask[y, x] = true;
+
+            CalculateEdges();
+            InvalidateCache();
+        }
+
+        public void Erode(int iterations = 1)
+        {
+            for (int i = 0; i < iterations; i++)
+            {
+                bool[,] newMask = new bool[Height, Width];
+                for (int y = 0; y < Height; y++)
+                {
+                    for (int x = 0; x < Width; x++)
+                    {
+                        if (_mask[y, x])
+                        {
+                            bool keep = (x > 0 && _mask[y, x - 1]) &&
+                                        (x < Width - 1 && _mask[y, x + 1]) &&
+                                        (y > 0 && _mask[y - 1, x]) &&
+                                        (y < Height - 1 && _mask[y + 1, x]);
+                            newMask[y, x] = keep;
+                        }
+                    }
+                }
+                _mask = newMask;
+            }
+            CalculateEdges();
+            InvalidateCache();
+        }
+
+        public void Dilate(int iterations = 1)
+        {
+            for (int i = 0; i < iterations; i++)
+            {
+                bool[,] newMask = new bool[Height, Width];
+                for (int y = 0; y < Height; y++)
+                {
+                    for (int x = 0; x < Width; x++)
+                    {
+                        if (_mask[y, x])
+                        {
+                            newMask[y, x] = true;
+                            if (x > 0) newMask[y, x - 1] = true;
+                            if (x < Width - 1) newMask[y, x + 1] = true;
+                            if (y > 0) newMask[y - 1, x] = true;
+                            if (y < Height - 1) newMask[y + 1, x] = true;
+                        }
+                    }
+                }
+                _mask = newMask;
+            }
+            CalculateEdges();
+            InvalidateCache();
         }
 
         public override string ShortLabel => "Auto-Contorno";
@@ -301,8 +414,11 @@ namespace SpecimenFX17.Imaging
                 g.FillRectangles(brush, batch);
             }
 
-            int cx = (int)_edgePoints.Average(p => p.X), cy = _edgePoints.Min(p => p.Y) - 15;
-            Lbl(g, ShortLabel, cx - 30, cy, Color);
+            if (_edgePoints.Count > 0)
+            {
+                int cx = (int)_edgePoints.Average(p => p.X), cy = _edgePoints.Min(p => p.Y) - 15;
+                Lbl(g, ShortLabel, cx - 30, cy, Color);
+            }
         }
     }
 }
