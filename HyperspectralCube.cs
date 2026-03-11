@@ -5,6 +5,7 @@ using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
 using System.Threading.Tasks;
+using System.Drawing;
 
 namespace SpecimenFX17.Imaging
 {
@@ -20,10 +21,14 @@ namespace SpecimenFX17.Imaging
     {
         public EnviHeader Header { get; }
         public int Bands => _cube.GetLength(0);
-        public int Lines => Header.Lines;
-        public int Samples => Header.Samples;
 
-        private readonly float[,,] _cube;
+        // Modificado para que las dimensiones se adapten tras una rotación
+        public int Lines => _cube.GetLength(1);
+        public int Samples => _cube.GetLength(2);
+
+        // Se ha quitado el 'readonly' para poder asignar nuevas matrices rotadas
+        private float[,,] _cube;
+
         public float GlobalMin { get; private set; }
         public float GlobalMax { get; private set; }
         public bool IsCalibrated { get; private set; } = false;
@@ -91,6 +96,69 @@ namespace SpecimenFX17.Imaging
                 }
 
             return (min == float.MaxValue ? 0f : min, max == float.MinValue ? 1f : max);
+        }
+
+        // --- MOTOR DE ROTACIÓN ESPACIAL 2D ---
+        public void ApplySpatialRotation(float angleDegrees)
+        {
+            if (angleDegrees == 0f || angleDegrees % 360 == 0) return;
+
+            double angleRad = angleDegrees * Math.PI / 180.0;
+            double cosA = Math.Cos(angleRad);
+            double sinA = Math.Sin(angleRad);
+
+            int oldW = Samples;
+            int oldH = Lines;
+            double cx = oldW / 2.0;
+            double cy = oldH / 2.0;
+
+            // Calcular nueva caja delimitadora para no cortar las esquinas de la imagen
+            PointF[] corners = {
+                new PointF(0, 0), new PointF(oldW, 0),
+                new PointF(0, oldH), new PointF(oldW, oldH)
+            };
+            double minX = double.MaxValue, maxX = double.MinValue;
+            double minY = double.MaxValue, maxY = double.MinValue;
+
+            foreach (var pt in corners)
+            {
+                double rx = cosA * (pt.X - cx) - sinA * (pt.Y - cy) + cx;
+                double ry = sinA * (pt.X - cx) + cosA * (pt.Y - cy) + cy;
+                if (rx < minX) minX = rx; if (rx > maxX) maxX = rx;
+                if (ry < minY) minY = ry; if (ry > maxY) maxY = ry;
+            }
+
+            int newW = (int)Math.Ceiling(maxX - minX);
+            int newH = (int)Math.Ceiling(maxY - minY);
+
+            float[,,] newCube = new float[Bands, newH, newW];
+
+            // Realizamos rotación inversa usando paralelismo y vecino más próximo para mantener firmas intactas
+            Parallel.For(0, Bands, b => {
+                for (int y = 0; y < newH; y++)
+                {
+                    for (int x = 0; x < newW; x++)
+                    {
+                        double px = x + minX;
+                        double py = y + minY;
+
+                        double origX = cosA * (px - cx) + sinA * (py - cy) + cx;
+                        double origY = -sinA * (px - cx) + cosA * (py - cy) + cy;
+
+                        int ix = (int)Math.Round(origX);
+                        int iy = (int)Math.Round(origY);
+
+                        if (ix >= 0 && ix < oldW && iy >= 0 && iy < oldH)
+                            newCube[b, y, x] = _cube[b, iy, ix];
+                        else
+                            newCube[b, y, x] = float.NaN; // Fondo transparente
+                    }
+                }
+            });
+
+            _cube = newCube;
+            ComputeStats();
+            Version = Guid.NewGuid();
         }
 
         public void Calibrate(HyperspectralCube whiteRef, HyperspectralCube darkRef)
@@ -282,8 +350,6 @@ namespace SpecimenFX17.Imaging
             return result;
         }
 
-        // --- MEJORA 1: PROCESAMIENTO ESPACIAL PARA REDUCCIÓN DE RUIDO ---
-        // Elimina ruido impulsivo (sal y pimienta) evaluando la vecindad espacial de los píxeles
         public void ApplySpatialMedianFilter(int kernelSize)
         {
             if (kernelSize <= 1) return;
@@ -307,13 +373,12 @@ namespace SpecimenFX17.Imaging
                                 window[count++] = _cube[b, yy, xx];
                             }
                         }
-                        // Encontrar la mediana de la ventana
                         Array.Sort(window, 0, count);
                         newCube[b, l, s] = window[count / 2];
                     }
                 }
             });
-            Array.Copy(newCube, _cube, newCube.Length);
+            _cube = newCube;
             ComputeStats();
             Version = Guid.NewGuid();
         }
