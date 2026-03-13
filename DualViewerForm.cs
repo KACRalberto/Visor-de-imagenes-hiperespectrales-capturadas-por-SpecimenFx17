@@ -37,7 +37,6 @@ namespace SpecimenFX17.Imaging
 
         private void BuildUI()
         {
-            // Panel superior fluido: los botones nunca se cortarán
             var pnlTop = new FlowLayoutPanel
             {
                 Dock = DockStyle.Top,
@@ -74,7 +73,7 @@ namespace SpecimenFX17.Imaging
 
             _plot = new PictureBox { Dock = DockStyle.Fill, BackColor = Color.FromArgb(12, 12, 20) };
             _plot.Paint += Plot_Paint;
-            _plot.Resize += (s, e) => _plot.Invalidate(); // Refresca dinámicamente al cambiar el tamaño
+            _plot.Resize += (s, e) => _plot.Invalidate();
             splitMain.Panel2.Controls.Add(_plot);
 
             Controls.Add(splitMain);
@@ -154,7 +153,6 @@ namespace SpecimenFX17.Imaging
             {
                 var rect = new Rectangle(70, 20, w - 100, h - 60);
 
-                // 1. Dibujar Cuadrícula y Fondo
                 using (var gp = new Pen(Color.FromArgb(28, 255, 255, 255), 1f) { DashStyle = DashStyle.Dot })
                 {
                     for (int i = 0; i <= 5; i++) g.DrawLine(gp, rect.Left, rect.Bottom - (float)i / 5 * rect.Height, rect.Right, rect.Bottom - (float)i / 5 * rect.Height);
@@ -165,7 +163,6 @@ namespace SpecimenFX17.Imaging
                 float[]? s1 = null, s2 = null;
                 float yMin = float.MaxValue, yMax = float.MinValue;
 
-                // 2. Extraer datos con protección a prueba de fallos matemáticos
                 Action<float[]> processSpec = (spec) =>
                 {
                     if (spec == null) return;
@@ -193,11 +190,9 @@ namespace SpecimenFX17.Imaging
                 yMax += yRng * 0.05f;
                 yRng = yMax - yMin;
 
-                // 3. Dibujar curvas
                 if (s1 != null && _cube1 != null) DrawLine(g, rect, s1, _cube1.Header.Wavelengths, yMin, yRng, Color.Cyan, $"Izquierda ({_pt1!.Value.X}, {_pt1!.Value.Y})", 0);
                 if (s2 != null && _cube2 != null) DrawLine(g, rect, s2, _cube2.Header.Wavelengths, yMin, yRng, Color.Orange, $"Derecha ({_pt2!.Value.X}, {_pt2!.Value.Y})", 1);
 
-                // 4. Dibujar Textos de Ejes
                 using var font = new Font("Consolas", 8f);
                 using var brush = new SolidBrush(Color.FromArgb(180, 180, 200));
 
@@ -210,9 +205,10 @@ namespace SpecimenFX17.Imaging
                     g.DrawString(lb, font, brush, rect.Left - sz.Width - 5, py - sz.Height / 2);
                 }
 
+                // BUG 10 SOLUCIONADO: Validación segura al recuperar longitudes de onda en el gráfico
                 double wMin = 0, wMax = s1?.Length ?? s2?.Length ?? 100;
-                if (_cube1 != null && _cube1.Header.Wavelengths.Count > 0) { wMin = _cube1.Header.Wavelengths[0]; wMax = _cube1.Header.Wavelengths[^1]; }
-                else if (_cube2 != null && _cube2.Header.Wavelengths.Count > 0) { wMin = _cube2.Header.Wavelengths[0]; wMax = _cube2.Header.Wavelengths[^1]; }
+                if (_cube1 != null && _cube1.Header.Wavelengths != null && _cube1.Header.Wavelengths.Count > 0) { wMin = _cube1.Header.Wavelengths[0]; wMax = _cube1.Header.Wavelengths[^1]; }
+                else if (_cube2 != null && _cube2.Header.Wavelengths != null && _cube2.Header.Wavelengths.Count > 0) { wMin = _cube2.Header.Wavelengths[0]; wMax = _cube2.Header.Wavelengths[^1]; }
 
                 for (int i = 0; i <= 6; i++)
                 {
@@ -245,7 +241,8 @@ namespace SpecimenFX17.Imaging
                 float px = rect.Left + (float)((wls[i] - xMin) / xRng * rect.Width);
                 float py = rect.Bottom - ((spec[i] - yMin) / yRng * rect.Height);
 
-                py = Math.Clamp(py, rect.Top - 100, rect.Bottom + 100);
+                // Prevención de Crash en GDI+
+                py = Math.Clamp(py, rect.Top - 10000, rect.Bottom + 10000);
                 pts.Add(new PointF(px, py));
             }
 

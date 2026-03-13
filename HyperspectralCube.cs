@@ -158,11 +158,11 @@ namespace SpecimenFX17.Imaging
 
         public void Calibrate(HyperspectralCube whiteRef, HyperspectralCube darkRef)
         {
-            // BUG 2 SOLUCIONADO: Validación estricta de dimensiones antes de calibrar
-            if (whiteRef.Lines != Lines || whiteRef.Samples != Samples)
-                throw new ArgumentException($"La Referencia Blanca ({whiteRef.Samples}x{whiteRef.Lines}) no coincide con la imagen ({Samples}x{Lines}).");
-            if (darkRef.Lines != Lines || darkRef.Samples != Samples)
-                throw new ArgumentException($"La Referencia Oscura ({darkRef.Samples}x{darkRef.Lines}) no coincide con la imagen ({Samples}x{Lines}).");
+            // PARCHE: Validación estricta de dimensiones (incluyendo Bandas) antes de calibrar
+            if (whiteRef.Lines != Lines || whiteRef.Samples != Samples || whiteRef.Bands != Bands)
+                throw new ArgumentException($"La Referencia Blanca ({whiteRef.Samples}x{whiteRef.Lines}x{whiteRef.Bands}) no coincide con la imagen ({Samples}x{Lines}x{Bands}).");
+            if (darkRef.Lines != Lines || darkRef.Samples != Samples || darkRef.Bands != Bands)
+                throw new ArgumentException($"La Referencia Oscura ({darkRef.Samples}x{darkRef.Lines}x{darkRef.Bands}) no coincide con la imagen ({Samples}x{Lines}x{Bands}).");
 
             float[,] maxWhite = new float[Bands, Samples];
             float[,] minDark = new float[Bands, Samples];
@@ -177,12 +177,12 @@ namespace SpecimenFX17.Imaging
                     for (int l = 0; l < whiteRef.Lines; l++)
                     {
                         float v = whiteRef[b, l, s];
-                        if (!float.IsNaN(v) && v > wMax) wMax = v;
+                        if (!float.IsNaN(v) && !float.IsInfinity(v) && v > wMax) wMax = v;
                     }
                     for (int l = 0; l < darkRef.Lines; l++)
                     {
                         float v = darkRef[b, l, s];
-                        if (!float.IsNaN(v) && v < dMin) dMin = v;
+                        if (!float.IsNaN(v) && !float.IsInfinity(v) && v < dMin) dMin = v;
                     }
 
                     maxWhite[b, s] = wMax == float.MinValue ? 1f : wMax;
@@ -197,7 +197,7 @@ namespace SpecimenFX17.Imaging
                     for (int s = 0; s < Samples; s++)
                     {
                         float val = _cube[b, l, s];
-                        if (float.IsNaN(val)) continue;
+                        if (float.IsNaN(val) || float.IsInfinity(val)) continue;
 
                         float w = maxWhite[b, s];
                         float d = minDark[b, s];
@@ -208,7 +208,12 @@ namespace SpecimenFX17.Imaging
                         {
                             float range = w - d;
                             if (range <= 0.0001f) range = 0.0001f;
-                            _cube[b, l, s] = (val - d) / range;
+
+                            float res = (val - d) / range;
+                            // PARCHE: Protección contra Infinity/NaN para evitar crash de GDI+
+                            if (float.IsNaN(res) || float.IsInfinity(res)) res = 0f;
+
+                            _cube[b, l, s] = res;
                         }
                     }
                 }
@@ -229,7 +234,13 @@ namespace SpecimenFX17.Imaging
                     for (int s = 0; s < Samples; s++)
                     {
                         float r = _cube[b, l, s];
-                        if (!float.IsNaN(r)) _cube[b, l, s] = r <= 0.0001f ? (float)-Math.Log10(0.0001) : (float)-Math.Log10(r);
+                        if (!float.IsNaN(r) && !float.IsInfinity(r))
+                        {
+                            float res = r <= 0.0001f ? (float)-Math.Log10(0.0001) : (float)-Math.Log10(r);
+                            // PARCHE: Protección contra Infinity/NaN
+                            if (float.IsNaN(res) || float.IsInfinity(res)) res = 0f;
+                            _cube[b, l, s] = res;
+                        }
                     }
             });
             IsAbsorbance = true;
@@ -243,16 +254,25 @@ namespace SpecimenFX17.Imaging
                 for (int s = 0; s < Samples; s++)
                 {
                     float mean = 0; int valid = 0;
-                    for (int b = 0; b < Bands; b++) { float v = _cube[b, l, s]; if (!float.IsNaN(v)) { mean += v; valid++; } }
+                    for (int b = 0; b < Bands; b++) { float v = _cube[b, l, s]; if (!float.IsNaN(v) && !float.IsInfinity(v)) { mean += v; valid++; } }
                     if (valid == 0) continue;
                     mean /= valid;
 
                     float variance = 0;
-                    for (int b = 0; b < Bands; b++) { float v = _cube[b, l, s]; if (!float.IsNaN(v)) variance += (v - mean) * (v - mean); }
+                    for (int b = 0; b < Bands; b++) { float v = _cube[b, l, s]; if (!float.IsNaN(v) && !float.IsInfinity(v)) variance += (v - mean) * (v - mean); }
                     float std = (float)Math.Sqrt(variance / valid);
-                    if (std < 1e-6f) std = 1f;
+                    if (std < 1e-6f || float.IsNaN(std)) std = 1f;
 
-                    for (int b = 0; b < Bands; b++) { float v = _cube[b, l, s]; if (!float.IsNaN(v)) _cube[b, l, s] = (v - mean) / std; }
+                    for (int b = 0; b < Bands; b++)
+                    {
+                        float v = _cube[b, l, s];
+                        if (!float.IsNaN(v) && !float.IsInfinity(v))
+                        {
+                            float res = (v - mean) / std;
+                            if (float.IsNaN(res) || float.IsInfinity(res)) res = 0f;
+                            _cube[b, l, s] = res;
+                        }
+                    }
                 }
             });
             ComputeStats();
@@ -262,23 +282,32 @@ namespace SpecimenFX17.Imaging
         public void ApplyMSC()
         {
             double[] meanSpec = new double[Bands]; int[] validCounts = new int[Bands];
-            for (int l = 0; l < Lines; l++) { for (int s = 0; s < Samples; s++) { for (int b = 0; b < Bands; b++) { float v = _cube[b, l, s]; if (!float.IsNaN(v)) { meanSpec[b] += v; validCounts[b]++; } } } }
+            for (int l = 0; l < Lines; l++) { for (int s = 0; s < Samples; s++) { for (int b = 0; b < Bands; b++) { float v = _cube[b, l, s]; if (!float.IsNaN(v) && !float.IsInfinity(v)) { meanSpec[b] += v; validCounts[b]++; } } } }
             for (int b = 0; b < Bands; b++) if (validCounts[b] > 0) meanSpec[b] /= validCounts[b];
 
             Parallel.For(0, Lines, l => {
                 for (int s = 0; s < Samples; s++)
                 {
                     double sumX = 0, sumY = 0, sumXY = 0, sumX2 = 0; int n = 0;
-                    for (int b = 0; b < Bands; b++) { float y = _cube[b, l, s]; if (!float.IsNaN(y)) { double x = meanSpec[b]; sumX += x; sumY += y; sumXY += x * y; sumX2 += x * x; n++; } }
+                    for (int b = 0; b < Bands; b++) { float y = _cube[b, l, s]; if (!float.IsNaN(y) && !float.IsInfinity(y)) { double x = meanSpec[b]; sumX += x; sumY += y; sumXY += x * y; sumX2 += x * x; n++; } }
                     if (n < 2) continue;
 
                     double xMean = sumX / n, yMean = sumY / n, denominator = sumX2 - n * xMean * xMean;
                     if (Math.Abs(denominator) < 1e-9) continue;
 
                     double m = (sumXY - n * xMean * yMean) / denominator, a = yMean - m * xMean;
-                    if (Math.Abs(m) < 1e-9) m = 1;
+                    if (Math.Abs(m) < 1e-9 || double.IsNaN(m)) m = 1;
 
-                    for (int b = 0; b < Bands; b++) { float v = _cube[b, l, s]; if (!float.IsNaN(v)) _cube[b, l, s] = (float)((v - a) / m); }
+                    for (int b = 0; b < Bands; b++)
+                    {
+                        float v = _cube[b, l, s];
+                        if (!float.IsNaN(v) && !float.IsInfinity(v))
+                        {
+                            float res = (float)((v - a) / m);
+                            if (float.IsNaN(res) || float.IsInfinity(res)) res = 0f;
+                            _cube[b, l, s] = res;
+                        }
+                    }
                 }
             });
             ComputeStats();
@@ -287,7 +316,6 @@ namespace SpecimenFX17.Imaging
 
         public void ApplySavitzkyGolay(int windowSize, int polyOrder, int derivOrder)
         {
-            // BUG 4 SOLUCIONADO: Protección de parámetros para evitar Crash Matemático
             if (Bands < 4) return;
             if (windowSize % 2 == 0) windowSize++;
             if (windowSize > Bands) windowSize = (Bands % 2 == 0) ? Bands - 1 : Bands;
@@ -306,14 +334,18 @@ namespace SpecimenFX17.Imaging
 
                     for (int b = 0; b < Bands; b++)
                     {
-                        if (float.IsNaN(spec[b])) { newCube[b, l, s] = float.NaN; continue; }
+                        if (float.IsNaN(spec[b]) || float.IsInfinity(spec[b])) { newCube[b, l, s] = float.NaN; continue; }
                         double sum = 0;
                         for (int i = -m; i <= m; i++)
                         {
                             int idx = Math.Clamp(b + i, 0, Bands - 1);
                             sum += spec[idx] * coeffs[i + m];
                         }
-                        newCube[b, l, s] = (float)sum;
+
+                        float result = (float)sum;
+                        // PARCHE: Protección contra Infinity/NaN
+                        if (float.IsNaN(result) || float.IsInfinity(result)) result = 0f;
+                        newCube[b, l, s] = result;
                     }
                 }
             });
@@ -411,7 +443,7 @@ namespace SpecimenFX17.Imaging
                     {
                         float v = _cube[b, y, x];
                         newCube[b, y, x] = v;
-                        if (!float.IsNaN(v))
+                        if (!float.IsNaN(v) && !float.IsInfinity(v))
                         {
                             if (v < min) min = v;
                             if (v > max) max = v;
@@ -447,7 +479,11 @@ namespace SpecimenFX17.Imaging
                 for (int x = 0; x < Samples; x++)
                 {
                     if (!mask[y, x] || float.IsNaN(_cube[0, y, x])) continue;
-                    for (int b = 0; b < origBands; b++) localMean[b] += _cube[b, y, x];
+                    for (int b = 0; b < origBands; b++)
+                    {
+                        float v = _cube[b, y, x];
+                        if (!float.IsNaN(v) && !float.IsInfinity(v)) localMean[b] += v;
+                    }
                     localN++;
                 }
                 lock (syncObj)
@@ -471,9 +507,16 @@ namespace SpecimenFX17.Imaging
                         if (!mask[y, x] || float.IsNaN(_cube[0, y, x])) continue;
                         for (int i = 0; i < origBands; i++)
                         {
-                            double devI = _cube[i, y, x] - mean[i];
+                            float vi = _cube[i, y, x];
+                            if (float.IsNaN(vi) || float.IsInfinity(vi)) continue;
+                            double devI = vi - mean[i];
+
                             for (int j = i; j < origBands; j++)
-                                localCov[i, j] += devI * (_cube[j, y, x] - mean[j]);
+                            {
+                                float vj = _cube[j, y, x];
+                                if (!float.IsNaN(vj) && !float.IsInfinity(vj))
+                                    localCov[i, j] += devI * (vj - mean[j]);
+                            }
                         }
                     }
                     lock (syncObj)
@@ -509,7 +552,9 @@ namespace SpecimenFX17.Imaging
                             float val = 0;
                             for (int b = 0; b < origBands; b++)
                             {
-                                val += (float)(_cube[b, y, x] * evecs[b, pc]);
+                                float vb = _cube[b, y, x];
+                                if (!float.IsNaN(vb) && !float.IsInfinity(vb))
+                                    val += (float)(vb * evecs[b, pc]);
                             }
                             newCube[origBands + 4 + pc, y, x] = val;
 
@@ -541,9 +586,12 @@ namespace SpecimenFX17.Imaging
                         for (int x = 0; x < Samples; x++)
                         {
                             float val = newCube[origBands + 4 + pc, y, x];
-                            if (!float.IsNaN(val))
+                            if (!float.IsNaN(val) && !float.IsInfinity(val))
                             {
-                                newCube[origBands + 4 + pc, y, x] = (val - pcMins[pc]) / range;
+                                float res = (val - pcMins[pc]) / range;
+                                // PARCHE: Protección adicional post-PCA
+                                if (float.IsNaN(res) || float.IsInfinity(res)) res = 0f;
+                                newCube[origBands + 4 + pc, y, x] = res;
                             }
                         }
                     }
@@ -618,7 +666,6 @@ namespace SpecimenFX17.Imaging
 
         public static HyperspectralCube Load(string hdrOrRawPath, IProgress<int>? progress = null)
         {
-            // BUG 10 SOLUCIONADO: Detección inteligente de archivos ignorando sufijos y falsos positivos
             string dir = Path.GetDirectoryName(hdrOrRawPath) ?? "";
             string baseName = Path.GetFileNameWithoutExtension(hdrOrRawPath);
 
@@ -629,14 +676,12 @@ namespace SpecimenFX17.Imaging
             string rawPath = Path.Combine(dir, baseName + ".raw");
             if (!File.Exists(rawPath))
             {
-                // Busca alternativas sin importar mayúsculas/minúsculas
                 string[] exts = { ".img", ".dat", ".bil", ".bip", ".bsq" };
                 foreach (var ext in exts)
                 {
                     if (File.Exists(Path.Combine(dir, baseName + ext))) { rawPath = Path.Combine(dir, baseName + ext); break; }
                 }
 
-                // Fallback: si el binario no tiene extensión (ENVI Clásico)
                 if (!File.Exists(rawPath) && File.Exists(Path.Combine(dir, baseName)))
                     rawPath = Path.Combine(dir, baseName);
             }
@@ -755,7 +800,7 @@ namespace SpecimenFX17.Imaging
                     for (int s = 0; s < Samples; s++)
                     {
                         float v = _cube[b, l, s];
-                        if (float.IsNaN(v)) continue;
+                        if (float.IsNaN(v) || float.IsInfinity(v)) continue;
                         if (v < bMin) bMin = v; if (v > bMax) bMax = v;
                         if (v < min) min = v; if (v > max) max = v;
                         sum += v; sumSq += v * v;

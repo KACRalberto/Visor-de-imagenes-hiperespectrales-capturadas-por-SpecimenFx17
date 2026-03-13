@@ -65,7 +65,6 @@ namespace SpecimenFX17.Imaging
             _picOrigPlot.Dock = _picTreatPlot.Dock = DockStyle.Fill;
             _picOrigPlot.BackColor = _picTreatPlot.BackColor = Color.FromArgb(12, 12, 20);
 
-            // SOLUCIÓN AL CRASHEO: Dibujado gestionado por Windows (evento Paint)
             _picOrigPlot.Paint += (s, e) => DrawPlot(e.Graphics, _picOrigPlot, _origCube);
             _picTreatPlot.Paint += (s, e) => DrawPlot(e.Graphics, _picTreatPlot, _treatCube);
             _picOrigPlot.Resize += (s, e) => _picOrigPlot.Invalidate();
@@ -99,10 +98,9 @@ namespace SpecimenFX17.Imaging
 
         private void RefreshAll()
         {
-            double wl = _origCube.Header.Wavelengths.Count > _currentBand ? _origCube.Header.Wavelengths[_currentBand] : 0;
+            double wl = _origCube.Header.Wavelengths != null && _origCube.Header.Wavelengths.Count > _currentBand ? _origCube.Header.Wavelengths[_currentBand] : _currentBand;
             _lblBand.Text = $"Viendo Banda {_currentBand + 1}  —  Longitud de onda: {wl:F1} nm";
 
-            // SOLUCIÓN IMAGEN OSCURA: Se usan percentiles 2-98 para obviar valores extremos y visualizar bien
             var optsOrig = new BliRenderOptions { Colormap = BliColormap.Grayscale, Wavelength = wl, LowPercentile = 2f, HighPercentile = 98f };
             var optsTreat = new BliRenderOptions { Colormap = BliColormap.Grayscale, Wavelength = wl, LowPercentile = 2f, HighPercentile = 98f };
 
@@ -125,28 +123,32 @@ namespace SpecimenFX17.Imaging
 
         private void DrawPlot(Graphics g, PictureBox pic, HyperspectralCube cube)
         {
-            // PROTECCIÓN EXTREMA DE LAYOUT
             if (pic.Width < 50 || pic.Height < 50) return;
 
             g.SmoothingMode = SmoothingMode.AntiAlias;
+            g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.ClearTypeGridFit;
             g.Clear(Color.FromArgb(12, 12, 20));
 
-            Rectangle plot = new Rectangle(50, 20, pic.Width - 70, pic.Height - 50);
+            var rect = new Rectangle(60, 20, pic.Width - 80, pic.Height - 60);
 
-            using (var gp = new Pen(Color.FromArgb(30, 255, 255, 255), 1f) { DashStyle = DashStyle.Dash })
+            using (var gp = new Pen(Color.FromArgb(28, 255, 255, 255), 1f) { DashStyle = DashStyle.Dot })
             {
-                for (int i = 0; i <= 4; i++) g.DrawLine(gp, plot.Left, plot.Bottom - i * plot.Height / 4f, plot.Right, plot.Bottom - i * plot.Height / 4f);
-                for (int i = 0; i <= 6; i++) g.DrawLine(gp, plot.Left + i * plot.Width / 6f, plot.Top, plot.Left + i * plot.Width / 6f, plot.Bottom);
+                for (int i = 0; i <= 5; i++) g.DrawLine(gp, rect.Left, rect.Bottom - (float)i / 5 * rect.Height, rect.Right, rect.Bottom - (float)i / 5 * rect.Height);
+                for (int i = 0; i <= 6; i++) g.DrawLine(gp, rect.Left + (float)i / 6 * rect.Width, rect.Top, rect.Left + (float)i / 6 * rect.Width, rect.Bottom);
             }
-            g.DrawRectangle(new Pen(Color.FromArgb(70, 255, 255, 255)), plot);
+            using (var bp = new Pen(Color.FromArgb(60, 255, 255, 255))) g.DrawRectangle(bp, rect);
 
             float yMin = float.MaxValue, yMax = float.MinValue;
-            var specs = _rois.Select(r => r.GetSpectrum(cube).Take(cube.Header.Bands).ToArray()).ToList();
+            var plotData = new List<(float[] spec, Color col, string name)>();
 
-            // Protección contra valores nulos o infinitos
-            foreach (var s in specs)
+            foreach (var roi in _rois)
             {
-                foreach (var v in s)
+                var spec = roi.GetSpectrum(cube).ToArray();
+                if (spec.Length == 0) continue;
+
+                plotData.Add((spec, roi.Color, roi.ShortLabel));
+
+                foreach (var v in spec)
                 {
                     if (!float.IsNaN(v) && !float.IsInfinity(v))
                     {
@@ -155,42 +157,63 @@ namespace SpecimenFX17.Imaging
                     }
                 }
             }
-            if (yMin == float.MaxValue) { yMin = 0; yMax = 1; }
-            if (Math.Abs(yMin - yMax) < 1e-6f) { yMin -= 0.5f; yMax += 0.5f; } // Evita divisiones por cero
 
+            if (yMin == float.MaxValue) { yMin = 0; yMax = 1; }
             float yRng = yMax - yMin;
+            if (yRng < 1e-10f) yRng = 1f;
             yMin -= yRng * 0.05f; yMax += yRng * 0.05f; yRng = yMax - yMin;
 
-            double xMin = cube.Header.Wavelengths.FirstOrDefault(), xMax = cube.Header.Wavelengths.LastOrDefault(), xRng = xMax - xMin;
+            // BUG 10 SOLUCIONADO: Validación segura si Wavelengths es nulo, vacío o tiene menos elementos que bandas
+            var wls = cube.Header.Wavelengths;
+            int bands = cube.Bands;
+            double xMin = wls != null && wls.Count > 0 ? wls[0] : 0;
+            double xMax = wls != null && wls.Count > 0 ? wls[^1] : bands - 1;
+            double xRng = xMax - xMin;
             if (xRng == 0) xRng = 1;
 
-            double curWl = cube.Header.Wavelengths.Count > _currentBand ? cube.Header.Wavelengths[_currentBand] : 0;
-            float curPx = plot.Left + (float)((curWl - xMin) / xRng * plot.Width);
-            g.DrawLine(new Pen(Color.FromArgb(110, 255, 255, 80), 1f) { DashStyle = DashStyle.Dash }, curPx, plot.Top, curPx, plot.Bottom);
-
-            float safeClampMin = Math.Min(plot.Top - 10, plot.Bottom + 10);
-            float safeClampMax = Math.Max(plot.Top - 10, plot.Bottom + 10);
-
-            for (int r = 0; r < _rois.Count; r++)
+            foreach (var (spec, col, name) in plotData)
             {
-                var s = specs[r];
                 var pts = new List<PointF>();
-                for (int i = 0; i < s.Length; i++)
+                int len = Math.Min(spec.Length, bands);
+                for (int i = 0; i < len; i++)
                 {
-                    if (float.IsNaN(s[i]) || float.IsInfinity(s[i])) continue;
-                    float px = plot.Left + (float)(((cube.Header.Wavelengths[i]) - xMin) / xRng * plot.Width);
-                    float rawPy = plot.Bottom - (s[i] - yMin) / yRng * plot.Height;
-                    float py = Math.Clamp(rawPy, safeClampMin, safeClampMax);
+                    if (float.IsNaN(spec[i]) || float.IsInfinity(spec[i])) continue;
+
+                    double currentWl = wls != null && wls.Count > i ? wls[i] : xMin + i * (xRng / len);
+                    float px = rect.Left + (float)((currentWl - xMin) / xRng * rect.Width);
+                    float py = rect.Bottom - ((spec[i] - yMin) / yRng * rect.Height);
+
+                    // BUG 9 SOLUCIONADO: Prevención de crash GDI+ limitando coordenadas de dibujo
+                    py = Math.Clamp(py, rect.Top - 5000, rect.Bottom + 5000);
                     pts.Add(new PointF(px, py));
                 }
-                if (pts.Count > 1) g.DrawLines(new Pen(_rois[r].Color, 2f), pts.ToArray());
+
+                if (pts.Count > 1)
+                {
+                    using var pen = new Pen(col, 2f) { LineJoin = LineJoin.Round };
+                    g.DrawLines(pen, pts.ToArray());
+                }
             }
 
-            using var tf = new Font("Consolas", 7.5f); using var tb = new SolidBrush(Color.FromArgb(160, 160, 195));
-            g.DrawString(yMax.ToString("G4"), tf, tb, plot.Left - 45, plot.Top - 6);
-            g.DrawString(yMin.ToString("G4"), tf, tb, plot.Left - 45, plot.Bottom - 6);
-            g.DrawString(xMin.ToString("F0"), tf, tb, plot.Left - 10, plot.Bottom + 5);
-            g.DrawString(xMax.ToString("F0"), tf, tb, plot.Right - 20, plot.Bottom + 5);
+            using var font = new Font("Consolas", 8f);
+            using var brush = new SolidBrush(Color.FromArgb(180, 180, 200));
+
+            for (int i = 0; i <= 5; i++)
+            {
+                float py = rect.Bottom - (float)i / 5 * rect.Height;
+                float val = yMin + yRng * i / 5;
+                string lb = val.ToString("G4");
+                var sz = g.MeasureString(lb, font);
+                g.DrawString(lb, font, brush, rect.Left - sz.Width - 5, py - sz.Height / 2);
+            }
+
+            for (int i = 0; i <= 6; i++)
+            {
+                float px = rect.Left + (float)i / 6 * rect.Width;
+                string lb = (xMin + xRng * i / 6).ToString("F0");
+                var sz = g.MeasureString(lb, font);
+                g.DrawString(lb, font, brush, px - sz.Width / 2, rect.Bottom + 5);
+            }
         }
     }
 }

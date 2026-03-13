@@ -110,7 +110,13 @@ namespace SpecimenFX17.Imaging
                 using var writer = new StreamWriter(dlg.FileName, false, Encoding.UTF8);
                 var header = new StringBuilder("PixelX,PixelY,");
                 for (int b = 0; b < bands; b++)
-                    header.Append($"Wl_{_cube.Header.Wavelengths[b].ToString("F1", System.Globalization.CultureInfo.InvariantCulture)}{(b == bands - 1 ? "" : ",")}");
+                {
+                    // BUG 10 SOLUCIONADO: Protección si Wavelengths está vacío
+                    string wLabel = _cube.Header.Wavelengths != null && _cube.Header.Wavelengths.Count > b
+                        ? _cube.Header.Wavelengths[b].ToString("F1", System.Globalization.CultureInfo.InvariantCulture)
+                        : b.ToString();
+                    header.Append($"Wl_{wLabel}{(b == bands - 1 ? "" : ",")}");
+                }
                 writer.WriteLine(header.ToString());
 
                 for (int y = 0; y < lines; y++)
@@ -134,13 +140,14 @@ namespace SpecimenFX17.Imaging
                 _plsIntercept = double.Parse(lines[0].Split(',')[1], System.Globalization.CultureInfo.InvariantCulture);
 
                 var coefStrings = lines[1].Split(',').Skip(1).ToArray();
+
+                // BUG 3 SOLUCIONADO: Limita la matriz sin crashear si el cubo fue recortado
                 if (coefStrings.Length != _cube.Bands)
                 {
-                    MessageBox.Show($"El modelo tiene {coefStrings.Length} bandas, pero el cubo tiene {_cube.Bands}.", "Error");
-                    return;
+                    MessageBox.Show($"Aviso: El modelo tiene {coefStrings.Length} bandas, pero el cubo {_cube.Bands}. Se usarán las primeras {Math.Min(coefStrings.Length, _cube.Bands)}.", "Discrepancia de Bandas", MessageBoxButtons.OK, MessageBoxIcon.Information);
                 }
                 _plsCoefs = coefStrings.Select(s => double.Parse(s, System.Globalization.CultureInfo.InvariantCulture)).ToArray();
-                _lblStatus.Text = $"Modelo PLS cargado ({_cube.Bands} bandas).";
+                _lblStatus.Text = $"Modelo PLS cargado ({_plsCoefs.Length} coeficientes).";
             }
             catch (Exception ex) { MessageBox.Show($"Error: {ex.Message}"); }
         }
@@ -158,6 +165,8 @@ namespace SpecimenFX17.Imaging
                 float minBrix = float.MaxValue, maxBrix = float.MinValue;
                 object syncObj = new object();
 
+                int maxBands = Math.Min(bands, _plsCoefs.Length);
+
                 Parallel.For(0, lines, y =>
                 {
                     float lMin = float.MaxValue, lMax = float.MinValue;
@@ -165,7 +174,7 @@ namespace SpecimenFX17.Imaging
                     {
                         if (!mask[y, x]) { brixMap[y, x] = float.NaN; continue; }
                         double pred = _plsIntercept;
-                        for (int b = 0; b < bands; b++) pred += _cube[b, y, x] * _plsCoefs[b];
+                        for (int b = 0; b < maxBands; b++) pred += _cube[b, y, x] * _plsCoefs[b];
                         float val = (float)pred;
                         brixMap[y, x] = val;
                         if (val < lMin) lMin = val;

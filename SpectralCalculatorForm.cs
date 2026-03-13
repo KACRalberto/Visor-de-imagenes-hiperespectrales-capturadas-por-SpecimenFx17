@@ -51,7 +51,6 @@ namespace SpecimenFX17.Imaging
         private float[,]? _resultData;
         private Bitmap? _resultBitmap;
 
-        // ── Fórmulas predefinidas ────────────────
         private static readonly (string Name, string Formula)[] Presets =
         {
             ("NDVI",        "(B{800} - B{680}) / (B{800} + B{680})"),
@@ -72,7 +71,6 @@ namespace SpecimenFX17.Imaging
             _selections = selections ?? Array.Empty<SelectionShape>();
             Text = "Calculadora Espectral — SpecimenFX17";
 
-            // Reducido el tamaño mínimo para garantizar que siempre quepa en portátiles
             Size = new Size(1000, 700);
             MinimumSize = new Size(800, 500);
 
@@ -87,7 +85,6 @@ namespace SpecimenFX17.Imaging
             var leftPanel = new Panel { Dock = DockStyle.Left, Width = 240, BackColor = Color.FromArgb(22, 22, 34), Padding = new Padding(8), AutoScroll = true };
             BuildLeftPanel(leftPanel);
 
-            // ⚠️ FIX DEFINITIVO: TableLayoutPanel principal para que nada se solape ni se empuje fuera de la pantalla.
             var centerLayout = new TableLayoutPanel
             {
                 Dock = DockStyle.Fill,
@@ -99,11 +96,11 @@ namespace SpecimenFX17.Imaging
             };
 
             centerLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f));
-            centerLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 130f)); // formulaPanel
-            centerLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 22f));  // selBanner
-            centerLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 26f));  // statusPanel
-            centerLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 36f));  // toolPanel
-            centerLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100f));  // Tabs absorben el resto
+            centerLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 130f));
+            centerLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 22f));
+            centerLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 26f));
+            centerLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 36f));
+            centerLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100f));
 
             var formulaPanel = BuildFormulaPanel();
             var selBanner = BuildSelectionBanner();
@@ -123,7 +120,6 @@ namespace SpecimenFX17.Imaging
             centerLayout.Controls.Add(toolPanel, 0, 3);
             centerLayout.Controls.Add(_tabs, 0, 4);
 
-            // Importante el orden: se añade el centro y luego la izquierda
             Controls.Add(centerLayout);
             Controls.Add(leftPanel);
 
@@ -138,17 +134,17 @@ namespace SpecimenFX17.Imaging
 
             _lstBands = new ListBox { Location = new Point(6, cy), Size = new Size(210, 200), BackColor = Color.FromArgb(30, 30, 45), ForeColor = Color.FromArgb(200, 220, 255), Font = new Font("Consolas", 8f), BorderStyle = BorderStyle.FixedSingle };
             RefreshBandList();
-            _lstBands.DoubleClick += (_, _) => { if (_lstBands.SelectedIndex < 0) return; double wl = _cube.Header.Wavelengths[_lstBands.SelectedIndex]; _txtFormula.SelectedText = $"B{{{wl:F1}}}"; _txtFormula.Focus(); };
+            _lstBands.DoubleClick += (_, _) => { if (_lstBands.SelectedIndex < 0) return; double wl = _cube.Header.Wavelengths != null && _cube.Header.Wavelengths.Count > _lstBands.SelectedIndex ? _cube.Header.Wavelengths[_lstBands.SelectedIndex] : _lstBands.SelectedIndex; _txtFormula.SelectedText = $"B{{{wl:F1}}}"; _txtFormula.Focus(); };
             p.Controls.Add(_lstBands); cy += 208;
 
             AddLbl(p, "EXCLUIR LONGITUDES DE ONDA", cy, bold: true, color: Color.FromArgb(220, 140, 80)); cy += 20;
 
             AddLbl(p, "Desde (nm):", cy, size: 8); cy += 16;
-            _nudExclFrom = new NumericUpDown { Location = new Point(6, cy), Width = 210, Height = 22, Minimum = (decimal)(_cube.Header.Wavelengths.Count > 0 ? _cube.Header.Wavelengths[0] : 0), Maximum = (decimal)(_cube.Header.Wavelengths.Count > 0 ? _cube.Header.Wavelengths[^1] : 9999), Value = (decimal)(_cube.Header.Wavelengths.Count > 0 ? _cube.Header.Wavelengths[0] : 0), DecimalPlaces = 1, Increment = 1m, BackColor = Color.FromArgb(36, 36, 52), ForeColor = Color.White };
+            _nudExclFrom = new NumericUpDown { Location = new Point(6, cy), Width = 210, Height = 22, Minimum = (decimal)(_cube.Header.Wavelengths != null && _cube.Header.Wavelengths.Count > 0 ? _cube.Header.Wavelengths[0] : 0), Maximum = (decimal)(_cube.Header.Wavelengths != null && _cube.Header.Wavelengths.Count > 0 ? _cube.Header.Wavelengths[^1] : 9999), Value = (decimal)(_cube.Header.Wavelengths != null && _cube.Header.Wavelengths.Count > 0 ? _cube.Header.Wavelengths[0] : 0), DecimalPlaces = 1, Increment = 1m, BackColor = Color.FromArgb(36, 36, 52), ForeColor = Color.White };
             p.Controls.Add(_nudExclFrom); cy += 26;
 
             AddLbl(p, "Hasta (nm):", cy, size: 8); cy += 16;
-            _nudExclTo = new NumericUpDown { Location = new Point(6, cy), Width = 210, Height = 22, Minimum = (decimal)(_cube.Header.Wavelengths.Count > 0 ? _cube.Header.Wavelengths[0] : 0), Maximum = (decimal)(_cube.Header.Wavelengths.Count > 0 ? _cube.Header.Wavelengths[^1] : 9999), Value = (decimal)(_cube.Header.Wavelengths.Count > 0 ? _cube.Header.Wavelengths[^1] : 9999), DecimalPlaces = 1, Increment = 1m, BackColor = Color.FromArgb(36, 36, 52), ForeColor = Color.White };
+            _nudExclTo = new NumericUpDown { Location = new Point(6, cy), Width = 210, Height = 22, Minimum = (decimal)(_cube.Header.Wavelengths != null && _cube.Header.Wavelengths.Count > 0 ? _cube.Header.Wavelengths[0] : 0), Maximum = (decimal)(_cube.Header.Wavelengths != null && _cube.Header.Wavelengths.Count > 0 ? _cube.Header.Wavelengths[^1] : 9999), Value = (decimal)(_cube.Header.Wavelengths != null && _cube.Header.Wavelengths.Count > 0 ? _cube.Header.Wavelengths[^1] : 9999), DecimalPlaces = 1, Increment = 1m, BackColor = Color.FromArgb(36, 36, 52), ForeColor = Color.White };
             p.Controls.Add(_nudExclTo); cy += 26;
 
             var btnAddExcl = new Button { Text = "+ Añadir", Location = new Point(6, cy), Width = 100, Height = 24, FlatStyle = FlatStyle.Flat, BackColor = Color.FromArgb(120, 60, 20), ForeColor = Color.FromArgb(255, 200, 150), Font = new Font("Segoe UI", 8f), Cursor = Cursors.Hand };
@@ -182,9 +178,9 @@ namespace SpecimenFX17.Imaging
             if (_lstBands == null) return;
             int prevSel = _lstBands.SelectedIndex;
             _lstBands.Items.Clear();
-            for (int i = 0; i < _cube.Header.Wavelengths.Count; i++)
+            for (int i = 0; i < _cube.Bands; i++)
             {
-                double wl = _cube.Header.Wavelengths[i];
+                double wl = _cube.Header.Wavelengths != null && _cube.Header.Wavelengths.Count > i ? _cube.Header.Wavelengths[i] : i;
                 string tag = IsBandExcluded(i) ? "  ✕" : "";
                 _lstBands.Items.Add($"B[{i + 1}]  {wl:F1} nm{tag}");
             }
@@ -200,7 +196,7 @@ namespace SpecimenFX17.Imaging
         private bool IsBandExcluded(int bandIndex)
         {
             if (_excludedRanges.Count == 0) return false;
-            double wl = bandIndex >= 0 && bandIndex < _cube.Header.Wavelengths.Count ? _cube.Header.Wavelengths[bandIndex] : -1;
+            double wl = _cube.Header.Wavelengths != null && bandIndex >= 0 && bandIndex < _cube.Header.Wavelengths.Count ? _cube.Header.Wavelengths[bandIndex] : bandIndex;
             return _excludedRanges.Any(r => wl >= r.From && wl <= r.To);
         }
 
@@ -284,7 +280,6 @@ namespace SpecimenFX17.Imaging
             _cmbColormap.Items.AddRange(Enum.GetNames(typeof(BliColormap))); _cmbColormap.SelectedIndex = 0;
 
             _progress = new ProgressBar { Dock = DockStyle.Fill, Style = ProgressBarStyle.Continuous, Visible = false, Margin = new Padding(10, 8, 10, 8) };
-
             _lblStatus = new Label { Dock = DockStyle.Fill, ForeColor = Color.FromArgb(140, 150, 190), Font = new Font("Consolas", 8f), TextAlign = ContentAlignment.MiddleLeft };
 
             tp.Controls.Add(lblPaleta, 0, 0);
@@ -441,7 +436,17 @@ namespace SpecimenFX17.Imaging
             if (plot.Width < 20 || plot.Height < 20) return;
             DrawPlotGrid(g, plot);
             float binW = (float)plot.Width / bins, yRangeH = histoYMax2 - histoYMin2; if (yRangeH < 1) yRangeH = 1;
-            for (int i = 0; i < bins; i++) { if (counts[i] == 0) continue; float t = (float)i / (bins - 1), normH = Math.Clamp((counts[i] - histoYMin2) / yRangeH, 0f, 1f), barH = normH * plot.Height, x = plot.Left + i * binW, y = plot.Bottom - barH; var (r2, g2, b2) = GetColor(t, (BliColormap)_cmbColormap.SelectedIndex); using var brush = new SolidBrush(Color.FromArgb(200, r2, g2, b2)); g.FillRectangle(brush, x, y, Math.Max(1, binW), barH); }
+            for (int i = 0; i < bins; i++)
+            {
+                if (counts[i] == 0) continue;
+                float t = (float)i / (bins - 1), normH = Math.Clamp((counts[i] - histoYMin2) / yRangeH, 0f, 1f);
+                // BUG 9 SOLUCIONADO: Cuidado con desbordamientos por Infinity en UI
+                float barH = float.IsNaN(normH) || float.IsInfinity(normH) ? 0f : Math.Clamp(normH * plot.Height, 0f, 10000f);
+                float x = plot.Left + i * binW, y = plot.Bottom - barH;
+                var (r2, g2, b2) = GetColor(t, (BliColormap)_cmbColormap.SelectedIndex);
+                using var brush = new SolidBrush(Color.FromArgb(200, r2, g2, b2));
+                g.FillRectangle(brush, x, y, Math.Max(1, binW), barH);
+            }
             if (stats.Mean >= histoXMin && stats.Mean <= histoXMax) { float meanX = plot.Left + (stats.Mean - histoXMin) / histoRange * plot.Width; using var mp = new Pen(Color.FromArgb(220, 255, 255, 80), 1.5f) { DashStyle = DashStyle.Dash }; g.DrawLine(mp, meanX, plot.Top, meanX, plot.Bottom); using var sf2 = new Font("Consolas", 7.5f); using var sb2 = new SolidBrush(Color.FromArgb(180, 255, 255, 80)); g.DrawString($"μ={stats.Mean:G4}", sf2, sb2, meanX + 3, plot.Top + 2); }
             float p2x = plot.Left + (stats.P2 - histoXMin) / histoRange * plot.Width, p98x = plot.Left + (stats.P98 - histoXMin) / histoRange * plot.Width;
             using (var pp = new Pen(Color.FromArgb(160, 180, 180, 255), 1f) { DashStyle = DashStyle.Dot }) { if (stats.P2 >= histoXMin && stats.P2 <= histoXMax) g.DrawLine(pp, p2x, plot.Top, p2x, plot.Bottom); if (stats.P98 >= histoXMin && stats.P98 <= histoXMax) g.DrawLine(pp, p98x, plot.Top, p98x, plot.Bottom); }
@@ -461,7 +466,14 @@ namespace SpecimenFX17.Imaging
             float fullXRange = values.Length - 1, fullYRange = fullVMax - fullVMin, xMin = zoom != null ? zoom.X0 * fullXRange : 0, xMax = zoom != null ? zoom.X1 * fullXRange : fullXRange, vMin = zoom != null ? fullVMin + zoom.Y0 * fullYRange : fullVMin, vMax = zoom != null ? fullVMin + zoom.Y1 * fullYRange : fullVMax, vRng = vMax - vMin; if (vRng < 1e-10f) vRng = 1f; float xRng = xMax - xMin; if (xRng < 1e-10f) xRng = 1f;
             int iStart = Math.Max(0, (int)Math.Floor(xMin)), iEnd = Math.Min(values.Length - 1, (int)Math.Ceiling(xMax));
             DrawPlotGrid(g, plot); var pts = new List<PointF>();
-            for (int i = iStart; i <= iEnd; i++) { float px = plot.Left + (i - xMin) / xRng * plot.Width, v = float.IsNaN(values[i]) || float.IsInfinity(values[i]) ? vMin : values[i], py = plot.Bottom - (v - vMin) / vRng * plot.Height; pts.Add(new PointF(px, Math.Clamp(py, plot.Top - 5, plot.Bottom + 5))); }
+            for (int i = iStart; i <= iEnd; i++)
+            {
+                float px = plot.Left + (i - xMin) / xRng * plot.Width, v = float.IsNaN(values[i]) || float.IsInfinity(values[i]) ? vMin : values[i];
+                // BUG 9 SOLUCIONADO: Evita crasheo por OverflowException en motor GDI+ limitando coordenadas absolutas
+                float py = plot.Bottom - (v - vMin) / vRng * plot.Height;
+                py = float.IsNaN(py) || float.IsInfinity(py) ? plot.Bottom : Math.Clamp(py, -5000f, 5000f);
+                pts.Add(new PointF(px, Math.Clamp(py, plot.Top - 5, plot.Bottom + 5)));
+            }
             if (pts.Count >= 2) { var fillPts = new PointF[pts.Count + 2]; fillPts[0] = new PointF(pts[0].X, plot.Bottom); pts.CopyTo(fillPts, 1); fillPts[^1] = new PointF(pts[^1].X, plot.Bottom); using (var fb = new SolidBrush(Color.FromArgb(25, color.R, color.G, color.B))) g.FillPolygon(fb, fillPts); using (var sh = new Pen(Color.FromArgb(50, color.R, color.G, color.B), 3f)) g.DrawLines(sh, pts.ToArray()); using (var lp = new Pen(color, 1.6f) { LineJoin = LineJoin.Round }) g.DrawLines(lp, pts.ToArray()); }
             DrawPlotAxesXY(g, plot, xMin, xMax, vMin, vMax, xLabel, yLabel);
             using var tf = new Font("Segoe UI", 8.5f, FontStyle.Bold); using var tb = new SolidBrush(Color.FromArgb(170, 180, 215)); g.DrawString(title, tf, tb, padL, 6);
@@ -536,7 +548,7 @@ namespace SpecimenFX17.Imaging
         private static int FindFunc(string expr, string name) { int idx = 0; while (true) { int pos = expr.IndexOf(name, idx, StringComparison.OrdinalIgnoreCase); if (pos < 0) return -1; int after = pos + name.Length; if (after < expr.Length && expr[after] == '(' && (pos == 0 || !char.IsLetterOrDigit(expr[pos - 1]))) return pos; idx = pos + 1; } }
         private static int FindClose(string expr, int openPos) { int d = 0; for (int i = openPos; i < expr.Length; i++) { if (expr[i] == '(') d++; else if (expr[i] == ')') { d--; if (d == 0) return i; } } return -1; }
         private static int TopComma(string s) { int d = 0; for (int i = 0; i < s.Length; i++) { if (s[i] == '(') d++; else if (s[i] == ')') d--; else if (s[i] == ',' && d == 0) return i; } return -1; }
-        private int FindClosestBand(double wl) { if (_cube.Header.Wavelengths.Count == 0) return 0; return _cube.Header.Wavelengths.Select((w, i) => (diff: Math.Abs(w - wl), i)).OrderBy(x => x.diff).First().i; }
+        private int FindClosestBand(double wl) { if (_cube.Header.Wavelengths == null || _cube.Header.Wavelengths.Count == 0) return 0; return _cube.Header.Wavelengths.Select((w, i) => (diff: Math.Abs(w - wl), i)).OrderBy(x => x.diff).First().i; }
         private static void DrawPlotGrid(Graphics g, Rectangle plot) { using var gp = new Pen(Color.FromArgb(28, 255, 255, 255), 1f) { DashStyle = DashStyle.Dot }; for (int i = 0; i <= 5; i++) g.DrawLine(gp, plot.Left, plot.Bottom - (float)i / 5 * plot.Height, plot.Right, plot.Bottom - (float)i / 5 * plot.Height); for (int i = 0; i <= 6; i++) g.DrawLine(gp, plot.Left + (float)i / 6 * plot.Width, plot.Top, plot.Left + (float)i / 6 * plot.Width, plot.Bottom); using var bp = new Pen(Color.FromArgb(60, 255, 255, 255)); g.DrawRectangle(bp, plot); }
         private static void DrawPlotAxesXY(Graphics g, Rectangle plot, float xMin, float xMax, float yMin, float yMax, string xLabel, string yLabel) { using var tf = new Font("Consolas", 7.5f); using var tb = new SolidBrush(Color.FromArgb(155, 155, 195)); using var af = new Font("Segoe UI", 8f, FontStyle.Italic); using var ab = new SolidBrush(Color.FromArgb(115, 125, 165)); float xRng = xMax - xMin; if (xRng < 1e-10f) xRng = 1f; float yRng = yMax - yMin; if (yRng < 1e-10f) yRng = 1f; for (int i = 0; i <= 6; i++) { float v = xMin + xRng * i / 6; float x = plot.Left + (float)i / 6 * plot.Width; string lb = v >= 10000 || (Math.Abs(v) < 0.001f && v != 0) ? v.ToString("0.0e0") : v.ToString("G4"); var sz = g.MeasureString(lb, tf); g.DrawString(lb, tf, tb, x - sz.Width / 2, plot.Bottom + 2); } var xts = g.MeasureString(xLabel, af); g.DrawString(xLabel, af, ab, plot.Left + plot.Width / 2f - xts.Width / 2f, plot.Bottom + 20); for (int i = 0; i <= 5; i++) { float v = yMin + yRng * i / 5; float y = plot.Bottom - (float)i / 5 * plot.Height; string lb = v >= 10000 || (Math.Abs(v) < 0.001f && v != 0) ? v.ToString("0.0e0") : v.ToString("G4"); var sz = g.MeasureString(lb, tf); g.DrawString(lb, tf, tb, plot.Left - sz.Width - 3, y - sz.Height / 2); } var st = g.Save(); g.TranslateTransform(10, plot.Top + plot.Height / 2f); g.RotateTransform(-90); g.DrawString(yLabel, af, ab, -40, -6); g.Restore(st); }
         private static (byte R, byte G, byte B) GetColor(float t, BliColormap map) { float r, g, b; switch (map) { case BliColormap.HeatMap: return (ToByte(Math.Clamp(t * 3f, 0, 1)), ToByte(Math.Clamp(t * 3f - 1f, 0, 1)), ToByte(Math.Clamp(t * 3f - 2f, 0, 1))); case BliColormap.Grayscale: return (ToByte(t), ToByte(t), ToByte(t)); case BliColormap.ColdBlue: return (ToByte(Math.Clamp(t * 2 - 1, 0, 1)), ToByte(Math.Clamp(t * 2 - 1, 0, 1)), ToByte(Math.Clamp(t * 2, 0, 1))); case BliColormap.GreenFluorescent: return (ToByte(Math.Clamp(t * 2 - 1, 0, 1) * 0.5f), ToByte(Math.Clamp(t * 1.5f, 0, 1)), ToByte(Math.Clamp(t * 0.5f, 0, 1))); case BliColormap.RedFluorescent: return (ToByte(Math.Clamp(t * 1.5f, 0, 1)), ToByte(Math.Clamp(t * 0.5f, 0, 1) * 0.3f), 0); default: if (t < 0.125f) { r = 0; g = 0; b = 0.5f + t * 4f; } else if (t < 0.375f) { r = 0; g = (t - .125f) * 4f; b = 1f; } else if (t < 0.625f) { r = (t - .375f) * 4f; g = 1f; b = 1f - (t - .375f) * 4f; } else if (t < 0.875f) { r = 1f; g = 1f - (t - .625f) * 4f; b = 0f; } else { r = 1f; g = (t - .875f) * 8f; b = (t - .875f) * 8f; } return (ToByte(r), ToByte(g), ToByte(b)); } }
