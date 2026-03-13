@@ -85,7 +85,8 @@ namespace SpecimenFX17.Imaging
             File.WriteAllText(savePath, json);
         }
 
-        public static List<SelectionShape> LoadSession(string loadPath)
+        // Se le pueden pasar opcionalmente los límites del cubo actual para evitar BUG 3
+        public static List<SelectionShape> LoadSession(string loadPath, int maxSamples = int.MaxValue, int maxLines = int.MaxValue)
         {
             var shapes = new List<SelectionShape>();
             if (!File.Exists(loadPath)) return shapes;
@@ -96,6 +97,12 @@ namespace SpecimenFX17.Imaging
 
             foreach (var data in session.Selections)
             {
+                // BUG 3 SOLUCIONADO: Descarte de coordenadas fuera de las dimensiones actuales de la imagen
+                if (data.PointsX.Any(x => x < 0 || x >= maxSamples) || data.PointsY.Any(y => y < 0 || y >= maxLines))
+                {
+                    continue; // Nos saltamos esta ROI porque está fuera de la imagen (probablemente se cargó sobre un cubo recortado)
+                }
+
                 var c = Color.FromArgb(data.ColorArgb);
                 SelectionShape? shape = null;
 

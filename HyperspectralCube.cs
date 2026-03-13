@@ -22,11 +22,9 @@ namespace SpecimenFX17.Imaging
         public EnviHeader Header { get; }
         public int Bands => _cube.GetLength(0);
 
-        // Modificado para que las dimensiones se adapten tras una rotación
         public int Lines => _cube.GetLength(1);
         public int Samples => _cube.GetLength(2);
 
-        // Se ha quitado el 'readonly' para poder asignar nuevas matrices rotadas
         private float[,,] _cube;
 
         public float GlobalMin { get; private set; }
@@ -98,7 +96,6 @@ namespace SpecimenFX17.Imaging
             return (min == float.MaxValue ? 0f : min, max == float.MinValue ? 1f : max);
         }
 
-        // --- MOTOR DE ROTACIÓN ESPACIAL 2D ---
         public void ApplySpatialRotation(float angleDegrees)
         {
             if (angleDegrees == 0f || angleDegrees % 360 == 0) return;
@@ -112,7 +109,6 @@ namespace SpecimenFX17.Imaging
             double cx = oldW / 2.0;
             double cy = oldH / 2.0;
 
-            // Calcular nueva caja delimitadora para no cortar las esquinas de la imagen
             PointF[] corners = {
                 new PointF(0, 0), new PointF(oldW, 0),
                 new PointF(0, oldH), new PointF(oldW, oldH)
@@ -133,7 +129,6 @@ namespace SpecimenFX17.Imaging
 
             float[,,] newCube = new float[Bands, newH, newW];
 
-            // Realizamos rotación inversa usando paralelismo y vecino más próximo para mantener firmas intactas
             Parallel.For(0, Bands, b => {
                 for (int y = 0; y < newH; y++)
                 {
@@ -151,7 +146,7 @@ namespace SpecimenFX17.Imaging
                         if (ix >= 0 && ix < oldW && iy >= 0 && iy < oldH)
                             newCube[b, y, x] = _cube[b, iy, ix];
                         else
-                            newCube[b, y, x] = float.NaN; // Fondo transparente
+                            newCube[b, y, x] = float.NaN;
                     }
                 }
             });
@@ -163,6 +158,12 @@ namespace SpecimenFX17.Imaging
 
         public void Calibrate(HyperspectralCube whiteRef, HyperspectralCube darkRef)
         {
+            // BUG 2 SOLUCIONADO: Validación estricta de dimensiones antes de calibrar
+            if (whiteRef.Lines != Lines || whiteRef.Samples != Samples)
+                throw new ArgumentException($"La Referencia Blanca ({whiteRef.Samples}x{whiteRef.Lines}) no coincide con la imagen ({Samples}x{Lines}).");
+            if (darkRef.Lines != Lines || darkRef.Samples != Samples)
+                throw new ArgumentException($"La Referencia Oscura ({darkRef.Samples}x{darkRef.Lines}) no coincide con la imagen ({Samples}x{Lines}).");
+
             float[,] maxWhite = new float[Bands, Samples];
             float[,] minDark = new float[Bands, Samples];
 
@@ -286,8 +287,11 @@ namespace SpecimenFX17.Imaging
 
         public void ApplySavitzkyGolay(int windowSize, int polyOrder, int derivOrder)
         {
+            // BUG 4 SOLUCIONADO: Protección de parámetros para evitar Crash Matemático
+            if (Bands < 4) return;
             if (windowSize % 2 == 0) windowSize++;
-            if (windowSize > Bands) windowSize = Bands;
+            if (windowSize > Bands) windowSize = (Bands % 2 == 0) ? Bands - 1 : Bands;
+            if (windowSize < 3) return;
             if (polyOrder >= windowSize) polyOrder = windowSize - 1;
 
             double[] coeffs = GetSavitzkyGolayCoefficients(windowSize, polyOrder, derivOrder);
@@ -614,22 +618,30 @@ namespace SpecimenFX17.Imaging
 
         public static HyperspectralCube Load(string hdrOrRawPath, IProgress<int>? progress = null)
         {
-            string basePath = hdrOrRawPath.EndsWith(".hdr", StringComparison.OrdinalIgnoreCase)
-                              ? hdrOrRawPath[..^4] : hdrOrRawPath.EndsWith(".raw", StringComparison.OrdinalIgnoreCase)
-                              ? hdrOrRawPath[..^4] : hdrOrRawPath;
+            // BUG 10 SOLUCIONADO: Detección inteligente de archivos ignorando sufijos y falsos positivos
+            string dir = Path.GetDirectoryName(hdrOrRawPath) ?? "";
+            string baseName = Path.GetFileNameWithoutExtension(hdrOrRawPath);
 
-            string hdrPath = basePath + ".hdr";
-            if (!File.Exists(hdrPath) && hdrOrRawPath.EndsWith(".hdr", StringComparison.OrdinalIgnoreCase)) hdrPath = hdrOrRawPath;
+            string hdrPath = Path.Combine(dir, baseName + ".hdr");
+            if (!File.Exists(hdrPath) && hdrOrRawPath.EndsWith(".hdr", StringComparison.OrdinalIgnoreCase))
+                hdrPath = hdrOrRawPath;
 
-            string rawPath = basePath + ".raw";
+            string rawPath = Path.Combine(dir, baseName + ".raw");
             if (!File.Exists(rawPath))
             {
-                if (File.Exists(basePath)) rawPath = basePath;
-                else foreach (var ext in new[] { ".img", ".dat", ".bil", ".bip", ".bsq" })
-                    if (File.Exists(basePath + ext)) { rawPath = basePath + ext; break; }
+                // Busca alternativas sin importar mayúsculas/minúsculas
+                string[] exts = { ".img", ".dat", ".bil", ".bip", ".bsq" };
+                foreach (var ext in exts)
+                {
+                    if (File.Exists(Path.Combine(dir, baseName + ext))) { rawPath = Path.Combine(dir, baseName + ext); break; }
+                }
+
+                // Fallback: si el binario no tiene extensión (ENVI Clásico)
+                if (!File.Exists(rawPath) && File.Exists(Path.Combine(dir, baseName)))
+                    rawPath = Path.Combine(dir, baseName);
             }
 
-            if (!File.Exists(rawPath)) throw new FileNotFoundException($"Archivo de datos no encontrado para: {basePath}");
+            if (!File.Exists(rawPath)) throw new FileNotFoundException($"Archivo binario de datos no encontrado para: {baseName}");
 
             var header = EnviHeader.Load(hdrPath);
             var cube = ReadRaw(rawPath, header, progress);

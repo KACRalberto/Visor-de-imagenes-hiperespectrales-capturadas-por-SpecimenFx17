@@ -16,19 +16,15 @@ namespace SpecimenFX17.Imaging
         private readonly IReadOnlyList<SelectionShape> _selections;
         private bool[,] _mask = null!;
 
-        // Las 6 caras del cubo
         private Bitmap? _texFront, _texBack, _texTop, _texBottom, _texLeft, _texRight;
         private Color[] _wlColors = null!;
 
         private float _vmin = 0, _vmax = 1;
-
-        // Cámara 3D Completa
-        private float _yaw = (float)(-Math.PI / 4);   // Giro horizontal (360º)
-        private float _pitch = (float)(Math.PI / 6);  // Inclinación vertical
+        private float _yaw = (float)(-Math.PI / 4);
+        private float _pitch = (float)(Math.PI / 6);
         private float _zoom = 1.0f;
         private float _panX = 0, _panY = 0;
 
-        // 6 Sliders para cortes completos
         private TrackBar _trkXMin = null!, _trkXMax = null!;
         private TrackBar _trkYMin = null!, _trkYMax = null!;
         private TrackBar _trkZMin = null!, _trkZMax = null!;
@@ -41,11 +37,12 @@ namespace SpecimenFX17.Imaging
         private bool _isPanning = false;
         private Point _lastMouse;
 
-        // Controles asíncronos
         private bool _isRendering = false;
         private bool _needsRender = false;
 
-        // Estructura vectorial matemática
+        // BUG 6 SOLUCIONADO: Objeto de bloqueo para evitar Race Conditions en el Render 3D
+        private readonly object _renderLock = new object();
+
         private struct Vector3
         {
             public float X, Y, Z;
@@ -130,28 +127,24 @@ namespace SpecimenFX17.Imaging
                 tMax.Scroll += (_, _) => { if (tMax.Value <= tMin.Value + 5) tMin.Value = Math.Max(tMin.Minimum, tMax.Value - 5); UpdateBitmapsAsync(); };
             }
 
-            // EJE X
             AddLabel(pnlLeft, "Corte X (Ancho) [Mín / Máx]:", cy); cy += 20;
             _trkXMin = new TrackBar { Location = new Point(5, cy), Width = 135, Minimum = 0, Maximum = _cube.Samples - 1, Value = 0, TickStyle = TickStyle.None };
             _trkXMax = new TrackBar { Location = new Point(145, cy), Width = 135, Minimum = 0, Maximum = _cube.Samples - 1, Value = _cube.Samples - 1, TickStyle = TickStyle.None };
             LinkTrackbars(_trkXMin, _trkXMax);
             pnlLeft.Controls.Add(_trkXMin); pnlLeft.Controls.Add(_trkXMax); cy += 40;
 
-            // EJE Y
             AddLabel(pnlLeft, "Corte Y (Alto) [Mín / Máx]:", cy); cy += 20;
             _trkYMin = new TrackBar { Location = new Point(5, cy), Width = 135, Minimum = 0, Maximum = _cube.Lines - 1, Value = 0, TickStyle = TickStyle.None };
             _trkYMax = new TrackBar { Location = new Point(145, cy), Width = 135, Minimum = 0, Maximum = _cube.Lines - 1, Value = _cube.Lines - 1, TickStyle = TickStyle.None };
             LinkTrackbars(_trkYMin, _trkYMax);
             pnlLeft.Controls.Add(_trkYMin); pnlLeft.Controls.Add(_trkYMax); cy += 40;
 
-            // EJE Z
             AddLabel(pnlLeft, "Corte Z (Bandas) [Mín / Máx]:", cy); cy += 20;
             _trkZMin = new TrackBar { Location = new Point(5, cy), Width = 135, Minimum = 0, Maximum = _cube.Bands - 1, Value = 0, TickStyle = TickStyle.None };
             _trkZMax = new TrackBar { Location = new Point(145, cy), Width = 135, Minimum = 0, Maximum = _cube.Bands - 1, Value = _cube.Bands - 1, TickStyle = TickStyle.None };
             LinkTrackbars(_trkZMin, _trkZMax);
             pnlLeft.Controls.Add(_trkZMin); pnlLeft.Controls.Add(_trkZMax); cy += 50;
 
-            // BANDA ACTIVA
             AddLabel(pnlLeft, "🔬 BANDA FRONTAL ACTIVA", cy, true); cy += 28;
 
             _lblActiveBand = new Label
@@ -182,7 +175,6 @@ namespace SpecimenFX17.Imaging
             };
             pnlLeft.Controls.Add(_trkActiveBand); cy += 45;
 
-            // MEJORA: SECCIÓN EXPORTAR / GUARDAR ROI
             AddLabel(pnlLeft, "💾 EXPORTACIÓN Y ROI", cy, true); cy += 30;
 
             var btnExportRoi = new Button { Text = "📦 Guardar ROI (Exportar ENVI)", Location = new Point(10, cy), Width = 265, Height = 35, BackColor = Color.FromArgb(140, 90, 40), FlatStyle = FlatStyle.Flat, Cursor = Cursors.Hand };
@@ -194,7 +186,6 @@ namespace SpecimenFX17.Imaging
             btnExportImg.FlatAppearance.BorderColor = Color.FromArgb(80, 130, 180);
             btnExportImg.Click += BtnExportImg_Click;
             pnlLeft.Controls.Add(btnExportImg); cy += 45;
-
 
             AddLabel(pnlLeft, "💡 Controles de Cámara Orbital:", cy, true); cy += 25;
             AddLabel(pnlLeft, "• Clic Izq + Arrastrar:\n   Rotación 360º Orbital\n\n• Clic Derecho + Arrastrar:\n   Mover la cámara (Pan)\n\n• Rueda del Ratón:\n   Acercar / Alejar zoom", cy);
@@ -216,7 +207,7 @@ namespace SpecimenFX17.Imaging
                 {
                     _yaw -= dx * 0.01f;
                     _pitch -= dy * 0.01f;
-                    _pitch = Math.Clamp(_pitch, (float)(-Math.PI / 2 + 0.05), (float)(Math.PI / 2 - 0.05)); // Limitar para no quedar bocarriba
+                    _pitch = Math.Clamp(_pitch, (float)(-Math.PI / 2 + 0.05), (float)(Math.PI / 2 - 0.05));
                     _canvas.Invalidate();
                 }
                 else if (_isPanning)
@@ -235,7 +226,6 @@ namespace SpecimenFX17.Imaging
 
         private void AddLabel(Control p, string text, int y, bool title = false) => p.Controls.Add(new Label { Text = text, Location = new Point(10, y), AutoSize = true, ForeColor = title ? Color.LightSkyBlue : Color.LightGray, Font = new Font("Segoe UI", title ? 10f : 9f, title ? FontStyle.Bold : FontStyle.Regular) });
 
-        // MÉTODO: Guardar sub-cubo ENVI (Cubo recortado) - VERSIÓN CORREGIDA
         private async void BtnExportRoi_Click(object? sender, EventArgs e)
         {
             using var sfd = new SaveFileDialog { Filter = "Archivo ENVI Raw (*.raw)|*.raw", FileName = "ROI_CuboRecortado.raw", Title = "Guardar ROI (Cubo Recortado ENVI)" };
@@ -252,7 +242,6 @@ namespace SpecimenFX17.Imaging
             int newLines = y1 - y0 + 1;
             int newBands = z1 - z0 + 1;
 
-            // 1. Generar la cabecera (.hdr) con formato ENVI estricto (sin espacios extra)
             var sb = new StringBuilder();
             sb.AppendLine("ENVI");
             sb.AppendLine("description = { ROI Recortada desde SpecimenFX17 3D Viewer }");
@@ -275,13 +264,12 @@ namespace SpecimenFX17.Imaging
                     if (b < _cube.Header.Wavelengths.Count)
                         wls.Add(_cube.Header.Wavelengths[b].ToString("G", System.Globalization.CultureInfo.InvariantCulture));
                     else
-                        wls.Add("0"); // Relleno de seguridad para bandas sintéticas/PCA
+                        wls.Add("0");
                 }
                 sb.AppendLine("wavelength = { " + string.Join(", ", wls) + " }");
             }
             File.WriteAllText(hdrPath, sb.ToString());
 
-            // 2. Extraer datos binarios (.raw) de forma segura y vaciar buffers
             var btn = (Button)sender!;
             string oldText = btn.Text;
             btn.Text = "⏳ Guardando datos...";
@@ -290,11 +278,9 @@ namespace SpecimenFX17.Imaging
             try
             {
                 await Task.Run(() => {
-                    // Usamos FileShare.None para asegurarnos que nadie toque el archivo mientras lo creamos
                     using var fs = new FileStream(rawPath, FileMode.Create, FileAccess.Write, FileShare.None);
                     using var bw = new BinaryWriter(fs);
 
-                    // El orden BSQ es Banda -> Fila -> Columna
                     for (int b = z0; b <= z1; b++)
                     {
                         for (int y = y0; y <= y1; y++)
@@ -302,13 +288,10 @@ namespace SpecimenFX17.Imaging
                             for (int x = x0; x <= x1; x++)
                             {
                                 float val = _cube[b, y, x];
-                                // Transformamos los NaN a 0 para evitar fallos de lectura en float32
                                 bw.Write(float.IsNaN(val) ? 0f : val);
                             }
                         }
                     }
-
-                    // Obligamos al sistema a escribir físicamente los datos antes de cerrar
                     bw.Flush();
                     fs.Flush();
                 });
@@ -326,20 +309,25 @@ namespace SpecimenFX17.Imaging
             }
         }
 
-        // MÉTODO: Capturar la vista actual 3D y guardarla en PNG
         private void BtnExportImg_Click(object? sender, EventArgs e)
         {
-            if (_texFront == null) return;
+            lock (_renderLock)
+            {
+                if (_texFront == null) return;
+            }
 
             using var sfd = new SaveFileDialog { Filter = "Imagen PNG (*.png)|*.png", FileName = "Vista3D.png", Title = "Exportar Captura 3D" };
             if (sfd.ShowDialog() != DialogResult.OK) return;
 
-            // Creamos un bitmap en memoria del mismo tamaño que el canvas y le pedimos que dibuje la escena ahí.
             using var bmp = new Bitmap(_canvas.Width, _canvas.Height, PixelFormat.Format32bppArgb);
             using var g = Graphics.FromImage(bmp);
 
             g.Clear(_canvas.BackColor);
-            Draw3DScene(g, _canvas.Width, _canvas.Height);
+
+            lock (_renderLock)
+            {
+                Draw3DScene(g, _canvas.Width, _canvas.Height);
+            }
 
             bmp.Save(sfd.FileName, ImageFormat.Png);
             MessageBox.Show("Imagen 3D exportada correctamente.", "Éxito", MessageBoxButtons.OK, MessageBoxIcon.Information);
@@ -359,10 +347,14 @@ namespace SpecimenFX17.Imaging
             {
                 var (bF, bB, bT, bBo, bL, bR) = await Task.Run(() => Build6Textures(x0, x1, y0, y1, z0, z1, activeBand));
 
-                var of = _texFront; var ob = _texBack; var ot = _texTop; var obo = _texBottom; var ol = _texLeft; var or = _texRight;
-                _texFront = bF; _texBack = bB; _texTop = bT; _texBottom = bBo; _texLeft = bL; _texRight = bR;
+                lock (_renderLock)
+                {
+                    var of = _texFront; var ob = _texBack; var ot = _texTop; var obo = _texBottom; var ol = _texLeft; var or = _texRight;
+                    _texFront = bF; _texBack = bB; _texTop = bT; _texBottom = bBo; _texLeft = bL; _texRight = bR;
 
-                of?.Dispose(); ob?.Dispose(); ot?.Dispose(); obo?.Dispose(); ol?.Dispose(); or?.Dispose();
+                    of?.Dispose(); ob?.Dispose(); ot?.Dispose(); obo?.Dispose(); ol?.Dispose(); or?.Dispose();
+                }
+
                 _canvas.Invalidate();
             }
             catch (Exception ex) { Console.WriteLine($"Error 3D: {ex.Message}"); }
@@ -378,7 +370,6 @@ namespace SpecimenFX17.Imaging
             float range = _vmax - _vmin; if (range <= 0) range = 1f;
             int cx = x1 - x0 + 1, cy = y1 - y0 + 1, cz = z1 - z0 + 1;
 
-            // Asegurar que activeBand esté dentro del rango z0-z1
             int frontBand = Math.Clamp(activeBand, 0, _cube.Bands - 1);
 
             var bF = new Bitmap(cx, cy, PixelFormat.Format32bppArgb);
@@ -388,7 +379,6 @@ namespace SpecimenFX17.Imaging
             var bR = new Bitmap(cz, cy, PixelFormat.Format32bppArgb);
             var bL = new Bitmap(cz, cy, PixelFormat.Format32bppArgb);
 
-            // 1. FRONT — usa la banda activa seleccionada por el usuario
             var bdF = bF.LockBits(new Rectangle(0, 0, cx, cy), ImageLockMode.WriteOnly, PixelFormat.Format32bppArgb);
             Parallel.For(0, cy, y => {
                 byte* row = (byte*)bdF.Scan0 + y * bdF.Stride;
@@ -405,7 +395,6 @@ namespace SpecimenFX17.Imaging
             });
             bF.UnlockBits(bdF);
 
-            // 2. BACK (Proyectado del revés automáticamente por la matemática del cubo)
             var bdB = bB.LockBits(new Rectangle(0, 0, cx, cy), ImageLockMode.WriteOnly, PixelFormat.Format32bppArgb);
             Parallel.For(0, cy, y => {
                 byte* row = (byte*)bdB.Scan0 + y * bdB.Stride;
@@ -422,7 +411,6 @@ namespace SpecimenFX17.Imaging
             });
             bB.UnlockBits(bdB);
 
-            // 3. TOP
             var bdT = bT.LockBits(new Rectangle(0, 0, cx, cz), ImageLockMode.WriteOnly, PixelFormat.Format32bppArgb);
             Parallel.For(0, cz, y => {
                 int actualZ = z0 + y; Color wlCol = _wlColors[actualZ];
@@ -441,7 +429,6 @@ namespace SpecimenFX17.Imaging
             });
             bT.UnlockBits(bdT);
 
-            // 4. BOTTOM
             var bdBo = bBo.LockBits(new Rectangle(0, 0, cx, cz), ImageLockMode.WriteOnly, PixelFormat.Format32bppArgb);
             Parallel.For(0, cz, y => {
                 int actualZ = z1 - y; Color wlCol = _wlColors[actualZ];
@@ -460,7 +447,6 @@ namespace SpecimenFX17.Imaging
             });
             bBo.UnlockBits(bdBo);
 
-            // 5. RIGHT
             var bdR = bR.LockBits(new Rectangle(0, 0, cz, cy), ImageLockMode.WriteOnly, PixelFormat.Format32bppArgb);
             Parallel.For(0, cy, y => {
                 byte* row = (byte*)bdR.Scan0 + y * bdR.Stride;
@@ -479,7 +465,6 @@ namespace SpecimenFX17.Imaging
             });
             bR.UnlockBits(bdR);
 
-            // 6. LEFT
             var bdL = bL.LockBits(new Rectangle(0, 0, cz, cy), ImageLockMode.WriteOnly, PixelFormat.Format32bppArgb);
             Parallel.For(0, cy, y => {
                 byte* row = (byte*)bdL.Scan0 + y * bdL.Stride;
@@ -503,12 +488,10 @@ namespace SpecimenFX17.Imaging
 
         private Vector3 Rotate(Vector3 v)
         {
-            // Pitch (Rotación X)
             float cosP = (float)Math.Cos(_pitch), sinP = (float)Math.Sin(_pitch);
             float y1 = v.Y * cosP - v.Z * sinP;
             float z1 = v.Y * sinP + v.Z * cosP;
 
-            // Yaw (Rotación Y)
             float cosY = (float)Math.Cos(_yaw), sinY = (float)Math.Sin(_yaw);
             float x2 = v.X * cosY + z1 * sinY;
             float z2 = -v.X * sinY + z1 * cosY;
@@ -518,10 +501,12 @@ namespace SpecimenFX17.Imaging
 
         private void Canvas_Paint(object? sender, PaintEventArgs e)
         {
-            Draw3DScene(e.Graphics, _canvas.Width, _canvas.Height);
+            lock (_renderLock)
+            {
+                Draw3DScene(e.Graphics, _canvas.Width, _canvas.Height);
+            }
         }
 
-        // MOTOR REFACTORIZADO: Permite dibujar el 3D tanto en la pantalla como en una imagen a exportar
         private void Draw3DScene(Graphics g, float canvasWidth, float canvasHeight)
         {
             if (_texFront == null) return;
@@ -533,16 +518,15 @@ namespace SpecimenFX17.Imaging
             float H = _trkYMax.Value - _trkYMin.Value + 1;
             float D = _trkZMax.Value - _trkZMin.Value + 1;
 
-            // 8 Vértices del cubo centrados en 0,0,0
             Vector3[] V = new Vector3[8];
-            V[0] = new Vector3(-W / 2, -H / 2, -D / 2); // Top-Left-Front
-            V[1] = new Vector3(W / 2, -H / 2, -D / 2);  // Top-Right-Front
-            V[2] = new Vector3(W / 2, H / 2, -D / 2);   // Bottom-Right-Front
-            V[3] = new Vector3(-W / 2, H / 2, -D / 2);  // Bottom-Left-Front
-            V[4] = new Vector3(-W / 2, -H / 2, D / 2);  // Top-Left-Back
-            V[5] = new Vector3(W / 2, -H / 2, D / 2);   // Top-Right-Back
-            V[6] = new Vector3(W / 2, H / 2, D / 2);    // Bottom-Right-Back
-            V[7] = new Vector3(-W / 2, H / 2, D / 2);   // Bottom-Left-Back
+            V[0] = new Vector3(-W / 2, -H / 2, -D / 2);
+            V[1] = new Vector3(W / 2, -H / 2, -D / 2);
+            V[2] = new Vector3(W / 2, H / 2, -D / 2);
+            V[3] = new Vector3(-W / 2, H / 2, -D / 2);
+            V[4] = new Vector3(-W / 2, -H / 2, D / 2);
+            V[5] = new Vector3(W / 2, -H / 2, D / 2);
+            V[6] = new Vector3(W / 2, H / 2, D / 2);
+            V[7] = new Vector3(-W / 2, H / 2, D / 2);
 
             Vector3[] pV = new Vector3[8];
             for (int i = 0; i < 8; i++) pV[i] = Rotate(V[i]);
@@ -552,7 +536,6 @@ namespace SpecimenFX17.Imaging
 
             PointF P(int idx) => new PointF(oX + pV[idx].X, oY + pV[idx].Y);
 
-            // Definición de las 6 caras (Textura, 4 Vértices, Normal)
             var faces = new[] {
                 (Tex: _texFront,  Pts: new[]{0,1,2,3}, Norm: new Vector3(0,0,-1)),
                 (Tex: _texBack,   Pts: new[]{5,4,7,6}, Norm: new Vector3(0,0,1)),
@@ -566,11 +549,9 @@ namespace SpecimenFX17.Imaging
 
             foreach (var f in faces)
             {
-                // Backface culling rotando la normal
                 var n = Rotate(f.Norm);
                 if (n.Z < 0)
                 {
-                    // Centro de la cara para ordenar por profundidad (Painter's Algorithm)
                     Vector3 center = new Vector3(
                         (V[f.Pts[0]].X + V[f.Pts[2]].X) / 2,
                         (V[f.Pts[0]].Y + V[f.Pts[2]].Y) / 2,
@@ -580,7 +561,6 @@ namespace SpecimenFX17.Imaging
                 }
             }
 
-            // Ordenar las caras: Las más alejadas se dibujan primero
             toDraw.Sort((a, b) => b.Dist.CompareTo(a.Dist));
 
             using var edgePen = new Pen(Color.FromArgb(90, 255, 255, 255), 1.5f) { LineJoin = LineJoin.Round };
@@ -589,15 +569,12 @@ namespace SpecimenFX17.Imaging
             {
                 foreach (var f in toDraw)
                 {
-                    // DrawImage mapea (TopLeft, TopRight, BottomLeft)
                     PointF[] imgPts = { P(f.Pts[0]), P(f.Pts[1]), P(f.Pts[3]) };
                     g.DrawImage(f.Tex, imgPts);
-
-                    // Dibujar el marco de cristal para resaltar la volumetría
                     g.DrawPolygon(edgePen, new[] { P(f.Pts[0]), P(f.Pts[1]), P(f.Pts[2]), P(f.Pts[3]) });
                 }
             }
-            catch { /* Ignorar errores GDI+ al minimizar a 0 px */ }
+            catch { }
         }
 
         private static (byte R, byte G, byte B) GetRainbowColor(float t)

@@ -19,7 +19,7 @@ namespace SpecimenFX17.Imaging
         private PictureBox _picPca = null!;
         private PictureBox _picSam = null!;
         private PictureBox _picDeriv = null!;
-        private PictureBox _picScatter = null!; // Nueva PictureBox para el Scatter Plot
+        private PictureBox _picScatter = null!;
         private Label _lblStatus = null!;
         private ProgressBar _pb = null!;
 
@@ -49,7 +49,6 @@ namespace SpecimenFX17.Imaging
             var btnPca = new Button { Text = "📊 Ejecutar PCA (RGB Top 3)", AutoSize = true, MinimumSize = new Size(180, 35), BackColor = Color.FromArgb(40, 90, 140), FlatStyle = FlatStyle.Flat };
             var btnSam = new Button { Text = "🎯 Mapear Similitud (SAM)", AutoSize = true, MinimumSize = new Size(180, 35), BackColor = Color.FromArgb(35, 110, 55), FlatStyle = FlatStyle.Flat };
             var btnDeriv = new Button { Text = "📈 Trazar Derivadas", AutoSize = true, MinimumSize = new Size(150, 35), BackColor = Color.FromArgb(110, 40, 110), FlatStyle = FlatStyle.Flat };
-            // Nuevo botón para Scatter Plot
             var btnScatter = new Button { Text = "🌌 PCA Scatter (2D)", AutoSize = true, MinimumSize = new Size(150, 35), BackColor = Color.FromArgb(140, 90, 40), FlatStyle = FlatStyle.Flat };
 
             _pb = new ProgressBar { MinimumSize = new Size(150, 20), Visible = false, Style = ProgressBarStyle.Continuous, Margin = new Padding(15, 8, 5, 5) };
@@ -58,7 +57,7 @@ namespace SpecimenFX17.Imaging
             btnPca.Click += RunPCA;
             btnSam.Click += RunSAM;
             btnDeriv.Click += RunDerivatives;
-            btnScatter.Click += RunScatterPlot; // Nuevo evento
+            btnScatter.Click += RunScatterPlot;
 
             pnlTop.Controls.AddRange(new Control[] { btnPca, btnSam, btnDeriv, btnScatter, _pb, _lblStatus });
 
@@ -76,7 +75,6 @@ namespace SpecimenFX17.Imaging
             _picDeriv = new PictureBox { Dock = DockStyle.Fill, SizeMode = PictureBoxSizeMode.Zoom };
             tabDeriv.Controls.Add(_picDeriv);
 
-            // Nueva pestaña para el Scatter Plot
             var tabScatter = new TabPage("Scatter Plot (PCA)") { BackColor = Color.FromArgb(12, 12, 20) };
             _picScatter = new PictureBox { Dock = DockStyle.Fill, SizeMode = PictureBoxSizeMode.Zoom };
             tabScatter.Controls.Add(_picScatter);
@@ -84,7 +82,7 @@ namespace SpecimenFX17.Imaging
             _tabs.TabPages.Add(tabPca);
             _tabs.TabPages.Add(tabSam);
             _tabs.TabPages.Add(tabDeriv);
-            _tabs.TabPages.Add(tabScatter); // Añadir a la colección
+            _tabs.TabPages.Add(tabScatter);
 
             Controls.Add(_tabs);
             Controls.Add(pnlTop);
@@ -136,6 +134,12 @@ namespace SpecimenFX17.Imaging
                     for (int x = 0; x < samples; x += step)
                     {
                         if (!mask[y, x]) continue;
+
+                        // BUG 8 SOLUCIONADO: Ignorar NaNs para no corromper la matriz de covarianza entera
+                        bool hasNan = false;
+                        for (int b = 0; b < bands; b++) { if (float.IsNaN(_cube[b, y, x])) { hasNan = true; break; } }
+                        if (hasNan) continue;
+
                         for (int b = 0; b < bands; b++) localMean[b] += _cube[b, y, x];
                         localN++;
                     }
@@ -160,6 +164,10 @@ namespace SpecimenFX17.Imaging
                     for (int x = 0; x < samples; x += step)
                     {
                         if (!mask[y, x]) continue;
+                        bool hasNan = false;
+                        for (int b = 0; b < bands; b++) { if (float.IsNaN(_cube[b, y, x])) { hasNan = true; break; } }
+                        if (hasNan) continue;
+
                         for (int i = 0; i < bands; i++)
                         {
                             double devI = _cube[i, y, x] - mean[i];
@@ -198,6 +206,9 @@ namespace SpecimenFX17.Imaging
                     for (int x = 0; x < samples; x++)
                     {
                         if (!mask[y, x]) continue;
+                        bool hasNan = false;
+                        for (int b = 0; b < bands; b++) { if (float.IsNaN(_cube[b, y, x])) { hasNan = true; break; } }
+                        if (hasNan) { pc1[y, x] = float.NaN; continue; }
 
                         float v1 = 0, v2 = 0, v3 = 0;
                         for (int b = 0; b < bands; b++)
@@ -236,15 +247,15 @@ namespace SpecimenFX17.Imaging
                     for (int x = 0; x < samples; x++)
                     {
                         int off = row + x * 3;
-                        if (!mask[y, x])
+                        if (!mask[y, x] || float.IsNaN(pc1[y, x]))
                         {
                             pixels[off] = 0; pixels[off + 1] = 0; pixels[off + 2] = 0;
                             continue;
                         }
 
-                        pixels[off] = (byte)Math.Clamp((pc3[y, x] - min3) / range3 * 255, 0, 255);     // B
-                        pixels[off + 1] = (byte)Math.Clamp((pc2[y, x] - min2) / range2 * 255, 0, 255); // G
-                        pixels[off + 2] = (byte)Math.Clamp((pc1[y, x] - min1) / range1 * 255, 0, 255); // R
+                        pixels[off] = (byte)Math.Clamp((pc3[y, x] - min3) / range3 * 255, 0, 255);
+                        pixels[off + 1] = (byte)Math.Clamp((pc2[y, x] - min2) / range2 * 255, 0, 255);
+                        pixels[off + 2] = (byte)Math.Clamp((pc1[y, x] - min1) / range1 * 255, 0, 255);
                     }
                 });
 
@@ -358,7 +369,7 @@ namespace SpecimenFX17.Imaging
                             norm += v * v;
                         }
 
-                        if (norm == 0 || refNorm == 0)
+                        if (norm == 0 || refNorm == 0 || float.IsNaN((float)norm))
                         {
                             angles[y, x] = float.NaN;
                             continue;
@@ -398,9 +409,9 @@ namespace SpecimenFX17.Imaging
 
                         float t = 1f - (angles[y, x] / safeMaxAngle);
 
-                        pixels[off] = (byte)Math.Clamp((t * 3f - 2f) * 255, 0, 255);     // B
-                        pixels[off + 1] = (byte)Math.Clamp((t * 3f - 1f) * 255, 0, 255); // G
-                        pixels[off + 2] = (byte)Math.Clamp(t * 3f * 255, 0, 255);        // R
+                        pixels[off] = (byte)Math.Clamp((t * 3f - 2f) * 255, 0, 255);
+                        pixels[off + 1] = (byte)Math.Clamp((t * 3f - 1f) * 255, 0, 255);
+                        pixels[off + 2] = (byte)Math.Clamp(t * 3f * 255, 0, 255);
                     }
                 });
 
@@ -496,8 +507,6 @@ namespace SpecimenFX17.Imaging
                     g.DrawLine(pZero, rect.Left, yZero, rect.Right, yZero);
         }
 
-        // --- NUEVA LÓGICA PARA EL SCATTER PLOT PCA ---
-
         private void RunScatterPlot(object? sender, EventArgs e)
         {
             if (_selections.Count == 0)
@@ -506,7 +515,7 @@ namespace SpecimenFX17.Imaging
                 return;
             }
 
-            _tabs.SelectedIndex = 3; // Mostrar la pestaña del Scatter Plot
+            _tabs.SelectedIndex = 3;
             int w = Math.Max(800, _picScatter.Width), h = Math.Max(600, _picScatter.Height);
             var bmp = new Bitmap(w, h);
 
@@ -535,7 +544,6 @@ namespace SpecimenFX17.Imaging
 
             foreach (var spec in spectra)
             {
-                // Aproximación de varianza para demo del scatter plot
                 float pc1 = spec.Where(v => !float.IsNaN(v)).DefaultIfEmpty(0).Average();
                 float pc2 = spec[bands / 2] - spec[bands / 4];
 
@@ -548,7 +556,6 @@ namespace SpecimenFX17.Imaging
             float rngPc1 = maxPc1 - minPc1; if (rngPc1 == 0) rngPc1 = 1f;
             float rngPc2 = maxPc2 - minPc2; if (rngPc2 == 0) rngPc2 = 1f;
 
-            // Márgenes del 10%
             minPc1 -= rngPc1 * 0.1f; maxPc1 += rngPc1 * 0.1f; rngPc1 = maxPc1 - minPc1;
             minPc2 -= rngPc2 * 0.1f; maxPc2 += rngPc2 * 0.1f; rngPc2 = maxPc2 - minPc2;
 
