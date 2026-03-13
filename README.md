@@ -1,311 +1,381 @@
-# SpecimenFX17 — Visor BLI Hiperespectral
-### Manual completo de uso y funcionamiento técnico
+# SpecimenFX17 Viewer — Visor BLI hiperespectral (documentación completa)
+
+Este repositorio contiene una aplicación de escritorio (Windows, .NET 10)
+diseñada para leer, visualizar y exportar imágenes hiperespectrales generadas
+por el equipo SpecimenFX en formato ENVI (.hdr + .raw). Su objetivo es
+facilitar la inspección visual (imágenes BLI en pseudocolor), el análisis
+espectral de píxeles individuales y la exportación de resultados para
+procesado posterior.
+
+Este README describe en detalle todas las funcionalidades disponibles,
+cómo se implementan y cómo usar la aplicación tanto desde la interfaz gráfica
+como programáticamente.
 
 ---
 
-## ¿Qué hace este programa?
+## Índice rápido
 
-Este programa lee imágenes hiperespectrales del equipo **specimenFX17** (formato ENVI: archivos `.hdr` + `.raw`) y las visualiza como imágenes BLI (Bioluminescence Imaging) en pseudocolor. Además permite explorar el espectro de emisión de cualquier píxel de la imagen mediante gráficos lineales interactivos.
-
----
-
-## Instalación y primer arranque
-
-### Requisitos
-- Windows 10 o superior
-- .NET SDK 10 instalado (https://dotnet.microsoft.com/es-es/download/dotnet)
-- Visual Studio 2022 Community (gratis)
-
-### Pasos para abrir el proyecto
-1. Coloca los 7 archivos del proyecto en una carpeta (por ejemplo `D:\PRACTICAS\HiperImg\`)
-2. Abre Visual Studio
-3. Clic en **"Abrir un proyecto o solución"**
-4. Selecciona el archivo `SpecimenFX17Viewer.csproj`
-5. Pulsa el botón verde ▶️ para compilar y ejecutar
+- Funcionalidades principales
+- Requisitos e instalación
+- Uso desde la interfaz gráfica (descripción detallada)
+- Pipeline de procesamiento y algoritmos (normalización, gamma, mapas de color)
+- Formatos y lectura de datos (ENVI .hdr/.raw: interleave, data types, byte order)
+- API pública y ejemplos de código
+- Exportación y opciones de guardado
+- Rendimiento, memoria y optimizaciones
+- Tests y cómo ejecutar
+- Contribuir, licencia y contacto
 
 ---
 
-## Estructura de archivos del proyecto
+## Funcionalidades principales (resumen)
 
-```
-SpecimenFX17Viewer.csproj   → Archivo de proyecto (lo que abre Visual Studio)
-EnviHeader.cs               → Lee y parsea el archivo .hdr
-HyperspectralCube.cs        → Lee el binario .raw y construye el cubo de datos
-BliRenderer.cs              → Convierte una banda en imagen BLI con pseudocolor
-MainForm.cs                 → Ventana principal, interfaz gráfica e interacción
-Program.cs                  → Punto de entrada (arranca la aplicación)
-README.md                   → Este archivo
-```
-
----
-
-## Cómo funciona por dentro — El pipeline completo
-
-### PASO 1 — Leer el archivo `.hdr` → `EnviHeader.cs`
-
-El archivo `.hdr` es un texto plano que describe el contenido del `.raw`. Ejemplo real:
-
-```
-ENVI
-samples     = 640       ← ancho de la imagen en píxeles
-lines       = 480       ← alto de la imagen en píxeles
-bands       = 128       ← número de bandas espectrales (longitudes de onda)
-data type   = 4         ← tipo de número: 4 = float de 32 bits
-interleave  = BIL       ← orden de los datos en el archivo binario
-byte order  = 0         ← 0 = little-endian (procesadores Intel/AMD)
-wavelength units = nm
-wavelength = {
-  400.0, 403.9, 407.8, ... , 900.0
-}
-```
-
-`EnviHeader.cs` lee este archivo y extrae toda esa información para poder
-interpretar correctamente el binario `.raw`.
-
-**Tipos de dato soportados:**
-
-| Código | Tipo         | Tamaño |
-|--------|--------------|--------|
-| 1      | Byte         | 1 byte |
-| 2      | Entero 16bit | 2 bytes|
-| 4      | Float 32bit  | 4 bytes|
-| 5      | Double 64bit | 8 bytes|
-| 12     | UInt16       | 2 bytes|
+- Carga de imágenes hiperespectrales ENVI (.hdr + .raw) con soporte para
+  interleave BSQ / BIL / BIP y múltiples tipos de datos (float32, uint16,
+  int16, double, byte).
+- Visualización interactiva de una banda como imagen BLI (pseudocolor) con
+  diferentes paletas, barra de escala y modo grises.
+- Control fino de contraste mediante percentiles bajos/altos, umbral de ruido
+  y corrección gamma.
+- Selección de hasta 6 píxeles sobre la imagen con visualización comparativa
+  de sus espectros (gráfico interactivo con marcadores de la banda visible).
+- Exportación de la banda actual o de todas las bandas a PNG/TIFF/BMP con
+  metadatos y opciones de compresión (si el formato lo soporta).
+- Renderizado de combinaciones RGB (tres bandas asignadas a R/G/B) y guardado
+  como imagen compuesta.
+- API programática (clases HyperspectralCube, EnviHeader, BliRenderer,
+  BliRenderOptions) para integrar lectura y renderizado en otros proyectos.
+- Soporte para abrir archivos con extensiones alternativas (.img, .dat, .bil,
+  .bip, .bsq) si el `.raw` no se encuentra.
 
 ---
 
-### PASO 2 — Leer el binario `.raw` → `HyperspectralCube.cs`
+## Requisitos e instalación
 
-El archivo `.raw` contiene los números en bruto sin ninguna cabecera.
-El orden en que están almacenados depende del campo `interleave` del `.hdr`:
+- Sistema operativo: Windows 10 o superior.
+- .NET SDK 10 instalado: https://dotnet.microsoft.com/es-es/download/dotnet
+- Visual Studio 2022/2024/2026 (o Rider) recomendado para desarrollo.
 
-```
-BSQ (Band Sequential):
-  Todos los píxeles de la banda 1
-  Todos los píxeles de la banda 2
-  ...
-  → Ideal para extraer una sola banda completa
+Clonar el repositorio:
 
-BIL (Band Interleaved by Line):  ← el más habitual en hiperspectral
-  Fila 0 de la banda 1, Fila 0 de la banda 2, ..., Fila 0 de la banda N
-  Fila 1 de la banda 1, Fila 1 de la banda 2, ..., Fila 1 de la banda N
-  ...
+1. git clone https://github.com/KACRalberto/Visor-de-imagenes-hiperespectrales-capturadas-por-SpecimenFx17.git
+2. Abrir la solución o el proyecto `SpecimenFX17Viewer.csproj` en Visual Studio.
+3. Compilar y ejecutar (F5 o ▶️).
 
-BIP (Band Interleaved by Pixel):
-  Píxel(0,0) banda 1, banda 2, ..., banda N
-  Píxel(0,1) banda 1, banda 2, ..., banda N
-  ...
-  → Ideal para extraer el espectro de un píxel concreto
-```
-
-El resultado final es un **cubo tridimensional** en memoria:
-
-```
-float[banda, fila, columna]
-
-Ejemplo:
-  _cube[0, 240, 320]  → valor del píxel (320, 240) en la banda 0 (400 nm)
-  _cube[64, 240, 320] → valor del píxel (320, 240) en la banda 64 (650 nm)
-```
+Consejo: Para carpetas con archivos grandes (.raw), asegúrate de tener espacio
+en disco suficiente y no poner los datos en OneDrive/Dropbox con sincronización
+activa durante la lectura para evitar efectos de I/O.
 
 ---
 
-### PASO 3 — Convertir una banda a imagen BLI → `BliRenderer.cs`
+## Uso desde la interfaz gráfica — Descripción completa
 
-Una vez que tenemos el cubo, para mostrar una banda como imagen BLI:
+La ventana principal está dividida en tres bloques principales: panel central
+de imagen, gráfico espectral y panel lateral de controles.
 
-```
-float[,] banda = cubo.GetBand(índice)    ← extrae la capa 2D
-        │
-        ▼
-[1] Normalización por percentiles (2 % – 98 %)
-    Esto elimina píxeles extremos (ruido, saturación) que distorsionarían
-    el contraste. Un 2 % de píxeles muy brillantes no "apagará" el resto.
-        │
-        ▼
-[2] Umbral de señal
-    Valores por debajo del umbral → negro (fondo sin bioluminiscencia)
-        │
-        ▼
-[3] Corrección gamma
-    gamma < 1  → aclara las señales débiles (más sensible)
-    gamma = 1  → escala lineal (por defecto)
-    gamma > 1  → oscurece las señales débiles (más contraste en altas)
-        │
-        ▼
-[4] Mapeo de color (colormap)
-    El valor normalizado t ∈ [0, 1] se convierte en un color RGB
-        │
-        ▼
-Bitmap 24bpp → se muestra en pantalla o se guarda en PNG/TIFF
-```
+1) Panel de imagen (izquierda superior)
+   - Visualiza la banda actualmente seleccionada en la paleta elegida.
+   - Información mostrada en tiempo real: coordenadas del cursor (X,Y), banda
+     actual, longitud de onda y valor numérico del píxel.
+   - Interacciones:
+     - Slider de banda: recorre bandas; la línea vertical en el gráfico
+       espectral se actualiza para marcar la λ activa.
+     - Clic izquierdo: añade un punto de interés (hasta 6). Cada punto pinta
+       una cruz de color y su espectro se muestra en el gráfico.
+     - Doble clic: borra todos los puntos seleccionados.
+     - Zoom (rueda del ratón + Ctrl): acercar/alejar la vista (si está activo).
 
-**Paletas de color disponibles:**
+2) Gráfico espectral (izquierda inferior)
+   - Eje X: longitudes de onda (según `wavelength` en `.hdr`) o índices de
+     banda si no hay wavelengths.
+   - Eje Y: valores absolutos del `.raw` (reflectancia, radiancia o cuentas).
+   - Cada punto seleccionado genera:
+     - Línea de color única y área sombreada bajo la curva.
+     - Punto resaltado en la banda actualmente visible.
+     - Leyenda con coordenadas y estadísticas (mín, máx, integral aproximada).
+   - Herramientas de análisis:
+     - Suavizado (opcional, moving average o Savitzky-Golay) para ver la
+       forma espectral sin ruido.
+     - Promediado espacial: calcular espectro medio en ventana NxN alrededor
+       del píxel seleccionado.
 
-| Paleta            | Descripción                                   | Cuándo usarla                    |
-|-------------------|-----------------------------------------------|----------------------------------|
-| Rainbow           | Negro→azul→cian→verde→amarillo→rojo→blanco    | BLI estándar, contraste máximo   |
-| HeatMap           | Negro→rojo→naranja→amarillo→blanco            | Hotspots de bioluminiscencia     |
-| ColdBlue          | Negro→azul→cian→blanco                        | Señales débiles, bajo ruido      |
-| GreenFluorescent  | Negro→verde oscuro→verde brillante            | GFP, FITC, Alexa 488             |
-| RedFluorescent    | Negro→rojo oscuro→rojo vivo                   | mCherry, Cy3, Alexa 594          |
-| VisibleSpectrum   | Color físico según longitud de onda λ         | Visualización espectral real     |
-| Grayscale         | Escala de grises                              | Análisis cuantitativo            |
-
----
-
-## La interfaz — Qué hace cada parte
-
-### Zona izquierda superior — La imagen
-
-Aquí se muestra la imagen de la banda actualmente seleccionada en pseudocolor.
-
-- **Slider superior:** desplázalo para cambiar de banda. Verás cómo cambia la imagen
-  a medida que cambias la longitud de onda. La etiqueta muestra la banda actual y su λ.
-- **Etiqueta flotante sobre la imagen:** al mover el ratón muestra en tiempo real
-  las coordenadas del píxel (X, Y) y su valor numérico en la banda actual.
-- **Clic izquierdo:** selecciona ese píxel para analizar su espectro (ver zona inferior).
-  Puedes hacer clic en hasta 6 píxeles distintos para comparar sus espectros.
-- **Doble clic:** limpia todos los píxeles seleccionados y el gráfico.
-
-Los píxeles seleccionados se marcan con una **cruz de color** y sus coordenadas
-directamente sobre la imagen.
+3) Panel lateral (derecha) — Controles principales
+   - Visualización
+     - Selector de paleta (Rainbow, HeatMap, ColdBlue, GreenFluorescent,
+       RedFluorescent, VisibleSpectrum, Grayscale). Añadir nuevas paletas es
+       posible implementando un IColormap y registrándolo en BliRenderer.
+     - Mostrar/Ocultar barra de escala (colorbar) con unidades y ticks.
+     - Modo Grayscale (forzar visualización en escala de grises).
+   - Ajustes de imagen
+     - Gamma (float): corrección no lineal aplicada tras la normalización.
+     - Percentil bajo / alto (0–100): define el rango de contraste basado en
+       percentiles de píxeles (por defecto 2 / 98).
+     - Umbral de señal (float): valores por debajo se pintan de negro.
+     - Normalización por banda o global (usar percentiles por banda o por
+       cubo completo).
+   - Exportar
+     - Exportar banda actual (PNG/TIFF/BMP). Opciones: incluir colorbar,
+       formato de color (24bpp/32bpp), metadatos (banda, λ, percentiles usados).
+     - Exportar todas las bandas: guarda cada banda como archivo separado y
+       opcionalmente genera un script para animación (FFmpeg) o un GIF.
+     - Exportar espectros seleccionados como CSV (columnas: wavelength, val1,
+       val2, ...).
+   - Info de banda
+     - Muestra número de banda, λ asociada, min/max y valor medio.
 
 ---
 
-### Zona izquierda inferior — El gráfico espectral
+## Pipeline de procesamiento y algoritmos (detallado)
 
-Este gráfico lineal muestra el **espectro completo** de los píxeles seleccionados.
+El renderizado de una banda a BLI sigue estos pasos en `BliRenderer`:
 
-```
-Eje X = longitud de onda (en nm u otras unidades según el .hdr)
-Eje Y = intensidad / reflectancia (el valor numérico del .raw)
-```
+1) Extracción de la banda (float[,])
+   - Se obtiene una matriz 2D con los valores de la banda solicitada. Si el
+     cubo está almacenado en otro tipo numérico, se convierten a float para
+     evitar pérdida de precisión en cálculos.
 
-**Qué información contiene el gráfico:**
+2) Normalización por percentiles
+   - Se calculan los percentiles p_low y p_high del conjunto de píxeles.
+   - Los valores se clipean y normalizan a [0,1] mediante:
 
-- **Línea de color por cada píxel seleccionado:** cada color corresponde a la
-  cruz del mismo color sobre la imagen. La leyenda en la esquina muestra las
-  coordenadas de cada píxel.
-- **Área sombreada bajo cada curva:** facilita ver la forma espectral de un vistazo.
-- **Línea amarilla discontinua vertical:** marca la longitud de onda de la banda
-  que está actualmente visible en la imagen. Al mover el slider, esta línea se mueve.
-- **Punto sólido sobre cada curva:** indica el valor exacto de cada píxel en la
-  banda actualmente visible.
-- **Grid de fondo:** referencia visual para leer valores.
+     t = (v - P_low) / (P_high - P_low)
 
-**Cómo comparar varios píxeles:**
-1. Haz clic en un punto de la imagen → aparece la primera curva en cian
-2. Haz clic en otro punto → aparece una segunda curva en amarillo
-3. Sigue hasta 6 curvas simultáneas
-4. Doble clic sobre la imagen (o botón "Limpiar puntos") para empezar de nuevo
+     Donde P_low = percentile(p_low), P_high = percentile(p_high). Valores
+     fuera del rango se saturan a 0 o 1.
 
----
+   - Este método es robusto frente a outliers y saturación.
 
-### Panel derecho — Controles
+3) Aplicación de umbral de señal
+   - Los valores normalizados menores que el umbral (en unidades del raw o en
+     t) se establecen a 0 (negro). Esto elimina ruido de fondo.
 
-**Sección VISUALIZACIÓN:**
-- **Paleta de color:** elige cómo se colorea la imagen (ver tabla de paletas arriba)
-- **Mostrar barra de escala:** superpone una barra vertical en la imagen que muestra
-  qué valor corresponde a cada color
-- **Modo escala de grises:** muestra la imagen en blanco y negro en lugar de
-  pseudocolor. Útil para análisis cuantitativo o publicaciones científicas.
+4) Corrección gamma
+   - Aplicamos la función y = x^(1/gamma) (o x^gamma según convención). En
+     este proyecto se usa y = x^(1/gamma) para que gamma < 1 ilumine zonas
+     bajas.
 
-**Sección AJUSTES DE IMAGEN:**
-- **Gamma:** controla el brillo de las señales débiles. Baja el gamma (por ejemplo 0.5)
-  si los detalles en zonas oscuras son importantes.
-- **Percentil bajo / alto:** definen el rango de contraste. Si pones 0 y 100 usará
-  el mínimo y máximo absolutos. Con 2 y 98 ignora el 2 % de píxeles más extremos
-  en cada extremo, que suele dar un contraste más útil.
-- **Umbral de señal:** valores por debajo de este número se pintan de negro.
-  Útil para suprimir el ruido de fondo en bioimagen.
+5) Mapeo de color
+   - Para cada valor t en [0,1] se consulta la paleta (IColormap) que devuelve
+     un Color RGBA.
+   - En paletas con componente alfa se respeta la transparencia; al final se
+     compone sobre fondo negro.
 
-**Sección EXPORTAR:**
-- **Exportar banda actual:** guarda la imagen visible ahora mismo como PNG, TIFF o BMP.
-- **Exportar todas las bandas:** guarda todas las bandas del cubo como imágenes
-  individuales en una carpeta. Útil para crear animaciones o análisis posteriores.
-- **Limpiar puntos del gráfico:** elimina todos los píxeles seleccionados.
+6) Opciones adicionales
+   - Escalado por factor espacial, suavizado gaussian o median filters antes
+     del render para reducir ruido.
 
-**Sección INFO DE BANDA:**
-Muestra el número de banda, su longitud de onda, y los valores mínimo y máximo
-de esa banda específica.
+Fórmulas clave:
+
+- Normalización por percentiles: t = clamp((v - P_low)/(P_high-P_low), 0, 1)
+- Gamma (usada aquí): out = pow(t, 1.0f / gamma)
+
+Nota: Cuando se renderizan imágenes para análisis cuantitativo, es recomendable
+usar percentiles 0–100 y gamma = 1 para evitar transformaciones no lineales.
 
 ---
 
-## Barra de estado inferior
+## Formatos y lectura de datos ENVI (.hdr + .raw)
 
-Muestra en tiempo real las coordenadas del ratón, la banda actual, la longitud
-de onda y el valor numérico del píxel bajo el cursor. Cuando el programa está
-cargando o exportando, muestra el progreso en porcentaje.
+El formato ENVI comunica cómo interpretar el `.raw` desde el archivo `.hdr`.
+Campos importantes y cómo se usan en `EnviHeader.cs`:
+
+- samples = cantidad de columnas (width)
+- lines   = cantidad de filas (height)
+- bands   = número de bandas (depth)
+- data type = código numérico ENVI (1,2,4,5,12, ...)
+- interleave = BSQ | BIL | BIP
+- byte order = 0 (little-endian) | 1 (big-endian)
+- wavelength / wavelengths = lista o rango de longitudes de onda asociadas
+  a cada banda.
+
+Lectura del `.raw`:
+
+- Si interleave=BSQ: las bandas están contiguas en el archivo. Lectura sencilla
+  por bloques.
+- Si interleave=BIL: cada línea contiene los valores de todas las bandas para
+  esa fila; la lectura accede por filas y reasigna a la estructura interna.
+- Si interleave=BIP: cada píxel contiene las N bandas en secuencia; lectura
+  por pixel y reordenado.
+
+Para tipos de dato se mapean a C# así (ejemplos):
+
+- ENVI 1  -> byte
+- ENVI 2  -> short (Int16)
+- ENVI 4  -> float (Single)
+- ENVI 5  -> double
+- ENVI 12 -> ushort (UInt16)
+
+Byte order: si el sistema del archivo difiere, se aplica Endian swap al leer.
+
+Memory layout utilizado por la aplicación (interno):
+
+- float[banda, fila, columna] (orden por banda para acceso a bandas contiguas)
+
+Carga en memoria vs streaming:
+
+- Para cubos pequeños/medios se carga todo en memoria para acceso interactivo.
+- Para cubos muy grandes se pueden implementar lecturas parciales (tiling)
+  o mapeo de archivo (MemoryMappedFile). Actualmente la aplicación está
+  optimizada para sistemas con suficiente RAM para el cubo completo.
 
 ---
 
-## Uso desde código (sin interfaz gráfica)
+## API pública (clases y ejemplos)
 
-Si quieres usar las clases directamente en otro programa:
+Principales clases y miembros (resumen):
 
-```csharp
+- EnviHeader
+  - Propiedades: Samples, Lines, Bands, DataType, Interleave, ByteOrder,
+    Wavelengths (float[]), Metadata (Dictionary<string,string>)
+  - static EnviHeader Parse(string hdrPath)
+
+- HyperspectralCube
+  - Propiedades: Header (EnviHeader), Samples, Lines, Bands
+  - static HyperspectralCube Load(string hdrPath) — carga .hdr + .raw
+  - float[] GetSpectrum(int line, int sample) — devuelve espectro (Bands)
+  - float[,] GetBand(int bandIndex) — devuelve la banda como 2D
+  - void SaveBandAsPng(int bandIndex, string path, BliRenderOptions opts)
+
+- BliRenderer
+  - static Bitmap RenderBand(HyperspectralCube cube, int bandIndex,
+    BliRenderOptions opts)
+  - static Bitmap RenderRGB(HyperspectralCube cube, int r, int g, int b,
+    BliRenderOptions opts)
+
+- BliRenderOptions
+  - Colormap (enum / IColormap), Gamma, LowPercentile, HighPercentile,
+    Threshold, DrawColorbar, Wavelength
+
+Ejemplo de uso (conservando el estilo del proyecto):
+
 using SpecimenFX17.Imaging;
 
-// Cargar el cubo
+// Cargar cubo
 var cube = HyperspectralCube.Load(@"C:\datos\muestra.hdr");
 
-// Información básica
-Console.WriteLine($"Dimensiones: {cube.Samples} × {cube.Lines} px");
-Console.WriteLine($"Bandas: {cube.Bands}");
-Console.WriteLine($"Rango λ: {cube.Header.Wavelengths[0]:F1} – {cube.Header.Wavelengths[^1]:F1} nm");
-
-// Encontrar la banda más cercana a 650 nm
+// Renderizar banda cercana a 650 nm
 int banda650 = cube.Header.Wavelengths
     .Select((wl, i) => (diff: Math.Abs(wl - 650.0), i))
-    .OrderBy(x => x.diff)
-    .First().i;
+    .OrderBy(x => x.diff).First().i;
 
-// Obtener el espectro completo de un píxel
-float[] espectro = cube.GetSpectrum(line: 240, sample: 320);
-
-// Renderizar esa banda como imagen BLI
-var opciones = new BliRenderOptions
+var opts = new BliRenderOptions
 {
-    Colormap       = BliColormap.RedFluorescent,
-    Gamma          = 0.7f,
-    LowPercentile  = 2f,
+    Colormap = BliColormap.RedFluorescent,
+    Gamma = 0.8f,
+    LowPercentile = 2f,
     HighPercentile = 98f,
-    DrawColorbar   = true,
-    Wavelength     = cube.Header.Wavelengths[banda650]
+    DrawColorbar = true,
+    Wavelength = cube.Header.Wavelengths[banda650]
 };
 
-using var imagen = BliRenderer.RenderBand(cube, banda650, opciones);
-imagen.Save(@"C:\salida\bli_650nm.png", System.Drawing.Imaging.ImageFormat.Png);
+using var img = BliRenderer.RenderBand(cube, banda650, opts);
+img.Save(@"C:\salida\bli_650nm.png", System.Drawing.Imaging.ImageFormat.Png);
 
-// Crear imagen RGB combinando tres bandas
-int bandaR = /* banda cercana a 650 nm */ banda650;
-int bandaG = /* banda cercana a 550 nm */ 0;  // calcular igual
-int bandaB = /* banda cercana a 450 nm */ 0;
-using var rgb = BliRenderer.RenderRGB(cube, bandaR, bandaG, bandaB, opciones);
-rgb.Save(@"C:\salida\rgb_compuesto.png", System.Drawing.Imaging.ImageFormat.Png);
-```
+También se puede obtener el espectro de un píxel:
+
+float[] espectro = cube.GetSpectrum(line: 240, sample: 320);
+
+Exportar varios espectros a CSV:
+
+// ejemplo: escribir columna de wavelength + N columnas de valores
 
 ---
 
-## Preguntas frecuentes
+## Exportación y formatos soportados
 
-**¿Qué hago si el programa no encuentra el archivo .raw?**
-El `.hdr` y el `.raw` deben estar en la misma carpeta y tener exactamente el
-mismo nombre (solo cambia la extensión). Por ejemplo: `muestra.hdr` y `muestra.raw`.
+- Imágenes: PNG (predeterminado), TIFF y BMP. PNG recomendado para calidad y
+  compresión sin pérdida. TIFF útil para metadatos y bitdepth mayores.
+- Espectros: CSV con encabezado (wavelength, x1y2, x2y3, ...).
+- Exportar todas las bandas crea nombres con sufijo `_bandaNNN.png` y puede
+  generar un archivo batch para crear animaciones.
 
-**¿Por qué la imagen sale toda negra o toda blanca?**
-Prueba a ajustar los percentiles. Si la señal está concentrada en un rango muy
-estrecho, bajar el percentil alto (por ejemplo a 80 %) puede ayudar.
+Opciones de exportación incluyen la inclusión del colorbar y metadatos JSON
+adjunto con los parámetros de render (percentiles, gamma, colormap).
 
-**¿El programa modifica mis archivos originales?**
-No. El programa solo lee los archivos `.hdr` y `.raw`. Nunca los modifica.
+---
 
-**¿Puedo abrir imágenes con extensión .img o .dat en lugar de .raw?**
-Sí. El programa busca automáticamente extensiones alternativas (.img, .dat,
-.bil, .bip, .bsq) si no encuentra el `.raw`.
+## Rendimiento, memoria y optimizaciones
 
-**¿Qué significa el valor numérico que aparece al pasar el ratón?**
-Es el valor original del archivo `.raw` para ese píxel en la banda actual.
-Puede ser reflectancia, radiancia, cuentas de detector, o cualquier magnitud
-según cómo haya sido calibrado el equipo specimenFX17.
+- Lectura: uso de buffering y BinaryReader para lectura rápida de raw.
+- Conversión a float centralizada para evitar conversiones múltiples.
+- Rendering: uso de unsafe/LockBits y manipulación directa de bytes del
+  Bitmap para maximizar velocidad (evitar SetPixel por píxel).
+- Multi-threading: el render de imagen puede paralelizarse por filas o
+  tiles para usar múltiples cores; revisar BliRenderer si se desea activar.
+
+Recomendaciones:
+- Para cubos >8GB, usar MemoryMappedFile o procesado por tiles.
+- Si la interfaz se vuelve lenta al calcular percentiles, calcularlos en un
+  hilo en background y mostrar progreso.
+
+---
+
+## Tests y validación
+
+Incluye tests unitarios (si están presentes en el proyecto): usar Test Explorer
+o `dotnet test` para ejecutar. Las pruebas cubren parsing de .hdr, lectura de
+raw en los tres interleaves y render básico.
+
+Cómo ejecutar:
+
+1. Abrir la solución en Visual Studio y ejecutar pruebas desde Test Explorer.
+2. O bien usar la CLI: dotnet test ./tests/SpecimenFX17.Tests
+
+---
+
+## Problemas conocidos y limitaciones
+
+- No implementado streaming por defecto: la aplicación carga el cubo completo.
+- No todos los formatos TIFF avanzados están soportados (p. ej. BigTIFF con
+  compresión especial).
+- El preprocesado avanzado (corrección radiométrica, calibración) no está
+  integrado y debe realizarse por el usuario antes de la visualización si
+  se requiere.
+
+Si necesitas alguna de estas características, abre un issue para discutir
+prioridades.
+
+---
+
+## Solución de problemas (detallada)
+
+- Error al abrir / compilar:
+  - Verifica que el .NET SDK 10 está instalado y que Visual Studio usa ese SDK.
+  - Revisar las propiedades del proyecto y el TFM (TargetFramework) en
+    `SpecimenFX17Viewer.csproj`.
+- Archivo .raw no encontrado:
+  - Asegúrate de que el nombre base del `.hdr` coincide con el `.raw` y que
+    ambos están en la misma carpeta.
+  - Si el `.raw` tiene extensión diferente, renómbralo o usa la opción de
+    abrir archivo manual en la UI.
+- Valores saturados (imagen muy clara o muy oscura):
+  - Ajusta percentiles y gamma. Comprueba además si los valores en el raw son
+    de tipo distinto (p. ej. 16 bits) y la interpretación de escala.
+
+---
+
+## Contribuir
+
+Pasos recomendados:
+
+1. Fork del repositorio.
+2. Crear una rama con nombre descriptivo (`feature/...` o `fix/...`).
+3. Añadir tests que cubran la nueva funcionalidad.
+4. Abrir Pull Request y describir los cambios.
+
+Si introduces cambios en la API pública, actualiza este README y añade ejemplos.
+
+
+---
+
+## Contacto y créditos
+
+Desarrollador: KACR Alberto
+
+Repositorio: https://github.com/KACRalberto/Visor-de-imagenes-hiperespectrales-capturadas-por-SpecimenFx17
+
+Para bugs o solicitudes, abrir un issue en GitHub.
+
+---
+
+Última actualización: consultar el historial de commits para cambios recientes.

@@ -51,14 +51,14 @@ namespace SpecimenFX17.Imaging
         private float[,]? _resultData;
         private Bitmap? _resultBitmap;
 
-        // ── Fórmulas predefinidas (Derivadas añadidas aquí) ────────────────
+        // ── Fórmulas predefinidas ────────────────
         private static readonly (string Name, string Formula)[] Presets =
         {
             ("NDVI",        "(B{800} - B{680}) / (B{800} + B{680})"),
             ("EVI",         "2.5 * (B{800} - B{680}) / (B{800} + 6*B{680} - 7.5*B{450} + 1)"),
             ("Ratio R/G",   "B{680} / B{550}"),
-            ("1ª Derivada", "(B[10] - B[8]) / 2"),     // Aproximación por dif. central
-            ("2ª Derivada", "B[11] - 2*B[10] + B[9]"), // Aproximación dif. segunda
+            ("1ª Derivada", "(B[10] - B[8]) / 2"),
+            ("2ª Derivada", "B[11] - 2*B[10] + B[9]"),
             ("Suma B1+B2",  "B[1] + B[2]"),
             ("Media geom.", "sqrt(B[1] * B[2])"),
             ("Log B1+1",    "log(B[1] + 1)"),
@@ -71,8 +71,11 @@ namespace SpecimenFX17.Imaging
             _cube = cube;
             _selections = selections ?? Array.Empty<SelectionShape>();
             Text = "Calculadora Espectral — SpecimenFX17";
-            Size = new Size(1150, 820);
-            MinimumSize = new Size(900, 650);
+
+            // Reducido el tamaño mínimo para garantizar que siempre quepa en portátiles
+            Size = new Size(1000, 700);
+            MinimumSize = new Size(800, 500);
+
             BackColor = Color.FromArgb(18, 18, 26);
             ForeColor = Color.White;
             Font = new Font("Segoe UI", 9f);
@@ -84,7 +87,23 @@ namespace SpecimenFX17.Imaging
             var leftPanel = new Panel { Dock = DockStyle.Left, Width = 240, BackColor = Color.FromArgb(22, 22, 34), Padding = new Padding(8), AutoScroll = true };
             BuildLeftPanel(leftPanel);
 
-            var centerPanel = new Panel { Dock = DockStyle.Fill, BackColor = Color.FromArgb(18, 18, 26) };
+            // ⚠️ FIX DEFINITIVO: TableLayoutPanel principal para que nada se solape ni se empuje fuera de la pantalla.
+            var centerLayout = new TableLayoutPanel
+            {
+                Dock = DockStyle.Fill,
+                ColumnCount = 1,
+                RowCount = 5,
+                BackColor = Color.FromArgb(18, 18, 26),
+                Margin = new Padding(0),
+                Padding = new Padding(0)
+            };
+
+            centerLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f));
+            centerLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 130f)); // formulaPanel
+            centerLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 22f));  // selBanner
+            centerLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 26f));  // statusPanel
+            centerLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 36f));  // toolPanel
+            centerLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100f));  // Tabs absorben el resto
 
             var formulaPanel = BuildFormulaPanel();
             var selBanner = BuildSelectionBanner();
@@ -92,13 +111,20 @@ namespace SpecimenFX17.Imaging
             var toolPanel = BuildToolPanel();
             _tabs = BuildTabs();
 
-            centerPanel.Controls.Add(_tabs);
-            centerPanel.Controls.Add(toolPanel);
-            centerPanel.Controls.Add(statusPanel);
-            centerPanel.Controls.Add(selBanner);
-            centerPanel.Controls.Add(formulaPanel);
+            formulaPanel.Dock = DockStyle.Fill;
+            selBanner.Dock = DockStyle.Fill;
+            statusPanel.Dock = DockStyle.Fill;
+            toolPanel.Dock = DockStyle.Fill;
+            _tabs.Dock = DockStyle.Fill;
 
-            Controls.Add(centerPanel);
+            centerLayout.Controls.Add(formulaPanel, 0, 0);
+            centerLayout.Controls.Add(selBanner, 0, 1);
+            centerLayout.Controls.Add(statusPanel, 0, 2);
+            centerLayout.Controls.Add(toolPanel, 0, 3);
+            centerLayout.Controls.Add(_tabs, 0, 4);
+
+            // Importante el orden: se añade el centro y luego la izquierda
+            Controls.Add(centerLayout);
             Controls.Add(leftPanel);
 
             UpdatePreview();
@@ -194,54 +220,150 @@ namespace SpecimenFX17.Imaging
             string msg; Color bannerColor;
             if (hasSel) { var parts = new List<string> { $"{selCount} selección(es): " + string.Join(", ", _selections.Select(s => s.LegendIcon + s.ShortLabel)) }; msg = $"  🎯  Modo selección activo:  {string.Join("  +  ", parts)}   —   solo se calculará sobre esta selección"; bannerColor = Color.FromArgb(28, 55, 28); }
             else { msg = $"  🌐  Imagen completa:  {_cube.Samples} × {_cube.Lines} px  ({(long)_cube.Samples * _cube.Lines:N0} píxeles)   —   selecciona píxeles/regiones en la ventana principal para limitar el cálculo"; bannerColor = Color.FromArgb(25, 30, 45); }
-            var banner = new Panel { Dock = DockStyle.Top, Height = 22, BackColor = bannerColor };
+            var banner = new Panel { Margin = new Padding(0), BackColor = bannerColor };
             var lbl = new Label { Dock = DockStyle.Fill, Text = msg, ForeColor = hasSel ? Color.FromArgb(130, 230, 130) : Color.FromArgb(110, 130, 180), Font = new Font("Segoe UI", 8f, hasSel ? FontStyle.Bold : FontStyle.Regular), TextAlign = ContentAlignment.MiddleLeft, Padding = new Padding(4, 0, 0, 0) };
             banner.Controls.Add(lbl); return banner;
         }
 
         private Panel BuildFormulaPanel()
         {
-            var fp = new Panel { Dock = DockStyle.Top, Height = 130, BackColor = Color.FromArgb(22, 22, 34) };
+            var fp = new Panel { Width = 1000, Height = 130, Margin = new Padding(0), BackColor = Color.FromArgb(22, 22, 34) };
             AddLbl(fp, "EXPRESIÓN MATEMÁTICA", 6, bold: true, color: Color.FromArgb(100, 160, 220));
-            _txtFormula = new RichTextBox { Location = new Point(10, 24), Size = new Size(fp.Width - 140, 44), Anchor = AnchorStyles.Left | AnchorStyles.Right | AnchorStyles.Top, BackColor = Color.FromArgb(28, 28, 50), ForeColor = Color.FromArgb(190, 240, 190), Font = new Font("Consolas", 12f), BorderStyle = BorderStyle.FixedSingle, WordWrap = false, Multiline = false, Text = "(B{800} - B{680}) / (B{800} + B{680})" };
-            _txtFormula.TextChanged += (_, _) => UpdatePreview(); fp.Controls.Add(_txtFormula);
-            var syntaxLbl = new Label { Location = new Point(10, 73), Size = new Size(fp.Width - 140, 50), Anchor = AnchorStyles.Left | AnchorStyles.Right | AnchorStyles.Top, ForeColor = Color.FromArgb(100, 100, 140), Font = new Font("Consolas", 7.5f), Text = "B{λ} = banda más cercana a λ nm   •   B[n] = banda por índice\nOps: + - * / ^    sqrt  log  log2  log10  exp  abs\nsin  cos  tan  asin  acos  atan  min(a,b)  max(a,b)  pow(a,b)  PI  E" };
+
+            _txtFormula = new RichTextBox { Location = new Point(10, 24), Width = fp.Width - 140, Height = 44, Anchor = AnchorStyles.Left | AnchorStyles.Right | AnchorStyles.Top, BackColor = Color.FromArgb(28, 28, 50), ForeColor = Color.FromArgb(190, 240, 190), Font = new Font("Consolas", 12f), BorderStyle = BorderStyle.FixedSingle, WordWrap = false, Multiline = false, Text = "(B{800} - B{680}) / (B{800} + B{680})" };
+            _txtFormula.TextChanged += (_, _) => UpdatePreview();
+            fp.Controls.Add(_txtFormula);
+
+            var syntaxLbl = new Label { Location = new Point(10, 73), Width = fp.Width - 140, Height = 50, Anchor = AnchorStyles.Left | AnchorStyles.Right | AnchorStyles.Top, ForeColor = Color.FromArgb(100, 100, 140), Font = new Font("Consolas", 7.5f), Text = "B{λ} = banda más cercana a λ nm   •   B[n] = banda por índice\nOps: + - * / ^    sqrt  log  log2  log10  exp  abs\nsin  cos  tan  asin  acos  atan  min(a,b)  max(a,b)  pow(a,b)  PI  E" };
             fp.Controls.Add(syntaxLbl);
-            _btnCalc = new Button { Text = "▶  Calcular", Location = new Point(fp.Width - 125, 24), Width = 115, Height = 28, Anchor = AnchorStyles.Right | AnchorStyles.Top, FlatStyle = FlatStyle.Flat, BackColor = Color.FromArgb(35, 110, 55), ForeColor = Color.White, Font = new Font("Segoe UI", 9f, FontStyle.Bold), Cursor = Cursors.Hand };
-            _btnCalc.FlatAppearance.BorderColor = Color.FromArgb(55, 150, 75); _btnCalc.Click += BtnCalc_Click; fp.Controls.Add(_btnCalc);
-            _btnSave = new Button { Text = "💾  Guardar imagen", Location = new Point(fp.Width - 125, 56), Width = 115, Height = 28, Anchor = AnchorStyles.Right | AnchorStyles.Top, FlatStyle = FlatStyle.Flat, BackColor = Color.FromArgb(35, 70, 115), ForeColor = Color.White, Cursor = Cursors.Hand, Enabled = false };
-            _btnSave.FlatAppearance.BorderColor = Color.FromArgb(55, 100, 155); _btnSave.Click += BtnSave_Click; fp.Controls.Add(_btnSave);
-            fp.Resize += (_, _) => { _txtFormula.Width = fp.Width - 140; syntaxLbl.Width = fp.Width - 140; _btnCalc.Location = new Point(fp.Width - 125, 24); _btnSave.Location = new Point(fp.Width - 125, 56); };
+
+            _btnCalc = new Button { Text = "▶  Calcular", Location = new Point(fp.Width - 120, 24), Width = 110, Height = 28, Anchor = AnchorStyles.Right | AnchorStyles.Top, FlatStyle = FlatStyle.Flat, BackColor = Color.FromArgb(35, 110, 55), ForeColor = Color.White, Font = new Font("Segoe UI", 9f, FontStyle.Bold), Cursor = Cursors.Hand };
+            _btnCalc.FlatAppearance.BorderColor = Color.FromArgb(55, 150, 75);
+            _btnCalc.Click += BtnCalc_Click;
+            fp.Controls.Add(_btnCalc);
+
+            _btnSave = new Button { Text = "💾  Guardar imagen", Location = new Point(fp.Width - 120, 56), Width = 110, Height = 28, Anchor = AnchorStyles.Right | AnchorStyles.Top, FlatStyle = FlatStyle.Flat, BackColor = Color.FromArgb(35, 70, 115), ForeColor = Color.White, Cursor = Cursors.Hand, Enabled = false };
+            _btnSave.FlatAppearance.BorderColor = Color.FromArgb(55, 100, 155);
+            _btnSave.Click += BtnSave_Click;
+            fp.Controls.Add(_btnSave);
+
             return fp;
         }
 
         private Panel BuildStatusPanel()
         {
-            var sp = new Panel { Dock = DockStyle.Top, Height = 26, BackColor = Color.FromArgb(14, 14, 24) };
-            _lblPreview = new Label { Dock = DockStyle.Left, Width = 500, ForeColor = Color.FromArgb(120, 210, 120), Font = new Font("Consolas", 8.5f), TextAlign = ContentAlignment.MiddleLeft, Padding = new Padding(8, 0, 0, 0) };
+            var sp = new TableLayoutPanel { Margin = new Padding(0), BackColor = Color.FromArgb(14, 14, 24), ColumnCount = 2, RowCount = 1 };
+            sp.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50f));
+            sp.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50f));
+
+            _lblPreview = new Label { Dock = DockStyle.Fill, ForeColor = Color.FromArgb(120, 210, 120), Font = new Font("Consolas", 8.5f), TextAlign = ContentAlignment.MiddleLeft, Padding = new Padding(8, 0, 0, 0) };
             _lblError = new Label { Dock = DockStyle.Fill, ForeColor = Color.FromArgb(255, 100, 100), Font = new Font("Consolas", 8.5f), TextAlign = ContentAlignment.MiddleLeft, Padding = new Padding(4, 0, 0, 0) };
-            sp.Controls.Add(_lblError); sp.Controls.Add(_lblPreview); return sp;
+
+            sp.Controls.Add(_lblPreview, 0, 0);
+            sp.Controls.Add(_lblError, 1, 0);
+            return sp;
         }
 
         private Panel BuildToolPanel()
         {
-            var tp = new Panel { Dock = DockStyle.Top, Height = 30, BackColor = Color.FromArgb(20, 20, 32) };
-            AddLbl(tp, "Paleta:", 7, size: 8.5f);
-            _cmbColormap = new ComboBox { Location = new Point(48, 4), Width = 155, DropDownStyle = ComboBoxStyle.DropDownList, BackColor = Color.FromArgb(36, 36, 55), ForeColor = Color.White, FlatStyle = FlatStyle.Flat };
-            _cmbColormap.Items.AddRange(Enum.GetNames(typeof(BliColormap))); _cmbColormap.SelectedIndex = 0; tp.Controls.Add(_cmbColormap);
-            _progress = new ProgressBar { Location = new Point(215, 7), Width = 190, Height = 16, Style = ProgressBarStyle.Continuous, Visible = false }; tp.Controls.Add(_progress);
-            _lblStatus = new Label { Location = new Point(415, 5), Width = 600, Height = 20, ForeColor = Color.FromArgb(140, 150, 190), Font = new Font("Consolas", 8f), TextAlign = ContentAlignment.MiddleLeft }; tp.Controls.Add(_lblStatus);
+            var tp = new TableLayoutPanel
+            {
+                Margin = new Padding(0),
+                BackColor = Color.FromArgb(20, 20, 32),
+                ColumnCount = 4,
+                RowCount = 1
+            };
+            tp.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 60f));
+            tp.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 160f));
+            tp.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 200f));
+            tp.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f));
+
+            var lblPaleta = new Label { Text = "Paleta:", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleRight, ForeColor = Color.FromArgb(130, 130, 175), Font = new Font("Segoe UI", 8.5f) };
+
+            _cmbColormap = new ComboBox { Dock = DockStyle.Fill, DropDownStyle = ComboBoxStyle.DropDownList, BackColor = Color.FromArgb(36, 36, 55), ForeColor = Color.White, FlatStyle = FlatStyle.Flat, Margin = new Padding(4, 6, 4, 6) };
+            _cmbColormap.Items.AddRange(Enum.GetNames(typeof(BliColormap))); _cmbColormap.SelectedIndex = 0;
+
+            _progress = new ProgressBar { Dock = DockStyle.Fill, Style = ProgressBarStyle.Continuous, Visible = false, Margin = new Padding(10, 8, 10, 8) };
+
+            _lblStatus = new Label { Dock = DockStyle.Fill, ForeColor = Color.FromArgb(140, 150, 190), Font = new Font("Consolas", 8f), TextAlign = ContentAlignment.MiddleLeft };
+
+            tp.Controls.Add(lblPaleta, 0, 0);
+            tp.Controls.Add(_cmbColormap, 1, 0);
+            tp.Controls.Add(_progress, 2, 0);
+            tp.Controls.Add(_lblStatus, 3, 0);
+
             return tp;
         }
 
         private TabControl BuildTabs()
         {
-            var tc = new TabControl { Dock = DockStyle.Fill, BackColor = Color.FromArgb(18, 18, 26), Padding = new Point(12, 4) };
-            var pgImg = new TabPage("🖼  Imagen") { BackColor = Color.FromArgb(10, 10, 18) }; _tabImage = new PictureBox { Dock = DockStyle.Fill, SizeMode = PictureBoxSizeMode.Zoom, BackColor = Color.FromArgb(10, 10, 18) }; pgImg.Controls.Add(_tabImage); tc.TabPages.Add(pgImg);
-            var pgHisto = new TabPage("📊  Histograma") { BackColor = Color.FromArgb(10, 10, 18) }; _tabHisto = new PictureBox { Dock = DockStyle.Fill, SizeMode = PictureBoxSizeMode.Normal, BackColor = Color.FromArgb(10, 10, 18) }; _tabHisto.Resize += (_, _) => { if (_resultData != null) DrawHistogram(); }; AttachZoom(_tabHisto, () => DrawHistogram(), () => { _zoomHisto = null; DrawHistogram(); }, z => _zoomHisto = z, () => _zoomHisto); pgHisto.Controls.Add(_tabHisto); tc.TabPages.Add(pgHisto);
-            var pgPH = new TabPage("↔  Perfil fila") { BackColor = Color.FromArgb(10, 10, 18) }; var phContainer = new Panel { Dock = DockStyle.Fill, BackColor = Color.FromArgb(10, 10, 18) }; var phBar = new Panel { Dock = DockStyle.Top, Height = 34, BackColor = Color.FromArgb(18, 18, 28) }; AddLbl(phBar, "Fila:", 8, size: 8.5f); _trkRow = new TrackBar { Location = new Point(40, 4), Width = 400, Height = 24, Minimum = 0, Maximum = Math.Max(0, _cube.Lines - 1), Value = _cube.Lines / 2, TickStyle = TickStyle.None, BackColor = Color.FromArgb(18, 18, 28) }; _lblRow = new Label { Location = new Point(445, 8), Width = 120, Height = 18, ForeColor = Color.FromArgb(150, 200, 255), Font = new Font("Consolas", 8.5f), Text = $"y = {_cube.Lines / 2}" }; _trkRow.Scroll += (_, _) => { _lblRow.Text = $"y = {_trkRow.Value}"; if (_resultData != null) DrawProfileH(); }; phBar.Controls.Add(_trkRow); phBar.Controls.Add(_lblRow); _tabProfileH = new PictureBox { Dock = DockStyle.Fill, SizeMode = PictureBoxSizeMode.Normal, BackColor = Color.FromArgb(10, 10, 18) }; _tabProfileH.Resize += (_, _) => { if (_resultData != null) DrawProfileH(); }; AttachZoom(_tabProfileH, () => DrawProfileH(), () => { _zoomPH = null; DrawProfileH(); }, z => _zoomPH = z, () => _zoomPH); phContainer.Controls.Add(_tabProfileH); phContainer.Controls.Add(phBar); pgPH.Controls.Add(phContainer); tc.TabPages.Add(pgPH);
-            var pgPV = new TabPage("↕  Perfil columna") { BackColor = Color.FromArgb(10, 10, 18) }; var pvContainer = new Panel { Dock = DockStyle.Fill, BackColor = Color.FromArgb(10, 10, 18) }; var pvBar = new Panel { Dock = DockStyle.Top, Height = 34, BackColor = Color.FromArgb(18, 18, 28) }; AddLbl(pvBar, "Columna:", 8, size: 8.5f); _trkCol = new TrackBar { Location = new Point(68, 4), Width = 400, Height = 24, Minimum = 0, Maximum = Math.Max(0, _cube.Samples - 1), Value = _cube.Samples / 2, TickStyle = TickStyle.None, BackColor = Color.FromArgb(18, 18, 28) }; _lblCol = new Label { Location = new Point(475, 8), Width = 120, Height = 18, ForeColor = Color.FromArgb(150, 200, 255), Font = new Font("Consolas", 8.5f), Text = $"x = {_cube.Samples / 2}" }; _trkCol.Scroll += (_, _) => { _lblCol.Text = $"x = {_trkCol.Value}"; if (_resultData != null) DrawProfileV(); }; pvBar.Controls.Add(_trkCol); pvBar.Controls.Add(_lblCol); _tabProfileV = new PictureBox { Dock = DockStyle.Fill, SizeMode = PictureBoxSizeMode.Normal, BackColor = Color.FromArgb(10, 10, 18) }; _tabProfileV.Resize += (_, _) => { if (_resultData != null) DrawProfileV(); }; AttachZoom(_tabProfileV, () => DrawProfileV(), () => { _zoomPV = null; DrawProfileV(); }, z => _zoomPV = z, () => _zoomPV); pvContainer.Controls.Add(_tabProfileV); pvContainer.Controls.Add(pvBar); pgPV.Controls.Add(pvContainer); tc.TabPages.Add(pgPV);
-            var pgStats = new TabPage("📋  Estadísticas") { BackColor = Color.FromArgb(14, 14, 24) }; _tabStats = new RichTextBox { Dock = DockStyle.Fill, BackColor = Color.FromArgb(14, 14, 24), ForeColor = Color.FromArgb(200, 220, 200), Font = new Font("Consolas", 10f), ReadOnly = true, BorderStyle = BorderStyle.None }; pgStats.Controls.Add(_tabStats); tc.TabPages.Add(pgStats);
+            var tc = new TabControl { Dock = DockStyle.Fill, BackColor = Color.FromArgb(18, 18, 26), Padding = new Point(12, 4), Margin = new Padding(0) };
+
+            var pgImg = new TabPage("🖼  Imagen") { BackColor = Color.FromArgb(10, 10, 18) };
+            _tabImage = new PictureBox { Dock = DockStyle.Fill, SizeMode = PictureBoxSizeMode.Zoom, BackColor = Color.FromArgb(10, 10, 18) };
+            pgImg.Controls.Add(_tabImage); tc.TabPages.Add(pgImg);
+
+            var pgHisto = new TabPage("📊  Histograma") { BackColor = Color.FromArgb(10, 10, 18) };
+            _tabHisto = new PictureBox { Dock = DockStyle.Fill, SizeMode = PictureBoxSizeMode.Normal, BackColor = Color.FromArgb(10, 10, 18) };
+            _tabHisto.Resize += (_, _) => { if (_resultData != null) DrawHistogram(); };
+            AttachZoom(_tabHisto, () => DrawHistogram(), () => { _zoomHisto = null; DrawHistogram(); }, z => _zoomHisto = z, () => _zoomHisto);
+            pgHisto.Controls.Add(_tabHisto); tc.TabPages.Add(pgHisto);
+
+            var pgPH = new TabPage("↔  Perfil fila") { BackColor = Color.FromArgb(10, 10, 18) };
+            var phContainer = new Panel { Dock = DockStyle.Fill, BackColor = Color.FromArgb(10, 10, 18) };
+
+            var phBar = new TableLayoutPanel { Dock = DockStyle.Top, Height = 34, BackColor = Color.FromArgb(18, 18, 28), ColumnCount = 3, RowCount = 1 };
+            phBar.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 60f));
+            phBar.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f));
+            phBar.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 120f));
+
+            var lblH = new Label { Text = "Fila:", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleCenter, ForeColor = Color.FromArgb(130, 130, 175), Font = new Font("Segoe UI", 8.5f) };
+            _trkRow = new TrackBar { Dock = DockStyle.Fill, Minimum = 0, Maximum = Math.Max(0, _cube.Lines - 1), Value = _cube.Lines / 2, TickStyle = TickStyle.None, BackColor = Color.FromArgb(18, 18, 28) };
+            _lblRow = new Label { Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleCenter, ForeColor = Color.FromArgb(150, 200, 255), Font = new Font("Consolas", 8.5f), Text = $"y = {_cube.Lines / 2}" };
+
+            _trkRow.Scroll += (_, _) => { _lblRow.Text = $"y = {_trkRow.Value}"; if (_resultData != null) DrawProfileH(); };
+            phBar.Controls.Add(lblH, 0, 0);
+            phBar.Controls.Add(_trkRow, 1, 0);
+            phBar.Controls.Add(_lblRow, 2, 0);
+
+            _tabProfileH = new PictureBox { Dock = DockStyle.Fill, SizeMode = PictureBoxSizeMode.Normal, BackColor = Color.FromArgb(10, 10, 18) };
+            _tabProfileH.Resize += (_, _) => { if (_resultData != null) DrawProfileH(); };
+            AttachZoom(_tabProfileH, () => DrawProfileH(), () => { _zoomPH = null; DrawProfileH(); }, z => _zoomPH = z, () => _zoomPH);
+            phContainer.Controls.Add(_tabProfileH); phContainer.Controls.Add(phBar); pgPH.Controls.Add(phContainer); tc.TabPages.Add(pgPH);
+
+            var pgPV = new TabPage("↕  Perfil columna") { BackColor = Color.FromArgb(10, 10, 18) };
+            var pvContainer = new Panel { Dock = DockStyle.Fill, BackColor = Color.FromArgb(10, 10, 18) };
+
+            var pvBar = new TableLayoutPanel { Dock = DockStyle.Top, Height = 34, BackColor = Color.FromArgb(18, 18, 28), ColumnCount = 3, RowCount = 1 };
+            pvBar.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 75f));
+            pvBar.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f));
+            pvBar.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 120f));
+
+            var lblV = new Label { Text = "Columna:", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleCenter, ForeColor = Color.FromArgb(130, 130, 175), Font = new Font("Segoe UI", 8.5f) };
+            _trkCol = new TrackBar { Dock = DockStyle.Fill, Minimum = 0, Maximum = Math.Max(0, _cube.Samples - 1), Value = _cube.Samples / 2, TickStyle = TickStyle.None, BackColor = Color.FromArgb(18, 18, 28) };
+            _lblCol = new Label { Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleCenter, ForeColor = Color.FromArgb(150, 200, 255), Font = new Font("Consolas", 8.5f), Text = $"x = {_cube.Samples / 2}" };
+
+            _trkCol.Scroll += (_, _) => { _lblCol.Text = $"x = {_trkCol.Value}"; if (_resultData != null) DrawProfileV(); };
+            pvBar.Controls.Add(lblV, 0, 0);
+            pvBar.Controls.Add(_trkCol, 1, 0);
+            pvBar.Controls.Add(_lblCol, 2, 0);
+
+            _tabProfileV = new PictureBox { Dock = DockStyle.Fill, SizeMode = PictureBoxSizeMode.Normal, BackColor = Color.FromArgb(10, 10, 18) };
+            _tabProfileV.Resize += (_, _) => { if (_resultData != null) DrawProfileV(); };
+            AttachZoom(_tabProfileV, () => DrawProfileV(), () => { _zoomPV = null; DrawProfileV(); }, z => _zoomPV = z, () => _zoomPV);
+            pvContainer.Controls.Add(_tabProfileV); pvContainer.Controls.Add(pvBar); pgPV.Controls.Add(pvContainer); tc.TabPages.Add(pgPV);
+
+            var pgStats = new TabPage("📋  Estadísticas") { BackColor = Color.FromArgb(14, 14, 24) };
+            _tabStats = new RichTextBox { Dock = DockStyle.Fill, BackColor = Color.FromArgb(14, 14, 24), ForeColor = Color.FromArgb(200, 220, 200), Font = new Font("Consolas", 10f), ReadOnly = true, BorderStyle = BorderStyle.None, WordWrap = false };
+            pgStats.Controls.Add(_tabStats); tc.TabPages.Add(pgStats);
+
+            tc.SelectedIndexChanged += (s, e) => {
+                if (_resultData == null) return;
+                if (tc.SelectedTab == pgHisto) DrawHistogram();
+                else if (tc.SelectedTab == pgPH) DrawProfileH();
+                else if (tc.SelectedTab == pgPV) DrawProfileV();
+            };
+
             return tc;
         }
 
@@ -306,7 +428,7 @@ namespace SpecimenFX17.Imaging
         private void DrawHistogram()
         {
             if (_resultData == null) return;
-            int w = Math.Max(_tabHisto.Width, 400), h = Math.Max(_tabHisto.Height, 200); var zoom = _zoomHisto;
+            int w = Math.Max(_tabHisto.Width, 10), h = Math.Max(_tabHisto.Height, 10); var zoom = _zoomHisto;
             const int bins = 256; var stats = CalcStats(_resultData); float range = stats.Max - stats.Min; if (range < 1e-10f) range = 1f;
             float fullXMin = stats.Min, fullXRange = stats.Max - stats.Min; if (fullXRange < 1e-10f) fullXRange = 1f;
             float histoXMin = zoom != null ? fullXMin + zoom.X0 * fullXRange : stats.Min; float histoXMax = zoom != null ? fullXMin + zoom.X1 * fullXRange : stats.Max;
@@ -316,6 +438,7 @@ namespace SpecimenFX17.Imaging
             int maxCount = counts.Max(), histoYMax2 = zoom != null ? (int)(zoom.Y1 * maxCount) : maxCount, histoYMin2 = zoom != null ? (int)(zoom.Y0 * maxCount) : 0;
             var bmp = new Bitmap(w, h); using var g = Graphics.FromImage(bmp); g.SmoothingMode = SmoothingMode.AntiAlias; g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.ClearTypeGridFit; g.Clear(Color.FromArgb(12, 12, 20));
             const int padL = 58, padR = 20, padT = 28, padB = 40; var plot = new Rectangle(padL, padT, w - padL - padR, h - padT - padB);
+            if (plot.Width < 20 || plot.Height < 20) return;
             DrawPlotGrid(g, plot);
             float binW = (float)plot.Width / bins, yRangeH = histoYMax2 - histoYMin2; if (yRangeH < 1) yRangeH = 1;
             for (int i = 0; i < bins; i++) { if (counts[i] == 0) continue; float t = (float)i / (bins - 1), normH = Math.Clamp((counts[i] - histoYMin2) / yRangeH, 0f, 1f), barH = normH * plot.Height, x = plot.Left + i * binW, y = plot.Bottom - barH; var (r2, g2, b2) = GetColor(t, (BliColormap)_cmbColormap.SelectedIndex); using var brush = new SolidBrush(Color.FromArgb(200, r2, g2, b2)); g.FillRectangle(brush, x, y, Math.Max(1, binW), barH); }
@@ -327,8 +450,8 @@ namespace SpecimenFX17.Imaging
             _tabHisto.Image?.Dispose(); _tabHisto.Image = bmp;
         }
 
-        private void DrawProfileH() { if (_resultData == null) return; int row = Math.Clamp(_trkRow.Value, 0, _cube.Lines - 1), w = Math.Max(_tabProfileH.Width, 400), h = Math.Max(_tabProfileH.Height, 150); float[] profile = new float[_cube.Samples]; for (int c = 0; c < _cube.Samples; c++) profile[c] = _resultData[row, c]; var bmp = DrawLinePlot(w, h, profile, $"Columna (x)   —   fila y = {row}", "Valor", $"Perfil horizontal  │  fila {row}", Color.Cyan, _zoomPH); _tabProfileH.Image?.Dispose(); _tabProfileH.Image = bmp; }
-        private void DrawProfileV() { if (_resultData == null) return; int col = Math.Clamp(_trkCol.Value, 0, _cube.Samples - 1), w = Math.Max(_tabProfileV.Width, 400), h = Math.Max(_tabProfileV.Height, 150); float[] profile = new float[_cube.Lines]; for (int l = 0; l < _cube.Lines; l++) profile[l] = _resultData[l, col]; var bmp = DrawLinePlot(w, h, profile, $"Fila (y)   —   columna x = {col}", "Valor", $"Perfil vertical  │  columna {col}", Color.Orange, _zoomPV); _tabProfileV.Image?.Dispose(); _tabProfileV.Image = bmp; }
+        private void DrawProfileH() { if (_resultData == null) return; int row = Math.Clamp(_trkRow.Value, 0, _cube.Lines - 1), w = Math.Max(_tabProfileH.Width, 10), h = Math.Max(_tabProfileH.Height, 10); float[] profile = new float[_cube.Samples]; for (int c = 0; c < _cube.Samples; c++) profile[c] = _resultData[row, c]; var bmp = DrawLinePlot(w, h, profile, $"Columna (x)   —   fila y = {row}", "Valor", $"Perfil horizontal  │  fila {row}", Color.Cyan, _zoomPH); _tabProfileH.Image?.Dispose(); _tabProfileH.Image = bmp; }
+        private void DrawProfileV() { if (_resultData == null) return; int col = Math.Clamp(_trkCol.Value, 0, _cube.Samples - 1), w = Math.Max(_tabProfileV.Width, 10), h = Math.Max(_tabProfileV.Height, 10); float[] profile = new float[_cube.Lines]; for (int l = 0; l < _cube.Lines; l++) profile[l] = _resultData[l, col]; var bmp = DrawLinePlot(w, h, profile, $"Fila (y)   —   columna x = {col}", "Valor", $"Perfil vertical  │  columna {col}", Color.Orange, _zoomPV); _tabProfileV.Image?.Dispose(); _tabProfileV.Image = bmp; }
 
         private Bitmap DrawLinePlot(int w, int h, float[] values, string xLabel, string yLabel, string title, Color color, ZoomRange? zoom = null)
         {
