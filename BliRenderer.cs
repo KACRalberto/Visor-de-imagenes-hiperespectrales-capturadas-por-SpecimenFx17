@@ -27,41 +27,54 @@ namespace SpecimenFX17.Imaging
         {
             int lines = cube.Lines, samples = cube.Samples;
             var data = cube.GetBand(bandIndex);
+
+            // BUG 4.1 SOLUCIONADO: Snapshot local de las variables para evitar Race Conditions
+            float gamma = opts.Gamma;
+            BliColormap colormap = opts.Colormap;
+            float threshold = opts.SignalThreshold;
+            bool applyGamma = Math.Abs(gamma - 1f) > 0.001f;
+
             var (lo, hi) = GetPercentiles(data, lines, samples, opts.LowPercentile, opts.HighPercentile);
 
             var bmp = new Bitmap(samples, lines, PixelFormat.Format24bppRgb);
             var bd = bmp.LockBits(new Rectangle(0, 0, samples, lines), ImageLockMode.WriteOnly, PixelFormat.Format24bppRgb);
-            byte[] pixels = new byte[bd.Stride * lines];
 
-            float range = hi - lo <= 0 ? 1e-6f : hi - lo;
-            bool applyGamma = Math.Abs(opts.Gamma - 1f) > 0.001f;
-
-            Parallel.For(0, lines, l =>
+            try
             {
-                int rowOff = l * bd.Stride;
-                for (int s = 0; s < samples; s++)
+                byte[] pixels = new byte[bd.Stride * lines];
+                float range = hi - lo <= 0 ? 1e-6f : hi - lo;
+
+                Parallel.For(0, lines, l =>
                 {
-                    float v = data[l, s];
-                    int pOff = rowOff + s * 3;
-
-                    if (float.IsNaN(v) || v < opts.SignalThreshold)
+                    int rowOff = l * bd.Stride;
+                    for (int s = 0; s < samples; s++)
                     {
-                        pixels[pOff] = 0; pixels[pOff + 1] = 0; pixels[pOff + 2] = 0;
-                        continue;
+                        float v = data[l, s];
+                        int pOff = rowOff + s * 3;
+
+                        if (float.IsNaN(v) || v < threshold)
+                        {
+                            pixels[pOff] = 0; pixels[pOff + 1] = 0; pixels[pOff + 2] = 0;
+                            continue;
+                        }
+
+                        float t = Math.Clamp((v - lo) / range, 0f, 1f);
+                        if (applyGamma) t = (float)Math.Pow(t, gamma);
+
+                        var (r, g, b) = GetColor(t, colormap);
+                        pixels[pOff] = b; pixels[pOff + 1] = g; pixels[pOff + 2] = r;
                     }
+                });
 
-                    float t = Math.Clamp((v - lo) / range, 0f, 1f);
-                    if (applyGamma) t = (float)Math.Pow(t, opts.Gamma);
+                Marshal.Copy(pixels, 0, bd.Scan0, pixels.Length);
+            }
+            finally
+            {
+                // BUG 1.1 SOLUCIONADO: Garantiza que la memoria se libera incluso si falla un hilo
+                bmp.UnlockBits(bd);
+            }
 
-                    var (r, g, b) = GetColor(t, opts.Colormap);
-                    pixels[pOff] = b; pixels[pOff + 1] = g; pixels[pOff + 2] = r;
-                }
-            });
-
-            Marshal.Copy(pixels, 0, bd.Scan0, pixels.Length);
-            bmp.UnlockBits(bd);
-
-            if (opts.DrawColorbar) DrawColorbarOnBitmap(bmp, lo, hi, opts.Colormap);
+            if (opts.DrawColorbar) DrawColorbarOnBitmap(bmp, lo, hi, colormap);
             return bmp;
         }
 
@@ -71,48 +84,59 @@ namespace SpecimenFX17.Imaging
 
             var dataR = cube.GetBand(bandR); var dataG = cube.GetBand(bandG); var dataB = cube.GetBand(bandB);
 
+            // Evitar race conditions en hilos
+            float gamma = opts.Gamma;
+            bool applyGamma = Math.Abs(gamma - 1f) > 0.001f;
+
             var (loR, hiR) = GetPercentiles(dataR, lines, samples, opts.LowPercentile, opts.HighPercentile);
             var (loG, hiG) = GetPercentiles(dataG, lines, samples, opts.LowPercentile, opts.HighPercentile);
             var (loB, hiB) = GetPercentiles(dataB, lines, samples, opts.LowPercentile, opts.HighPercentile);
 
             var bmp = new Bitmap(samples, lines, PixelFormat.Format24bppRgb);
             var bd = bmp.LockBits(new Rectangle(0, 0, samples, lines), ImageLockMode.WriteOnly, PixelFormat.Format24bppRgb);
-            byte[] pixels = new byte[bd.Stride * lines];
 
-            float rangeR = hiR - loR <= 0 ? 1e-6f : hiR - loR;
-            float rangeG = hiG - loG <= 0 ? 1e-6f : hiG - loG;
-            float rangeB = hiB - loB <= 0 ? 1e-6f : hiB - loB;
-            bool applyGamma = Math.Abs(opts.Gamma - 1f) > 0.001f;
-
-            Parallel.For(0, lines, l =>
+            try
             {
-                int rowOff = l * bd.Stride;
-                for (int s = 0; s < samples; s++)
+                byte[] pixels = new byte[bd.Stride * lines];
+
+                float rangeR = hiR - loR <= 0 ? 1e-6f : hiR - loR;
+                float rangeG = hiG - loG <= 0 ? 1e-6f : hiG - loG;
+                float rangeB = hiB - loB <= 0 ? 1e-6f : hiB - loB;
+
+                Parallel.For(0, lines, l =>
                 {
-                    float vr = dataR[l, s], vg = dataG[l, s], vb = dataB[l, s];
-                    int pOff = rowOff + s * 3;
-
-                    if (float.IsNaN(vr) || float.IsNaN(vg) || float.IsNaN(vb))
+                    int rowOff = l * bd.Stride;
+                    for (int s = 0; s < samples; s++)
                     {
-                        pixels[pOff] = 0; pixels[pOff + 1] = 0; pixels[pOff + 2] = 0;
-                        continue;
+                        float vr = dataR[l, s], vg = dataG[l, s], vb = dataB[l, s];
+                        int pOff = rowOff + s * 3;
+
+                        if (float.IsNaN(vr) || float.IsNaN(vg) || float.IsNaN(vb))
+                        {
+                            pixels[pOff] = 0; pixels[pOff + 1] = 0; pixels[pOff + 2] = 0;
+                            continue;
+                        }
+
+                        float tr = Math.Clamp((vr - loR) / rangeR, 0f, 1f);
+                        float tg = Math.Clamp((vg - loG) / rangeG, 0f, 1f);
+                        float tb = Math.Clamp((vb - loB) / rangeB, 0f, 1f);
+
+                        if (applyGamma)
+                        {
+                            tr = (float)Math.Pow(tr, gamma); tg = (float)Math.Pow(tg, gamma); tb = (float)Math.Pow(tb, gamma);
+                        }
+
+                        pixels[pOff] = ToByte(tb); pixels[pOff + 1] = ToByte(tg); pixels[pOff + 2] = ToByte(tr);
                     }
+                });
 
-                    float tr = Math.Clamp((vr - loR) / rangeR, 0f, 1f);
-                    float tg = Math.Clamp((vg - loG) / rangeG, 0f, 1f);
-                    float tb = Math.Clamp((vb - loB) / rangeB, 0f, 1f);
+                Marshal.Copy(pixels, 0, bd.Scan0, pixels.Length);
+            }
+            finally
+            {
+                bmp.UnlockBits(bd);
+            }
 
-                    if (applyGamma)
-                    {
-                        tr = (float)Math.Pow(tr, opts.Gamma); tg = (float)Math.Pow(tg, opts.Gamma); tb = (float)Math.Pow(tb, opts.Gamma);
-                    }
-
-                    pixels[pOff] = ToByte(tb); pixels[pOff + 1] = ToByte(tg); pixels[pOff + 2] = ToByte(tr);
-                }
-            });
-
-            Marshal.Copy(pixels, 0, bd.Scan0, pixels.Length);
-            bmp.UnlockBits(bd);
             return bmp;
         }
 

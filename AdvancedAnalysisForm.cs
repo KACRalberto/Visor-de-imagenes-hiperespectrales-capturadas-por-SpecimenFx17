@@ -135,7 +135,6 @@ namespace SpecimenFX17.Imaging
                     {
                         if (!mask[y, x]) continue;
 
-                        // BUG 8 SOLUCIONADO: Ignorar NaNs para no corromper la matriz de covarianza entera
                         bool hasNan = false;
                         for (int b = 0; b < bands; b++) { if (float.IsNaN(_cube[b, y, x])) { hasNan = true; break; } }
                         if (hasNan) continue;
@@ -151,7 +150,12 @@ namespace SpecimenFX17.Imaging
                     }
                 });
 
-                if (n <= 1) return new Bitmap(samples, lines);
+                // BUG 3.1 SOLUCIONADO: Evitar divisiones por cero si la ROI es todo NaN (ej. fondo vacío)
+                if (n <= 1)
+                {
+                    Invoke(() => { _pb.Visible = false; _lblStatus.Text = "Error: Píxeles insuficientes (o nulos) para calcular PCA."; });
+                    return new Bitmap(samples, lines);
+                }
 
                 for (int b = 0; b < bands; b++) mean[b] /= n;
 
@@ -235,38 +239,50 @@ namespace SpecimenFX17.Imaging
 
                 var bMap = new Bitmap(samples, lines, PixelFormat.Format24bppRgb);
                 var bd = bMap.LockBits(new Rectangle(0, 0, samples, lines), ImageLockMode.WriteOnly, PixelFormat.Format24bppRgb);
-                byte[] pixels = new byte[bd.Stride * lines];
 
-                Parallel.For(0, lines, y =>
+                try
                 {
-                    int row = y * bd.Stride;
-                    float range1 = max1 - min1 == 0 ? 1 : max1 - min1;
-                    float range2 = max2 - min2 == 0 ? 1 : max2 - min2;
-                    float range3 = max3 - min3 == 0 ? 1 : max3 - min3;
+                    byte[] pixels = new byte[bd.Stride * lines];
 
-                    for (int x = 0; x < samples; x++)
+                    Parallel.For(0, lines, y =>
                     {
-                        int off = row + x * 3;
-                        if (!mask[y, x] || float.IsNaN(pc1[y, x]))
+                        int row = y * bd.Stride;
+                        float range1 = max1 - min1 == 0 ? 1 : max1 - min1;
+                        float range2 = max2 - min2 == 0 ? 1 : max2 - min2;
+                        float range3 = max3 - min3 == 0 ? 1 : max3 - min3;
+
+                        for (int x = 0; x < samples; x++)
                         {
-                            pixels[off] = 0; pixels[off + 1] = 0; pixels[off + 2] = 0;
-                            continue;
+                            int off = row + x * 3;
+                            if (!mask[y, x] || float.IsNaN(pc1[y, x]))
+                            {
+                                pixels[off] = 0; pixels[off + 1] = 0; pixels[off + 2] = 0;
+                                continue;
+                            }
+
+                            pixels[off] = (byte)Math.Clamp((pc3[y, x] - min3) / range3 * 255, 0, 255);
+                            pixels[off + 1] = (byte)Math.Clamp((pc2[y, x] - min2) / range2 * 255, 0, 255);
+                            pixels[off + 2] = (byte)Math.Clamp((pc1[y, x] - min1) / range1 * 255, 0, 255);
                         }
+                    });
 
-                        pixels[off] = (byte)Math.Clamp((pc3[y, x] - min3) / range3 * 255, 0, 255);
-                        pixels[off + 1] = (byte)Math.Clamp((pc2[y, x] - min2) / range2 * 255, 0, 255);
-                        pixels[off + 2] = (byte)Math.Clamp((pc1[y, x] - min1) / range1 * 255, 0, 255);
-                    }
-                });
-
-                Marshal.Copy(pixels, 0, bd.Scan0, pixels.Length);
-                bMap.UnlockBits(bd);
+                    Marshal.Copy(pixels, 0, bd.Scan0, pixels.Length);
+                }
+                finally
+                {
+                    // BUG 1.1 SOLUCIONADO
+                    bMap.UnlockBits(bd);
+                }
                 return bMap;
             });
 
             _picPca.Image?.Dispose();
             _picPca.Image = bmp;
-            _pb.Visible = false; _lblStatus.Text = $"PCA completado en {(_selections.Count > 0 ? "selección" : "imagen completa")}.";
+            if (bmp.Width > 1)
+            {
+                _pb.Visible = false;
+                _lblStatus.Text = $"PCA completado en {(_selections.Count > 0 ? "selección" : "imagen completa")}.";
+            }
         }
 
         private double[,] JacobiEigen(double[,] cov, int n)
@@ -346,6 +362,13 @@ namespace SpecimenFX17.Imaging
                 for (int b = 0; b < bands; b++) refNorm += refSpec[b] * refSpec[b];
                 refNorm = Math.Sqrt(refNorm);
 
+                // BUG 3.2 SOLUCIONADO: Evitar divisiones por cero si el espectro seleccionado es completamente nulo
+                if (refNorm < 1e-10)
+                {
+                    Invoke(() => { _pb.Visible = false; _lblStatus.Text = "Error: El espectro de referencia es nulo o completamente oscuro."; });
+                    return new Bitmap(samples, lines);
+                }
+
                 float[,] angles = new float[lines, samples];
                 float maxAngle = 0;
                 object syncObj = new object();
@@ -369,7 +392,7 @@ namespace SpecimenFX17.Imaging
                             norm += v * v;
                         }
 
-                        if (norm == 0 || refNorm == 0 || float.IsNaN((float)norm))
+                        if (norm == 0 || float.IsNaN((float)norm))
                         {
                             angles[y, x] = float.NaN;
                             continue;
@@ -377,6 +400,7 @@ namespace SpecimenFX17.Imaging
 
                         double cosTheta = dot / (refNorm * Math.Sqrt(norm));
                         if (cosTheta > 1) cosTheta = 1;
+                        if (cosTheta < -1) cosTheta = -1; // Clamp inferior adicional
                         float ang = (float)Math.Acos(cosTheta);
 
                         angles[y, x] = ang;
@@ -391,38 +415,49 @@ namespace SpecimenFX17.Imaging
 
                 var bMap = new Bitmap(samples, lines, PixelFormat.Format24bppRgb);
                 var bd = bMap.LockBits(new Rectangle(0, 0, samples, lines), ImageLockMode.WriteOnly, PixelFormat.Format24bppRgb);
-                byte[] pixels = new byte[bd.Stride * lines];
 
-                Parallel.For(0, lines, y =>
+                try
                 {
-                    int row = y * bd.Stride;
-                    float safeMaxAngle = maxAngle > 0 ? maxAngle : 1f;
+                    byte[] pixels = new byte[bd.Stride * lines];
 
-                    for (int x = 0; x < samples; x++)
+                    Parallel.For(0, lines, y =>
                     {
-                        int off = row + x * 3;
-                        if (!mask[y, x] || float.IsNaN(angles[y, x]))
+                        int row = y * bd.Stride;
+                        float safeMaxAngle = maxAngle > 0 ? maxAngle : 1f;
+
+                        for (int x = 0; x < samples; x++)
                         {
-                            pixels[off] = 0; pixels[off + 1] = 0; pixels[off + 2] = 0;
-                            continue;
+                            int off = row + x * 3;
+                            if (!mask[y, x] || float.IsNaN(angles[y, x]))
+                            {
+                                pixels[off] = 0; pixels[off + 1] = 0; pixels[off + 2] = 0;
+                                continue;
+                            }
+
+                            float t = 1f - (angles[y, x] / safeMaxAngle);
+
+                            pixels[off] = (byte)Math.Clamp((t * 3f - 2f) * 255, 0, 255);
+                            pixels[off + 1] = (byte)Math.Clamp((t * 3f - 1f) * 255, 0, 255);
+                            pixels[off + 2] = (byte)Math.Clamp(t * 3f * 255, 0, 255);
                         }
+                    });
 
-                        float t = 1f - (angles[y, x] / safeMaxAngle);
-
-                        pixels[off] = (byte)Math.Clamp((t * 3f - 2f) * 255, 0, 255);
-                        pixels[off + 1] = (byte)Math.Clamp((t * 3f - 1f) * 255, 0, 255);
-                        pixels[off + 2] = (byte)Math.Clamp(t * 3f * 255, 0, 255);
-                    }
-                });
-
-                Marshal.Copy(pixels, 0, bd.Scan0, pixels.Length);
-                bMap.UnlockBits(bd);
+                    Marshal.Copy(pixels, 0, bd.Scan0, pixels.Length);
+                }
+                finally
+                {
+                    bMap.UnlockBits(bd);
+                }
                 return bMap;
             });
 
             _picSam.Image?.Dispose();
             _picSam.Image = bmp;
-            _pb.Visible = false; _lblStatus.Text = "SAM completado. Se ha evaluado solo el área seleccionada.";
+            if (bmp.Width > 1)
+            {
+                _pb.Visible = false;
+                _lblStatus.Text = "SAM completado. Se ha evaluado solo el área seleccionada.";
+            }
         }
 
         private void RunDerivatives(object? sender, EventArgs e)
@@ -440,9 +475,10 @@ namespace SpecimenFX17.Imaging
             g.SmoothingMode = SmoothingMode.AntiAlias;
 
             var wls = _cube.Header.Wavelengths;
-            if (wls.Count < 3)
+            // BUG 2.2 SOLUCIONADO: Protección contra nulidad total o número insuficiente de bandas
+            if (wls == null || wls.Count < 3)
             {
-                _lblStatus.Text = "No hay suficientes bandas para derivar.";
+                _lblStatus.Text = "No hay longitudes de onda definidas o bandas suficientes para derivar.";
                 return;
             }
 
@@ -484,8 +520,8 @@ namespace SpecimenFX17.Imaging
 
         private void DrawCurve(Graphics g, Rectangle rect, float[] data, List<double> wls, Color col)
         {
-            float max = data.Max(v => float.IsNaN(v) ? 0 : v);
-            float min = data.Min(v => float.IsNaN(v) ? 0 : v);
+            float max = data.Max(v => float.IsNaN(v) || float.IsInfinity(v) ? 0 : v);
+            float min = data.Min(v => float.IsNaN(v) || float.IsInfinity(v) ? 0 : v);
             float rng = max - min; if (rng == 0) rng = 1;
 
             double wMin = wls[0], wMax = wls[^1], wRng = wMax - wMin;
@@ -493,8 +529,13 @@ namespace SpecimenFX17.Imaging
             var pts = new List<PointF>();
             for (int i = 2; i < data.Length - 2; i++)
             {
+                if (float.IsNaN(data[i]) || float.IsInfinity(data[i])) continue;
+
                 float x = rect.Left + (float)((wls[i] - wMin) / wRng * rect.Width);
                 float y = rect.Bottom - ((data[i] - min) / rng * rect.Height);
+
+                // Sanitize limits to prevent GDI+ OverflowException
+                y = Math.Clamp(y, rect.Top - 10000, rect.Bottom + 10000);
                 pts.Add(new PointF(x, y));
             }
 
@@ -544,7 +585,7 @@ namespace SpecimenFX17.Imaging
 
             foreach (var spec in spectra)
             {
-                float pc1 = spec.Where(v => !float.IsNaN(v)).DefaultIfEmpty(0).Average();
+                float pc1 = spec.Where(v => !float.IsNaN(v) && !float.IsInfinity(v)).DefaultIfEmpty(0).Average();
                 float pc2 = spec[bands / 2] - spec[bands / 4];
 
                 pcaScores.Add(new PointF(pc1, pc2));
@@ -575,6 +616,10 @@ namespace SpecimenFX17.Imaging
                 float px = rect.Left + ((score.X - minPc1) / rngPc1 * rect.Width);
                 float py = rect.Bottom - ((score.Y - minPc2) / rngPc2 * rect.Height);
 
+                // Sanitize rendering coordinates
+                px = Math.Clamp(px, rect.Left - 100, rect.Right + 100);
+                py = Math.Clamp(py, rect.Top - 100, rect.Bottom + 100);
+
                 using var brush = new SolidBrush(rois[i].Color);
                 using var pen = new Pen(Color.White, 1.5f);
 
@@ -586,12 +631,12 @@ namespace SpecimenFX17.Imaging
             }
 
             using var titleFont = new Font("Segoe UI", 9f, FontStyle.Bold);
-            g.DrawString("PC1 (Mayor Varianza Espectral)", titleFont, Brushes.White, rect.Left + rect.Width / 2 - 80, rect.Bottom + 10);
+            g.DrawString("PC1 (Media general simulada)", titleFont, Brushes.White, rect.Left + rect.Width / 2 - 80, rect.Bottom + 10);
 
             var state = g.Save();
             g.TranslateTransform(rect.Left - 25, rect.Top + rect.Height / 2 + 30);
             g.RotateTransform(-90);
-            g.DrawString("PC2", titleFont, Brushes.White, 0, 0);
+            g.DrawString("PC2 (Diferencia de bandas)", titleFont, Brushes.White, 0, 0);
             g.Restore(state);
         }
     }

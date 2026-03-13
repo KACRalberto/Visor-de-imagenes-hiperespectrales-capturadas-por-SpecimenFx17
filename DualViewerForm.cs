@@ -82,15 +82,34 @@ namespace SpecimenFX17.Imaging
 
         private async void LoadCube(int target)
         {
-            using var dlg = new OpenFileDialog { Title = "Abrir imagen hiperespectral ENVI", Filter = "ENVI Header (*.hdr)|*.hdr|Todos|*.*" };
-            if (dlg.ShowDialog() != DialogResult.OK) return;
+            // BUG 2.1 SOLUCIONADO: Try-catch imprescindible para evitar cierre súbito en "async void"
+            try
+            {
+                using var dlg = new OpenFileDialog { Title = "Abrir imagen hiperespectral ENVI", Filter = "ENVI Header (*.hdr)|*.hdr|Todos|*.*" };
+                if (dlg.ShowDialog() != DialogResult.OK) return;
 
-            var progress = new Progress<int>();
-            var cube = await Task.Run(() => HyperspectralCube.Load(dlg.FileName, progress));
+                var progress = new Progress<int>();
+                var cube = await Task.Run(() => HyperspectralCube.Load(dlg.FileName, progress));
 
-            if (target == 1) { _cube1 = cube; _pt1 = null; RenderImage(1); }
-            else { _cube2 = cube; _pt2 = null; RenderImage(2); }
-            _plot.Invalidate();
+                if (target == 1)
+                {
+                    // BUG 1.2 SOLUCIONADO: Limpieza profunda del Large Object Heap (LOH)
+                    _cube1 = null;
+                    GC.Collect(); GC.WaitForPendingFinalizers();
+                    _cube1 = cube; _pt1 = null; RenderImage(1);
+                }
+                else
+                {
+                    _cube2 = null;
+                    GC.Collect(); GC.WaitForPendingFinalizers();
+                    _cube2 = cube; _pt2 = null; RenderImage(2);
+                }
+                _plot.Invalidate();
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Ocurrió un error crítico al cargar el cubo:\n\n{ex.Message}", "Error de Carga", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
         }
 
         private void RenderImage(int target)
@@ -205,7 +224,6 @@ namespace SpecimenFX17.Imaging
                     g.DrawString(lb, font, brush, rect.Left - sz.Width - 5, py - sz.Height / 2);
                 }
 
-                // BUG 10 SOLUCIONADO: Validación segura al recuperar longitudes de onda en el gráfico
                 double wMin = 0, wMax = s1?.Length ?? s2?.Length ?? 100;
                 if (_cube1 != null && _cube1.Header.Wavelengths != null && _cube1.Header.Wavelengths.Count > 0) { wMin = _cube1.Header.Wavelengths[0]; wMax = _cube1.Header.Wavelengths[^1]; }
                 else if (_cube2 != null && _cube2.Header.Wavelengths != null && _cube2.Header.Wavelengths.Count > 0) { wMin = _cube2.Header.Wavelengths[0]; wMax = _cube2.Header.Wavelengths[^1]; }
@@ -228,6 +246,7 @@ namespace SpecimenFX17.Imaging
         private void DrawLine(Graphics g, Rectangle rect, float[] spec, List<double> wls, float yMin, float yRng, Color col, string legend, int legendLine)
         {
             if (spec.Length < 2) return;
+            // BUG 2.2 SOLUCIONADO: Validación segura al recuperar longitudes de onda en el gráfico
             if (wls == null || wls.Count < spec.Length) wls = Enumerable.Range(0, spec.Length).Select(i => (double)i).ToList();
 
             double xMin = wls[0], xMax = wls[^1], xRng = xMax - xMin;
@@ -241,7 +260,8 @@ namespace SpecimenFX17.Imaging
                 float px = rect.Left + (float)((wls[i] - xMin) / xRng * rect.Width);
                 float py = rect.Bottom - ((spec[i] - yMin) / yRng * rect.Height);
 
-                // Prevención de Crash en GDI+
+                // BUG 4.2 SOLUCIONADO: Prevención de Crash en GDI+ recortando valores excesivos
+                if (float.IsNaN(py) || float.IsInfinity(py)) continue;
                 py = Math.Clamp(py, rect.Top - 10000, rect.Bottom + 10000);
                 pts.Add(new PointF(px, py));
             }

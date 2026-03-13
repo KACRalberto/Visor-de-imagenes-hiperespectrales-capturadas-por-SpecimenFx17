@@ -156,19 +156,37 @@ namespace SpecimenFX17.Imaging
             Version = Guid.NewGuid();
         }
 
+        // ====================================================================
+        // PARCHE APLICADO AQUI: Tolerancia a Binning (112 vs 224 bandas)
+        // ====================================================================
         public void Calibrate(HyperspectralCube whiteRef, HyperspectralCube darkRef)
         {
-            // PARCHE: Validación estricta de dimensiones (incluyendo Bandas) antes de calibrar
-            if (whiteRef.Lines != Lines || whiteRef.Samples != Samples || whiteRef.Bands != Bands)
-                throw new ArgumentException($"La Referencia Blanca ({whiteRef.Samples}x{whiteRef.Lines}x{whiteRef.Bands}) no coincide con la imagen ({Samples}x{Lines}x{Bands}).");
-            if (darkRef.Lines != Lines || darkRef.Samples != Samples || darkRef.Bands != Bands)
-                throw new ArgumentException($"La Referencia Oscura ({darkRef.Samples}x{darkRef.Lines}x{darkRef.Bands}) no coincide con la imagen ({Samples}x{Lines}x{Bands}).");
+            // Solo exigimos que el ancho (Samples) sea igual. Permitimos diferencia de bandas.
+            if (whiteRef.Samples != Samples || darkRef.Samples != Samples)
+                throw new ArgumentException($"El ancho de la imagen ({Samples}px) no coincide con las referencias (Blanca={whiteRef.Samples}px, Oscura={darkRef.Samples}px).");
+
+            int[] wMap = new int[Bands];
+            int[] dMap = new int[Bands];
+
+            // Mapeo dinámico de las bandas por su longitud de onda real
+            for (int b = 0; b < Bands; b++)
+            {
+                double targetWl = (Header.Wavelengths != null && Header.Wavelengths.Count > b)
+                    ? Header.Wavelengths[b]
+                    : 0;
+
+                wMap[b] = GetClosestBandIndex(whiteRef, targetWl, b);
+                dMap[b] = GetClosestBandIndex(darkRef, targetWl, b);
+            }
 
             float[,] maxWhite = new float[Bands, Samples];
             float[,] minDark = new float[Bands, Samples];
 
             Parallel.For(0, Bands, b =>
             {
+                int mappedW = wMap[b];
+                int mappedD = dMap[b];
+
                 for (int s = 0; s < Samples; s++)
                 {
                     float wMax = float.MinValue;
@@ -176,12 +194,12 @@ namespace SpecimenFX17.Imaging
 
                     for (int l = 0; l < whiteRef.Lines; l++)
                     {
-                        float v = whiteRef[b, l, s];
+                        float v = whiteRef[mappedW, l, s];
                         if (!float.IsNaN(v) && !float.IsInfinity(v) && v > wMax) wMax = v;
                     }
                     for (int l = 0; l < darkRef.Lines; l++)
                     {
-                        float v = darkRef[b, l, s];
+                        float v = darkRef[mappedD, l, s];
                         if (!float.IsNaN(v) && !float.IsInfinity(v) && v < dMin) dMin = v;
                     }
 
@@ -210,7 +228,6 @@ namespace SpecimenFX17.Imaging
                             if (range <= 0.0001f) range = 0.0001f;
 
                             float res = (val - d) / range;
-                            // PARCHE: Protección contra Infinity/NaN para evitar crash de GDI+
                             if (float.IsNaN(res) || float.IsInfinity(res)) res = 0f;
 
                             _cube[b, l, s] = res;
@@ -224,6 +241,32 @@ namespace SpecimenFX17.Imaging
             ComputeStats();
             Version = Guid.NewGuid();
         }
+
+        // Subrutina auxiliar para encontrar la banda equivalente
+        private int GetClosestBandIndex(HyperspectralCube refCube, double targetWl, int fallbackIndex)
+        {
+            if (refCube.Header.Wavelengths == null || refCube.Header.Wavelengths.Count == 0 || targetWl == 0)
+            {
+                // Si no hay información de longitud de onda, usamos una interpolación proporcional
+                double ratio = (double)fallbackIndex / Math.Max(1, Bands - 1);
+                int mapped = (int)Math.Round(ratio * (refCube.Bands - 1));
+                return Math.Clamp(mapped, 0, refCube.Bands - 1);
+            }
+
+            int bestIdx = 0;
+            double minDiff = double.MaxValue;
+            for (int i = 0; i < refCube.Header.Wavelengths.Count; i++)
+            {
+                double diff = Math.Abs(refCube.Header.Wavelengths[i] - targetWl);
+                if (diff < minDiff)
+                {
+                    minDiff = diff;
+                    bestIdx = i;
+                }
+            }
+            return bestIdx;
+        }
+        // ====================================================================
 
         public void ConvertToAbsorbance()
         {
