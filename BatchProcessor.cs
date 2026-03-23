@@ -9,83 +9,132 @@ namespace SpecimenFX17.Imaging
 {
     public class BatchOptions
     {
-        public bool ApplySNV { get; set; }
-        public bool ApplyMSC { get; set; }
-        public bool ConvertToAbsorbance { get; set; }
+        public bool ApplyNormalize { get; set; }  // Calibración blanco/negro
+        public bool ConvertToAbsorbance { get; set; }  // -log(R), requiere normalización
+        public bool ApplySNV { get; set; }  // SNV (excluyente con MSC)
+        public bool ApplyMSC { get; set; }  // MSC (excluyente con SNV)
+        public bool ApplySavitzkyGolay { get; set; }
+        public int SgWindow { get; set; } = 15;
+        public int SgPoly { get; set; } = 2;
+        public int SgDeriv { get; set; } = 1;
+        public bool ApplyMedianFilter { get; set; }
     }
 
     public static class BatchProcessor
     {
+        // Prefijos de nombre que identifican archivos de referencia (no son muestras)
+        private static readonly string[] ReferenceFilePrefixes =
+            { "dark", "white", "blank", "reference", "ref_", "dark_", "white_", "blanco", "oscuro" };
+
+        /// <summary>
+        /// Devuelve true si el .hdr corresponde a un archivo de referencia (blanco/oscuro)
+        /// que no debe procesarse como muestra.
+        /// </summary>
+        private static bool IsReferenceFile(string hdrPath)
+        {
+            string name = Path.GetFileNameWithoutExtension(hdrPath).ToLowerInvariant();
+            return ReferenceFilePrefixes.Any(prefix => name.StartsWith(prefix));
+        }
+
+        /// <summary>
+        /// Devuelve true si existe el archivo binario de datos (.raw, .bil, .bip, etc.)
+        /// </summary>
+        private static bool HasBinaryData(string hdrPath)
+        {
+            string basePath = hdrPath[..^4]; // quitar .hdr
+            if (File.Exists(basePath)) return true;
+            foreach (var ext in new[] { ".raw", ".img", ".dat", ".bil", ".bip", ".bsq" })
+                if (File.Exists(basePath + ext)) return true;
+            return false;
+        }
+
+        /// <summary>
+        /// Procesa todos los archivos .hdr de una carpeta, aplica filtros quimiométricos 
+        /// y extrae el espectro medio a un único archivo CSV resumen.
+        /// Omite automáticamente archivos de referencia (dark/white) y archivos sin binario.
+        /// </summary>
         public static async Task ProcessFolderAsync(string inputFolder, string outputCsvPath, BatchOptions options, IProgress<int> progress)
         {
             await Task.Run(() =>
             {
-                if (!Directory.Exists(inputFolder))
-                    throw new DirectoryNotFoundException("La carpeta de entrada no existe.");
-
-                var hdrFiles = Directory.GetFiles(inputFolder, "*.hdr");
-                if (hdrFiles.Length == 0)
+                var allHdrFiles = Directory.GetFiles(inputFolder, "*.hdr");
+                if (allHdrFiles.Length == 0)
                     throw new Exception("No se encontraron archivos .hdr en la carpeta especificada.");
+
+                // Filtrar: solo muestras con archivo binario presente
+                var skippedRef = allHdrFiles.Where(IsReferenceFile).ToList();
+                var skippedNoBin = allHdrFiles.Where(f => !IsReferenceFile(f) && !HasBinaryData(f)).ToList();
+                var hdrFiles = allHdrFiles.Where(f => !IsReferenceFile(f) && HasBinaryData(f)).ToArray();
+
+                if (hdrFiles.Length == 0)
+                    throw new Exception(
+                        $"No hay muestras procesables.\n" +
+                        $"  - Omitidos por ser referencia (dark/white): {skippedRef.Count}\n" +
+                        $"  - Omitidos por falta de archivo binario: {skippedNoBin.Count}");
+
+                var csvBuilder = new StringBuilder();
+
+                // Línea de diagnóstico: pipeline aplicado
+                var pipelineSteps = new System.Collections.Generic.List<string> { "Raw" };
+                if (options.ConvertToAbsorbance) pipelineSteps.Add("Absorbancia");
+                if (options.ApplySNV) pipelineSteps.Add("SNV");
+                if (options.ApplyMSC) pipelineSteps.Add("MSC");
+                if (options.ApplySavitzkyGolay) pipelineSteps.Add($"SG(W:{options.SgWindow},P:{options.SgPoly},D:{options.SgDeriv})");
+                if (options.ApplyMedianFilter) pipelineSteps.Add("Mediana3x3");
+                csvBuilder.AppendLine($"# Pipeline aplicado: {string.Join(" → ", pipelineSteps)}");
+
+                // Cabecera de diagnóstico: archivos omitidos
+                if (skippedRef.Count > 0)
+                    csvBuilder.AppendLine($"# OMITIDOS (referencia dark/white): {string.Join(", ", skippedRef.Select(Path.GetFileNameWithoutExtension))}");
+                if (skippedNoBin.Count > 0)
+                    csvBuilder.AppendLine($"# OMITIDOS (sin archivo binario): {string.Join(", ", skippedNoBin.Select(Path.GetFileNameWithoutExtension))}");
 
                 bool headerWritten = false;
 
-                // BUG 2.3 SOLUCIONADO: Manejo robusto de excepciones de I/O si el CSV está abierto en otro programa
-                try
+                for (int i = 0; i < hdrFiles.Length; i++)
                 {
-                    using var writer = new StreamWriter(outputCsvPath, false, Encoding.UTF8);
+                    string hdrPath = hdrFiles[i];
 
-                    for (int i = 0; i < hdrFiles.Length; i++)
+                    try
                     {
-                        string hdrPath = hdrFiles[i];
+                        var cube = HyperspectralCube.Load(hdrPath);
 
-                        try
+                        // Pipeline en el mismo orden que la interfaz principal
+                        if (options.ConvertToAbsorbance && cube.IsCalibrated)
+                            cube.ConvertToAbsorbance();
+
+                        if (options.ApplySNV)
+                            cube.ApplySNV();
+                        else if (options.ApplyMSC)
+                            cube.ApplyMSC();
+
+                        if (options.ApplySavitzkyGolay)
+                            cube.ApplySavitzkyGolay(options.SgWindow, options.SgPoly, options.SgDeriv);
+
+                        if (options.ApplyMedianFilter)
+                            cube.ApplySpatialMedianFilter(3);
+
+                        float[] globalSpectrum = cube.GetGlobalMeanSpectrum();
+
+                        if (!headerWritten)
                         {
-                            var cube = HyperspectralCube.Load(hdrPath);
-
-                            if (options.ConvertToAbsorbance)
-                                cube.ConvertToAbsorbance();
-                            if (options.ApplySNV)
-                                cube.ApplySNV();
-                            if (options.ApplyMSC)
-                                cube.ApplyMSC();
-
-                            float[] globalSpectrum = cube.GetGlobalMeanSpectrum();
-
-                            if (!headerWritten)
-                            {
-                                writer.Write("Filename,");
-                                var wls = cube.Header.Wavelengths;
-                                // BUG 2.2 SOLUCIONADO: Prevención si Wavelengths es null
-                                if (wls != null && wls.Count == cube.Bands)
-                                    writer.WriteLine(string.Join(",", wls.Select(w => w.ToString("F2"))));
-                                else
-                                    writer.WriteLine(string.Join(",", Enumerable.Range(1, cube.Bands).Select(b => $"Band_{b}")));
-
-                                headerWritten = true;
-                            }
-
-                            writer.Write($"{Path.GetFileNameWithoutExtension(hdrPath)},");
-                            writer.WriteLine(string.Join(",", globalSpectrum.Select(v => v.ToString("G5"))));
-                        }
-                        catch (Exception ex)
-                        {
-                            // Si falla un solo cubo, documentamos el error pero no crasheamos el lote completo
-                            writer.WriteLine($"{Path.GetFileNameWithoutExtension(hdrPath)}, ERROR AL CARGAR O PROCESAR: {ex.Message}");
+                            csvBuilder.Append("Filename,");
+                            csvBuilder.AppendLine(string.Join(",", cube.Header.Wavelengths.Select(w => w.ToString("F2", System.Globalization.CultureInfo.InvariantCulture))));
+                            headerWritten = true;
                         }
 
-                        // Forzar vaciado periódico del buffer al disco para evitar sobrecarga RAM
-                        if (i % 10 == 0) writer.Flush();
-
-                        int percentComplete = (int)(((float)(i + 1) / hdrFiles.Length) * 100);
-                        progress?.Report(percentComplete);
+                        csvBuilder.Append($"{Path.GetFileNameWithoutExtension(hdrPath)},");
+                        csvBuilder.AppendLine(string.Join(",", globalSpectrum.Select(v => v.ToString("G5", System.Globalization.CultureInfo.InvariantCulture))));
+                    }
+                    catch (Exception ex)
+                    {
+                        csvBuilder.AppendLine($"{Path.GetFileNameWithoutExtension(hdrPath)}, ERROR: {ex.Message}");
                     }
 
-                    writer.Flush();
+                    progress?.Report((int)(((float)(i + 1) / hdrFiles.Length) * 100));
                 }
-                catch (IOException ioEx)
-                {
-                    throw new Exception($"No se pudo escribir en el archivo de salida. Asegúrate de que no esté abierto en Excel u otro programa.\nDetalles: {ioEx.Message}");
-                }
+
+                File.WriteAllText(outputCsvPath, csvBuilder.ToString(), Encoding.UTF8);
             });
         }
     }
