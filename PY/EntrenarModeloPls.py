@@ -14,7 +14,7 @@ def main():
     print(f"📥 Cargando datos desde: {args.input_csv}")
     
     try:
-        df = pd.read_csv(args.input_csv, sep=None, engine='python') # Detecta el separador (, o ;) automáticamente
+        df = pd.read_csv(args.input_csv, sep=None, engine='python')
     except Exception as e:
         print(f"❌ Error al leer el archivo CSV: {e}")
         return
@@ -29,37 +29,45 @@ def main():
     # Separar la Y
     y = df[args.target]
     
-    # Separar la X (Solo las bandas)
-    X = df.filter(regex='^Wl_')
+    # Separar la X (Solo las bandas). Añadimos .copy() para evitar el SettingWithCopyWarning
+    X = df.filter(regex='^Wl_').copy()
 
     print("🛡️ Limpiando formato de Excel en las bandas...")
-    # BLINDAJE CONTRA EXCEL: Reemplazar comas por puntos y forzar TODO a números
     for col in X.columns:
-        # Pasamos a texto, cambiamos comas por puntos
         X[col] = X[col].astype(str).str.replace(',', '.')
-        # Forzamos conversión numérica. Lo que sea texto roto (ej: 30.952.382) se volverá NaN
         X[col] = pd.to_numeric(X[col], errors='coerce')
 
-    # Reemplazar infinitos y los nuevos NaN por 0
     X = X.replace([np.inf, -np.inf], np.nan)
     X = X.fillna(0)
 
-    print(f"🧠 Entrenando modelo PLS con {args.components} componentes sobre {X.shape[1]} bandas reales...")
-    pls = PLSRegression(n_components=args.components)
+    # SOLUCIÓN AL CRASHEO: Ajustar dinámicamente los componentes al número de filas
+    n_samples = X.shape[0]
+    n_features = X.shape[1]
+    
+    if n_samples == 0:
+        print("❌ Error: No hay datos válidos para entrenar.")
+        return
+
+    # Scikit-learn no permite más componentes que el número de muestras
+    comp_to_use = min(args.components, n_samples)
+    if comp_to_use < args.components:
+        print(f"⚠️ Aviso automático: Tienes muy pocos datos ({n_samples} filas). Reduciendo componentes PLS de {args.components} a {comp_to_use} para evitar crasheos.")
+
+    print(f"🧠 Entrenando modelo PLS con {comp_to_use} componentes sobre {n_features} bandas reales...")
+    pls = PLSRegression(n_components=comp_to_use)
     pls.fit(X, y)
 
-    intercept = pls.intercept_[0]
-    coefs = pls.coef_.flatten()
+    # Extraer la ecuación matemática
+    intercept = pls.intercept_[0] if isinstance(pls.intercept_, (list, np.ndarray)) else pls.intercept_
+    coefs = pls.coef_
 
-    print(f"💾 Guardando modelo en: {args.output}")
-    try:
-        with open(args.output, 'w') as f:
-            f.write(f"Intercept,{intercept}\n")
-            coef_str = ",".join(map(str, coefs))
-            f.write(f"Coefs,{coef_str}\n")
-        print("✅ ¡Modelo exportado con éxito!")
-    except Exception as e:
-        print(f"❌ Error al guardar el archivo: {e}")
+    # Guardar archivo con el formato exacto que pide el programa en C#
+    with open(args.output, 'w') as f:
+        f.write(f"Intercepto,{intercept}\n")
+        f.write("Coeficientes," + ",".join(map(str, coefs.flatten())) + "\n")
+
+    print(f"✅ ¡Éxito total! Modelo guardado en: {args.output}")
+    print("👉 Ahora puedes cargar este archivo en SpecimenFX17 y generar tu mapa de °Brix.")
 
 if __name__ == "__main__":
     main()

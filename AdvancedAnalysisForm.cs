@@ -150,7 +150,6 @@ namespace SpecimenFX17.Imaging
                     }
                 });
 
-                // BUG 3.1 SOLUCIONADO: Evitar divisiones por cero si la ROI es todo NaN (ej. fondo vacío)
                 if (n <= 1)
                 {
                     Invoke(() => { _pb.Visible = false; _lblStatus.Text = "Error: Píxeles insuficientes (o nulos) para calcular PCA."; });
@@ -270,7 +269,6 @@ namespace SpecimenFX17.Imaging
                 }
                 finally
                 {
-                    // BUG 1.1 SOLUCIONADO
                     bMap.UnlockBits(bd);
                 }
                 return bMap;
@@ -362,7 +360,6 @@ namespace SpecimenFX17.Imaging
                 for (int b = 0; b < bands; b++) refNorm += refSpec[b] * refSpec[b];
                 refNorm = Math.Sqrt(refNorm);
 
-                // BUG 3.2 SOLUCIONADO: Evitar divisiones por cero si el espectro seleccionado es completamente nulo
                 if (refNorm < 1e-10)
                 {
                     Invoke(() => { _pb.Visible = false; _lblStatus.Text = "Error: El espectro de referencia es nulo o completamente oscuro."; });
@@ -400,7 +397,7 @@ namespace SpecimenFX17.Imaging
 
                         double cosTheta = dot / (refNorm * Math.Sqrt(norm));
                         if (cosTheta > 1) cosTheta = 1;
-                        if (cosTheta < -1) cosTheta = -1; // Clamp inferior adicional
+                        if (cosTheta < -1) cosTheta = -1;
                         float ang = (float)Math.Acos(cosTheta);
 
                         angles[y, x] = ang;
@@ -475,7 +472,6 @@ namespace SpecimenFX17.Imaging
             g.SmoothingMode = SmoothingMode.AntiAlias;
 
             var wls = _cube.Header.Wavelengths;
-            // BUG 2.2 SOLUCIONADO: Protección contra nulidad total o número insuficiente de bandas
             if (wls == null || wls.Count < 3)
             {
                 _lblStatus.Text = "No hay longitudes de onda definidas o bandas suficientes para derivar.";
@@ -491,22 +487,29 @@ namespace SpecimenFX17.Imaging
             foreach (var sel in _selections)
             {
                 float[] spec = sel.GetSpectrum(_cube);
-                float[] d1 = new float[spec.Length];
-                float[] d2 = new float[spec.Length];
 
-                for (int i = 1; i < spec.Length - 1; i++)
+                // SOLUCIÓN AL CRASH: Restringimos el bucle al límite físico de Wavelengths
+                int validBands = Math.Min(spec.Length, wls.Count);
+                if (validBands < 3) continue;
+
+                float[] d1 = new float[validBands];
+                float[] d2 = new float[validBands];
+
+                for (int i = 1; i < validBands - 1; i++)
                 {
                     double dw = wls[i + 1] - wls[i - 1];
+                    if (Math.Abs(dw) < 1e-6) dw = 1; // Defensa extra contra división por cero
                     d1[i] = (float)((spec[i + 1] - spec[i - 1]) / dw);
                 }
-                for (int i = 2; i < spec.Length - 2; i++)
+                for (int i = 2; i < validBands - 2; i++)
                 {
                     double dw = wls[i + 1] - wls[i - 1];
+                    if (Math.Abs(dw) < 1e-6) dw = 1;
                     d2[i] = (float)((d1[i + 1] - d1[i - 1]) / dw);
                 }
 
-                DrawCurve(g, rect1, d1, wls, sel.Color);
-                DrawCurve(g, rect2, d2, wls, sel.Color);
+                DrawCurve(g, rect1, d1, wls, sel.Color, validBands);
+                DrawCurve(g, rect2, d2, wls, sel.Color, validBands);
             }
 
             using var font = new Font("Segoe UI", 9f, FontStyle.Bold);
@@ -518,23 +521,32 @@ namespace SpecimenFX17.Imaging
             _lblStatus.Text = $"Derivadas trazadas para {_selections.Count} selección(es).";
         }
 
-        private void DrawCurve(Graphics g, Rectangle rect, float[] data, List<double> wls, Color col)
+        private void DrawCurve(Graphics g, Rectangle rect, float[] data, List<double> wls, Color col, int validBands)
         {
-            float max = data.Max(v => float.IsNaN(v) || float.IsInfinity(v) ? 0 : v);
-            float min = data.Min(v => float.IsNaN(v) || float.IsInfinity(v) ? 0 : v);
+            float max = float.MinValue;
+            float min = float.MaxValue;
+
+            for (int i = 2; i < validBands - 2; i++)
+            {
+                if (float.IsNaN(data[i]) || float.IsInfinity(data[i])) continue;
+                if (data[i] > max) max = data[i];
+                if (data[i] < min) min = data[i];
+            }
+            if (max == float.MinValue) { min = 0; max = 1; }
+
             float rng = max - min; if (rng == 0) rng = 1;
 
-            double wMin = wls[0], wMax = wls[^1], wRng = wMax - wMin;
+            double wMin = wls[0], wMax = wls[validBands - 1], wRng = wMax - wMin;
+            if (wRng == 0) wRng = 1;
 
             var pts = new List<PointF>();
-            for (int i = 2; i < data.Length - 2; i++)
+            for (int i = 2; i < validBands - 2; i++)
             {
                 if (float.IsNaN(data[i]) || float.IsInfinity(data[i])) continue;
 
                 float x = rect.Left + (float)((wls[i] - wMin) / wRng * rect.Width);
                 float y = rect.Bottom - ((data[i] - min) / rng * rect.Height);
 
-                // Sanitize limits to prevent GDI+ OverflowException
                 y = Math.Clamp(y, rect.Top - 10000, rect.Bottom + 10000);
                 pts.Add(new PointF(x, y));
             }
@@ -616,7 +628,6 @@ namespace SpecimenFX17.Imaging
                 float px = rect.Left + ((score.X - minPc1) / rngPc1 * rect.Width);
                 float py = rect.Bottom - ((score.Y - minPc2) / rngPc2 * rect.Height);
 
-                // Sanitize rendering coordinates
                 px = Math.Clamp(px, rect.Left - 100, rect.Right + 100);
                 py = Math.Clamp(py, rect.Top - 100, rect.Bottom + 100);
 

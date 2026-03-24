@@ -111,7 +111,6 @@ namespace SpecimenFX17.Imaging
                 var header = new StringBuilder("PixelX,PixelY,");
                 for (int b = 0; b < bands; b++)
                 {
-                    // BUG 10 SOLUCIONADO: Protección si Wavelengths está vacío
                     string wLabel = _cube.Header.Wavelengths != null && _cube.Header.Wavelengths.Count > b
                         ? _cube.Header.Wavelengths[b].ToString("F1", System.Globalization.CultureInfo.InvariantCulture)
                         : b.ToString();
@@ -137,19 +136,49 @@ namespace SpecimenFX17.Imaging
             try
             {
                 var lines = File.ReadAllLines(dlg.FileName);
-                _plsIntercept = double.Parse(lines[0].Split(',')[1], System.Globalization.CultureInfo.InvariantCulture);
+                if (lines.Length < 2)
+                {
+                    MessageBox.Show("El archivo seleccionado no tiene el formato esperado (al menos 2 líneas).", "Error de Formato", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    return;
+                }
+
+                var firstLineParts = lines[0].Split(',');
+                if (firstLineParts.Length < 2 || !double.TryParse(firstLineParts[1], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out _plsIntercept))
+                {
+                    MessageBox.Show("No se pudo leer el intercepto del modelo en la primera línea. Asegúrate de que el CSV usa punto (.) para los decimales.", "Error de Formato", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    return;
+                }
 
                 var coefStrings = lines[1].Split(',').Skip(1).ToArray();
 
-                // BUG 3 SOLUCIONADO: Limita la matriz sin crashear si el cubo fue recortado
                 if (coefStrings.Length != _cube.Bands)
                 {
                     MessageBox.Show($"Aviso: El modelo tiene {coefStrings.Length} bandas, pero el cubo {_cube.Bands}. Se usarán las primeras {Math.Min(coefStrings.Length, _cube.Bands)}.", "Discrepancia de Bandas", MessageBoxButtons.OK, MessageBoxIcon.Information);
                 }
-                _plsCoefs = coefStrings.Select(s => double.Parse(s, System.Globalization.CultureInfo.InvariantCulture)).ToArray();
+
+                var coefsList = new List<double>();
+                foreach (var s in coefStrings)
+                {
+                    if (double.TryParse(s.Trim(), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out double coef))
+                    {
+                        coefsList.Add(coef);
+                    }
+                    else
+                    {
+                        MessageBox.Show($"Se encontró un coeficiente inválido: '{s}'. Revisa el formato del CSV.", "Error de Formato", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                        _plsCoefs = null;
+                        return;
+                    }
+                }
+
+                _plsCoefs = coefsList.ToArray();
                 _lblStatus.Text = $"Modelo PLS cargado ({_plsCoefs.Length} coeficientes).";
             }
-            catch (Exception ex) { MessageBox.Show($"Error: {ex.Message}"); }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Error crítico al cargar el modelo: {ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                _plsCoefs = null;
+            }
         }
 
         private async void GenerateBrixMap(object? sender, EventArgs e)
@@ -162,35 +191,59 @@ namespace SpecimenFX17.Imaging
             var bmp = await Task.Run(() =>
             {
                 float[,] brixMap = new float[lines, samples];
-                float minBrix = float.MaxValue, maxBrix = float.MinValue;
-                object syncObj = new object();
-
                 int maxBands = Math.Min(bands, _plsCoefs.Length);
 
-                Parallel.For(0, lines, y =>
+                var validBrix = new List<float>(lines * samples);
+                object syncObj = new object();
+
+                Parallel.For(0, lines, () => new List<float>(), (y, loopState, localList) =>
                 {
-                    float lMin = float.MaxValue, lMax = float.MinValue;
                     for (int x = 0; x < samples; x++)
                     {
                         if (!mask[y, x]) { brixMap[y, x] = float.NaN; continue; }
+
                         double pred = _plsIntercept;
-                        for (int b = 0; b < maxBands; b++) pred += _cube[b, y, x] * _plsCoefs[b];
+                        for (int b = 0; b < maxBands; b++)
+                        {
+                            float v = _cube[b, y, x];
+                            // ANTIVENENO NaN: Si hay un valor corrupto lo ignoramos
+                            if (float.IsNaN(v) || float.IsInfinity(v)) v = 0f;
+                            pred += v * _plsCoefs[b];
+                        }
+
                         float val = (float)pred;
+                        if (float.IsNaN(val) || float.IsInfinity(val)) val = 0f;
+
                         brixMap[y, x] = val;
-                        if (val < lMin) lMin = val;
-                        if (val > lMax) lMax = val;
+                        localList.Add(val);
                     }
-                    lock (syncObj)
-                    {
-                        if (lMin < minBrix) minBrix = lMin;
-                        if (lMax > maxBrix) maxBrix = lMax;
-                    }
-                });
+                    return localList;
+                },
+                localList => { lock (syncObj) validBrix.AddRange(localList); });
+
+                float minBrix = 0, maxBrix = 1;
+                if (validBrix.Count > 0)
+                {
+                    validBrix.Sort();
+                    // AUTO-CONTRASTE: Ignoramos el 2% superior e inferior de ruido
+                    int idxMin = (int)(validBrix.Count * 0.02);
+                    int idxMax = (int)(validBrix.Count * 0.98);
+                    idxMax = Math.Clamp(idxMax, 0, validBrix.Count - 1);
+                    minBrix = validBrix[idxMin];
+                    maxBrix = validBrix[idxMax];
+                }
 
                 var bMap = new Bitmap(samples, lines, PixelFormat.Format24bppRgb);
                 var bd = bMap.LockBits(new Rectangle(0, 0, samples, lines), ImageLockMode.WriteOnly, PixelFormat.Format24bppRgb);
                 byte[] pixels = new byte[bd.Stride * lines];
-                float range = maxBrix - minBrix == 0 ? 1 : maxBrix - minBrix;
+
+                float range = maxBrix - minBrix;
+                if (range <= 0.0001f) range = 1f;
+
+                // Calculamos estadísticas de la banda 0 para dibujar un fondo "fantasma"
+                var (bgMin, bgMax) = _cube.GetBandStats(0);
+                float bgRange = bgMax - bgMin;
+                if (bgRange <= 0.0001f) bgRange = 1f;
 
                 Parallel.For(0, lines, y =>
                 {
@@ -200,10 +253,16 @@ namespace SpecimenFX17.Imaging
                         int off = row + x * 3;
                         if (float.IsNaN(brixMap[y, x]))
                         {
-                            pixels[off] = 0; pixels[off + 1] = 0; pixels[off + 2] = 0;
+                            // FONDO VISIBLE: Dibuja una radiografía gris del fondo para no ver todo negro
+                            float bgV = _cube[0, y, x];
+                            if (float.IsNaN(bgV) || float.IsInfinity(bgV)) bgV = bgMin;
+                            byte gray = (byte)(Math.Clamp((bgV - bgMin) / bgRange, 0f, 1f) * 255 * 0.2f);
+                            pixels[off] = gray; pixels[off + 1] = gray; pixels[off + 2] = gray;
                             continue;
                         }
-                        float t = (brixMap[y, x] - minBrix) / range;
+
+                        // CLAMP: Asegura que el valor esté estrictamente entre 0 y 1 para no desbordar el color
+                        float t = Math.Clamp((brixMap[y, x] - minBrix) / range, 0f, 1f);
                         var (r, g, b) = GetHeatMapColor(t);
                         pixels[off] = b; pixels[off + 1] = g; pixels[off + 2] = r;
                     }
