@@ -375,7 +375,10 @@ namespace SpecimenFX17.Imaging
             _selections.Clear(); _hoverImgPt = null;
             _currentBitmap?.Dispose(); _currentBitmap = null; _pictureBox.Image = null;
             _specPlot.Image?.Dispose(); _specPlot.Image = null;
-            _cmbBands.Items.Clear(); _slider.Minimum = 0; _slider.Maximum = 0; _slider.Value = 0;
+
+            // PARCHE: Reiniciamos la memoria de la banda actual
+            _cmbBands.Items.Clear(); _slider.Minimum = 0; _slider.Maximum = 0; _slider.Value = 0; _currentBand = 0;
+
             _txtAnalysisReport.Text = ""; _lblBandInfo.Text = "—"; _lblCoords.Text = "";
             ResetPipelineUI(); _chkAnalyze.Checked = false;
             _btnExport.Enabled = false; _btnExpAll.Enabled = false; _btnReport.Enabled = false; _btnClear.Enabled = false; _btnClose.Enabled = false; _btnCalibrate.Enabled = false; _btnAbsorbance.Enabled = false;
@@ -453,10 +456,17 @@ namespace SpecimenFX17.Imaging
         {
             var currentCube = _cube ?? _baseCube;
             _cmbBands.Items.Clear(); if (currentCube == null) return;
+
             int origBands = _baseCube != null ? _baseCube.Header.Bands : currentCube.Header.Bands;
             for (int i = 0; i < origBands; i++) { double wl = currentCube.Header.Wavelengths != null && currentCube.Header.Wavelengths.Count > i ? currentCube.Header.Wavelengths[i] : i; _cmbBands.Items.Add($"Banda {i + 1} - {wl:F1} nm"); }
+
             if (currentCube.Bands > origBands) { _cmbBands.Items.Add("Media"); _cmbBands.Items.Add("Mínima"); _cmbBands.Items.Add("Máxima"); _cmbBands.Items.Add("Rango"); int numPca = currentCube.Bands - origBands - 4; for (int i = 0; i < numPca; i++) _cmbBands.Items.Add($"PC {i + 1}"); }
-            if (_cmbBands.Items.Count > 0) _cmbBands.SelectedIndex = Math.Clamp(_currentBand, 0, _cmbBands.Items.Count - 1);
+
+            // PARCHE ESCUDO: Actualizamos el máximo del slider ANTES de seleccionar el índice
+            _slider.Maximum = Math.Max(0, currentCube.Bands - 1);
+
+            if (_cmbBands.Items.Count > 0)
+                _cmbBands.SelectedIndex = Math.Clamp(_currentBand, 0, _cmbBands.Items.Count - 1);
         }
 
         private async Task RunAnalysisAsync()
@@ -751,7 +761,13 @@ namespace SpecimenFX17.Imaging
             {
                 _baseCube = await Task.Run(() => HyperspectralCube.Load(dlg.FileName, prog));
                 _originalCube = _baseCube.Clone(); _cube = _baseCube; _selections.Clear(); _chkAnalyze.Checked = false;
-                PopulateBandsCombo(); _slider.Minimum = 0; _slider.Maximum = Math.Max(0, _cube.Bands - 1); _slider.Value = 0; _currentBand = 0;
+
+                // PARCHE: Reiniciar memoria de banda ANTES de rellenar la UI
+                _currentBand = 0;
+
+                PopulateBandsCombo();
+                _slider.Minimum = 0; _slider.Maximum = Math.Max(0, _cube.Bands - 1); _slider.Value = 0;
+
                 _loadedFileName = Path.GetFileName(dlg.FileName); this.Text = $"SpecimenFX17 — Visor BLI Hiperespectral - {_loadedFileName}";
                 CheckCalibrationReady(); _btnExport.Enabled = _btnExpAll.Enabled = _btnReport.Enabled = _btnClose.Enabled = true;
                 RefreshDisplay(); ClearSpectrumPlot(); _slbl.Text = $"✔ {_cube.Header}";
