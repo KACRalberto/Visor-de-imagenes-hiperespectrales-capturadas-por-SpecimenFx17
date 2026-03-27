@@ -220,18 +220,19 @@ namespace SpecimenFX17.Imaging
                         float w = maxWhite[b, s];
                         float d = minDark[b, s];
 
-                        if (val > w) _cube[b, l, s] = 1.0f;
-                        else if (val < d) _cube[b, l, s] = 0f;
-                        else
-                        {
-                            float range = w - d;
-                            if (range <= 0.0001f) range = 0.0001f;
+                        float range = w - d;
+                        if (range <= 0.0001f) range = 0.0001f;
 
-                            float res = (val - d) / range;
-                            if (float.IsNaN(res) || float.IsInfinity(res)) res = 0f;
+                        // Normalización matemática multiplicada por el alfa (ej. 0.99f para 99% de reflectancia)
+                        float alfaBlanco = 0.99f;
+                        float res = ((val - d) / range) * alfaBlanco;
 
-                            _cube[b, l, s] = res;
-                        }
+                        // Protección contra Infinity/NaN y Clamping seguro [0, 1]
+                        if (float.IsNaN(res) || float.IsInfinity(res)) res = 0f;
+                        else if (res < 0f) res = 0f;
+                        else if (res > 1.0f) res = 1.0f; // Satura a 1 solo si hay brillos especulares extremos
+
+                        _cube[b, l, s] = res;
                     }
                 }
             });

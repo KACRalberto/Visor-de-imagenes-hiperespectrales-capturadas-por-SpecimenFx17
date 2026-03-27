@@ -95,11 +95,17 @@ namespace SpecimenFX17.Imaging
 
         private Button _btnExport = null!;
         private Button _btnExpAll = null!;
+        private Button _btnExpMeanSpec = null!; // Botón espectro medio
+        private Button _btnExpGraph = null!;    // Botón gráfica
         private Button _btnReport = null!;
         private Button _btnClear = null!;
         private ProgressBar _pb = null!;
         private StatusStrip _ss = null!;
         private ToolStripStatusLabel _slbl = null!;
+
+        // --- MÉTODOS DE COMPATIBILIDAD MATH.CLAMP PARA .NET FRAMEWORK ---
+        private static int Clamp(int val, int min, int max) => Math.Max(min, Math.Min(max, val));
+        private static float Clamp(float val, float min, float max) => Math.Max(min, Math.Min(max, val));
 
         public MainForm()
         {
@@ -241,6 +247,27 @@ namespace SpecimenFX17.Imaging
             _lblDark = new Label { Width = 245, Height = 14, ForeColor = Color.Gray, Font = new Font("Segoe UI", 7f), Text = "Sin cargar", Margin = new Padding(8, 0, 8, 4) };
             p.Controls.Add(_lblDark);
 
+            // NUEVO BOTÓN: Quitar referencias
+            var btnClearRefs = Btn(p, "❌ Quitar Referencias B/N", Color.FromArgb(100, 45, 45));
+            btnClearRefs.Click += async (s, e) => {
+                _whiteCube = null;
+                _darkCube = null;
+                _lblWhite.Text = "Sin cargar";
+                _lblDark.Text = "Sin cargar";
+                CheckCalibrationReady(); // Desactiva el botón de calibrar
+                _slbl.Text = "Referencias blanca y oscura eliminadas de la memoria.";
+
+                // Si la imagen estaba normalizada, deshacemos la normalización para evitar fallos
+                if (_stepNormalize)
+                {
+                    _stepNormalize = false;
+                    _stepAbsorbance = false;
+                    UpdateToggleButton(_btnCalibrate, false, Color.FromArgb(120, 80, 40));
+                    UpdateToggleButton(_btnAbsorbance, false, Color.FromArgb(100, 40, 80));
+                    await RebuildWorkingCube();
+                }
+            };
+
             _btnCalibrate = Btn(p, "✨ Normalizar Imagen", Color.FromArgb(120, 80, 40)); _btnCalibrate.Enabled = false;
             _btnAbsorbance = Btn(p, "🧪 Convertir a Absorbancia", Color.FromArgb(100, 40, 80)); _btnAbsorbance.Enabled = false;
 
@@ -345,13 +372,17 @@ namespace SpecimenFX17.Imaging
             Sep(p); Sec(p, "EXPORTAR IMÁGENES Y REPORTES");
             _btnExport = Btn(p, "💾  Exportar vista actual", Color.FromArgb(35, 95, 55));
             _btnExpAll = Btn(p, "📦  Exportar todas las bandas", Color.FromArgb(30, 75, 45));
+            _btnExpMeanSpec = Btn(p, "📉  Exportar espectro medio (CSV)", Color.FromArgb(35, 75, 95));
+            _btnExpGraph = Btn(p, "📈  Exportar gráfica inferior", Color.FromArgb(75, 35, 95));
             _btnReport = Btn(p, "📄  Generar Informe PDF", Color.FromArgb(140, 50, 50));
             _btnClear = Btn(p, "🗑️  Limpiar selecciones", Color.FromArgb(110, 40, 40));
 
-            _btnExport.Enabled = _btnExpAll.Enabled = _btnReport.Enabled = _btnClear.Enabled = false;
+            _btnExport.Enabled = _btnExpAll.Enabled = _btnExpMeanSpec.Enabled = _btnExpGraph.Enabled = _btnReport.Enabled = _btnClear.Enabled = false;
 
             _btnExport.Click += BtnExport_Click;
             _btnExpAll.Click += BtnExportAll_Click;
+            _btnExpMeanSpec.Click += BtnExpMeanSpec_Click;
+            _btnExpGraph.Click += BtnExpGraph_Click;
             _btnReport.Click += BtnReport_Click;
             _btnClear.Click += (_, _) => ClearAll();
 
@@ -376,12 +407,14 @@ namespace SpecimenFX17.Imaging
             _currentBitmap?.Dispose(); _currentBitmap = null; _pictureBox.Image = null;
             _specPlot.Image?.Dispose(); _specPlot.Image = null;
 
-            // PARCHE: Reiniciamos la memoria de la banda actual
             _cmbBands.Items.Clear(); _slider.Minimum = 0; _slider.Maximum = 0; _slider.Value = 0; _currentBand = 0;
 
             _txtAnalysisReport.Text = ""; _lblBandInfo.Text = "—"; _lblCoords.Text = "";
             ResetPipelineUI(); _chkAnalyze.Checked = false;
-            _btnExport.Enabled = false; _btnExpAll.Enabled = false; _btnReport.Enabled = false; _btnClear.Enabled = false; _btnClose.Enabled = false; _btnCalibrate.Enabled = false; _btnAbsorbance.Enabled = false;
+
+            _btnExport.Enabled = false; _btnExpAll.Enabled = false; _btnExpMeanSpec.Enabled = false; _btnExpGraph.Enabled = false;
+            _btnReport.Enabled = false; _btnClear.Enabled = false; _btnClose.Enabled = false; _btnCalibrate.Enabled = false; _btnAbsorbance.Enabled = false;
+
             _slbl.Text = "Imagen cerrada. Memoria liberada."; GC.Collect(); GC.WaitForPendingFinalizers();
         }
 
@@ -462,11 +495,10 @@ namespace SpecimenFX17.Imaging
 
             if (currentCube.Bands > origBands) { _cmbBands.Items.Add("Media"); _cmbBands.Items.Add("Mínima"); _cmbBands.Items.Add("Máxima"); _cmbBands.Items.Add("Rango"); int numPca = currentCube.Bands - origBands - 4; for (int i = 0; i < numPca; i++) _cmbBands.Items.Add($"PC {i + 1}"); }
 
-            // PARCHE ESCUDO: Actualizamos el máximo del slider ANTES de seleccionar el índice
             _slider.Maximum = Math.Max(0, currentCube.Bands - 1);
 
             if (_cmbBands.Items.Count > 0)
-                _cmbBands.SelectedIndex = Math.Clamp(_currentBand, 0, _cmbBands.Items.Count - 1);
+                _cmbBands.SelectedIndex = Clamp(_currentBand, 0, _cmbBands.Items.Count - 1);
         }
 
         private async Task RunAnalysisAsync()
@@ -615,7 +647,7 @@ namespace SpecimenFX17.Imaging
 
             switch (_tool)
             {
-                case SelectionTool.Rectangle: { if (!_isDragging) break; _isDragging = false; _pictureBox.Invalidate(); if (pt == null) break; int dx = Math.Abs(pt.Value.X - _dragStartImg.X), dy = Math.Abs(pt.Value.Y - _dragStartImg.Y); Color col = NextColor(); if (dx < 4 && dy < 4) AddShape(Activator.CreateInstance(Type.GetType("SpecimenFX17.Imaging.PixelShape")!, new object[] { new Point(_dragStartImg.X, _dragStartImg.Y), col }) as SelectionShape); else { int x1 = Math.Clamp(Math.Min(_dragStartImg.X, pt.Value.X), 0, currentCube.Samples - 1), y1 = Math.Clamp(Math.Min(_dragStartImg.Y, pt.Value.Y), 0, currentCube.Lines - 1); int x2 = Math.Clamp(Math.Max(_dragStartImg.X, pt.Value.X), 0, currentCube.Samples - 1), y2 = Math.Clamp(Math.Max(_dragStartImg.Y, pt.Value.Y), 0, currentCube.Lines - 1); AddShape(Activator.CreateInstance(Type.GetType("SpecimenFX17.Imaging.RectShape")!, new object[] { new Rectangle(x1, y1, x2 - x1, y2 - y1), col }) as SelectionShape); } break; }
+                case SelectionTool.Rectangle: { if (!_isDragging) break; _isDragging = false; _pictureBox.Invalidate(); if (pt == null) break; int dx = Math.Abs(pt.Value.X - _dragStartImg.X), dy = Math.Abs(pt.Value.Y - _dragStartImg.Y); Color col = NextColor(); if (dx < 4 && dy < 4) AddShape(Activator.CreateInstance(Type.GetType("SpecimenFX17.Imaging.PixelShape")!, new object[] { new Point(_dragStartImg.X, _dragStartImg.Y), col }) as SelectionShape); else { int x1 = Clamp(Math.Min(_dragStartImg.X, pt.Value.X), 0, currentCube.Samples - 1), y1 = Clamp(Math.Min(_dragStartImg.Y, pt.Value.Y), 0, currentCube.Lines - 1); int x2 = Clamp(Math.Max(_dragStartImg.X, pt.Value.X), 0, currentCube.Samples - 1), y2 = Clamp(Math.Max(_dragStartImg.Y, pt.Value.Y), 0, currentCube.Lines - 1); AddShape(Activator.CreateInstance(Type.GetType("SpecimenFX17.Imaging.RectShape")!, new object[] { new Rectangle(x1, y1, x2 - x1, y2 - y1), col }) as SelectionShape); } break; }
                 case SelectionTool.Circle: { if (!_isDragging) break; _isDragging = false; _pictureBox.Invalidate(); if (pt == null) break; int r = (int)Math.Round(Math.Sqrt(Math.Pow(pt.Value.X - _dragStartImg.X, 2) + Math.Pow(pt.Value.Y - _dragStartImg.Y, 2))); if (r > 1) AddShape(Activator.CreateInstance(Type.GetType("SpecimenFX17.Imaging.CircleShape")!, new object[] { _dragStartImg, r, NextColor() }) as SelectionShape); break; }
                 case SelectionTool.Freehand: { if (!_isDragging) break; _isDragging = false; _pictureBox.Invalidate(); if (_freeImg.Count >= 3) AddShape(Activator.CreateInstance(Type.GetType("SpecimenFX17.Imaging.FreehandShape")!, new object[] { _freeImg, NextColor() }) as SelectionShape); _freeImg.Clear(); _freeScr.Clear(); break; }
                 case SelectionTool.AutoDetect: { if (pt != null) { bool addMode = (Control.ModifierKeys & Keys.Shift) == Keys.Shift; bool subMode = (Control.ModifierKeys & Keys.Alt) == Keys.Alt; RunAutoRoi(pt.Value.X, pt.Value.Y, addMode, subMode); } break; }
@@ -629,7 +661,6 @@ namespace SpecimenFX17.Imaging
         {
             var g = e.Graphics; g.SmoothingMode = SmoothingMode.AntiAlias; var col = SelColors[_selections.Count % SelColors.Length];
 
-            // SOLUCIÓN COMPILACIÓN: Bloques { } en cada case del Switch
             switch (_tool)
             {
                 case SelectionTool.Rectangle:
@@ -762,14 +793,14 @@ namespace SpecimenFX17.Imaging
                 _baseCube = await Task.Run(() => HyperspectralCube.Load(dlg.FileName, prog));
                 _originalCube = _baseCube.Clone(); _cube = _baseCube; _selections.Clear(); _chkAnalyze.Checked = false;
 
-                // PARCHE: Reiniciar memoria de banda ANTES de rellenar la UI
                 _currentBand = 0;
 
                 PopulateBandsCombo();
                 _slider.Minimum = 0; _slider.Maximum = Math.Max(0, _cube.Bands - 1); _slider.Value = 0;
 
                 _loadedFileName = Path.GetFileName(dlg.FileName); this.Text = $"SpecimenFX17 — Visor BLI Hiperespectral - {_loadedFileName}";
-                CheckCalibrationReady(); _btnExport.Enabled = _btnExpAll.Enabled = _btnReport.Enabled = _btnClose.Enabled = true;
+                CheckCalibrationReady();
+                _btnExport.Enabled = _btnExpAll.Enabled = _btnExpMeanSpec.Enabled = _btnExpGraph.Enabled = _btnReport.Enabled = _btnClose.Enabled = true;
                 RefreshDisplay(); ClearSpectrumPlot(); _slbl.Text = $"✔ {_cube.Header}";
             }
             catch (Exception ex) { MessageBox.Show(ex.Message, "Error"); _slbl.Text = "Error"; }
@@ -819,17 +850,17 @@ namespace SpecimenFX17.Imaging
             float r, g, b;
             switch (map)
             {
-                case BliColormap.HeatMap: return (ToByte(Math.Clamp(t * 3f, 0, 1)), ToByte(Math.Clamp(t * 3f - 1f, 0, 1)), ToByte(Math.Clamp(t * 3f - 2f, 0, 1)));
+                case BliColormap.HeatMap: return (ToByte(Clamp(t * 3f, 0, 1)), ToByte(Clamp(t * 3f - 1f, 0, 1)), ToByte(Clamp(t * 3f - 2f, 0, 1)));
                 case BliColormap.Grayscale: return (ToByte(t), ToByte(t), ToByte(t));
-                case BliColormap.ColdBlue: return (ToByte(Math.Clamp(t * 2 - 1, 0, 1)), ToByte(Math.Clamp(t * 2 - 1, 0, 1)), ToByte(Math.Clamp(t * 2, 0, 1)));
-                case BliColormap.GreenFluorescent: return (ToByte(Math.Clamp(t * 2 - 1, 0, 1) * 0.5f), ToByte(Math.Clamp(t * 1.5f, 0, 1)), ToByte(Math.Clamp(t * 0.5f, 0, 1)));
-                case BliColormap.RedFluorescent: return (ToByte(Math.Clamp(t * 1.5f, 0, 1)), ToByte(Math.Clamp(t * 0.5f, 0, 1) * 0.3f), 0);
+                case BliColormap.ColdBlue: return (ToByte(Clamp(t * 2 - 1, 0, 1)), ToByte(Clamp(t * 2 - 1, 0, 1)), ToByte(Clamp(t * 2, 0, 1)));
+                case BliColormap.GreenFluorescent: return (ToByte(Clamp(t * 2 - 1, 0, 1) * 0.5f), ToByte(Clamp(t * 1.5f, 0, 1)), ToByte(Clamp(t * 0.5f, 0, 1)));
+                case BliColormap.RedFluorescent: return (ToByte(Clamp(t * 1.5f, 0, 1)), ToByte(Clamp(t * 0.5f, 0, 1) * 0.3f), 0);
                 default:
                     if (t < 0.125f) { r = 0; g = 0; b = 0.5f + t * 4f; } else if (t < 0.375f) { r = 0; g = (t - .125f) * 4f; b = 1f; } else if (t < 0.625f) { r = (t - .375f) * 4f; g = 1f; b = 1f - (t - .375f) * 4f; } else if (t < 0.875f) { r = 1f; g = 1f - (t - .625f) * 4f; b = 0f; } else { r = 1f; g = (t - .875f) * 8f; b = (t - .875f) * 8f; }
                     return (ToByte(r), ToByte(g), ToByte(b));
             }
         }
-        private static byte ToByte(float v) => (byte)(Math.Clamp(v, 0f, 1f) * 255f);
+        private static byte ToByte(float v) => (byte)(Clamp(v, 0f, 1f) * 255f);
 
         private Bitmap RenderMaskedBand(int band, bool[,] mask, float min, float max)
         {
@@ -854,13 +885,13 @@ namespace SpecimenFX17.Imaging
                         float v = currentCube[band, y, x]; int offset = x * 3;
                         if (mask[y, x])
                         {
-                            float t = float.IsNaN(v) ? 0f : Math.Clamp((v - min) / range, 0f, 1f);
+                            float t = float.IsNaN(v) ? 0f : Clamp((v - min) / range, 0f, 1f);
                             var (r, g, b) = GetColor(t, cmap);
                             rowPixels[offset] = b; rowPixels[offset + 1] = g; rowPixels[offset + 2] = r;
                         }
                         else
                         {
-                            float t = float.IsNaN(v) ? 0f : Math.Clamp((v - gMin) / gRng, 0f, 1f);
+                            float t = float.IsNaN(v) ? 0f : Clamp((v - gMin) / gRng, 0f, 1f);
                             byte gray = (byte)(t * 255 * 0.25f);
                             rowPixels[offset] = gray; rowPixels[offset + 1] = gray; rowPixels[offset + 2] = gray;
                         }
@@ -898,15 +929,15 @@ namespace SpecimenFX17.Imaging
                         float vR = currentCube[bR, y, x], vG = currentCube[bG, y, x], vB = currentCube[bB, y, x]; int offset = x * 3;
                         if (mask[y, x])
                         {
-                            rowPixels[offset] = float.IsNaN(vB) ? (byte)0 : (byte)(Math.Clamp((vB - minB) / rngB, 0f, 1f) * 255);
-                            rowPixels[offset + 1] = float.IsNaN(vG) ? (byte)0 : (byte)(Math.Clamp((vG - minG) / rngG, 0f, 1f) * 255);
-                            rowPixels[offset + 2] = float.IsNaN(vR) ? (byte)0 : (byte)(Math.Clamp((vR - minR) / rngR, 0f, 1f) * 255);
+                            rowPixels[offset] = float.IsNaN(vB) ? (byte)0 : (byte)(Clamp((vB - minB) / rngB, 0f, 1f) * 255);
+                            rowPixels[offset + 1] = float.IsNaN(vG) ? (byte)0 : (byte)(Clamp((vG - minG) / rngG, 0f, 1f) * 255);
+                            rowPixels[offset + 2] = float.IsNaN(vR) ? (byte)0 : (byte)(Clamp((vR - minR) / rngR, 0f, 1f) * 255);
                         }
                         else
                         {
-                            float tR = float.IsNaN(vR) ? 0f : Math.Clamp((vR - gMinR) / gRngR, 0f, 1f);
-                            float tG = float.IsNaN(vG) ? 0f : Math.Clamp((vG - gMinG) / gRngG, 0f, 1f);
-                            float tB = float.IsNaN(vB) ? 0f : Math.Clamp((vB - gMinB) / gRngB, 0f, 1f);
+                            float tR = float.IsNaN(vR) ? 0f : Clamp((vR - gMinR) / gRngR, 0f, 1f);
+                            float tG = float.IsNaN(vG) ? 0f : Clamp((vG - gMinG) / gRngG, 0f, 1f);
+                            float tB = float.IsNaN(vB) ? 0f : Clamp((vB - gMinB) / gRngB, 0f, 1f);
                             byte gray = (byte)(((tR + tG + tB) / 3f) * 255 * 0.25f);
                             rowPixels[offset] = gray; rowPixels[offset + 1] = gray; rowPixels[offset + 2] = gray;
                         }
@@ -998,7 +1029,7 @@ namespace SpecimenFX17.Imaging
                 {
                     if (float.IsNaN(hoverSpec[i]) || float.IsInfinity(hoverSpec[i])) continue;
                     float px = plot.Left + (float)(((wls != null && i < wls.Count ? wls[i] : xMin + i * xRng / hoverSpec.Length) - xMin) / xRng * plot.Width);
-                    float py = Math.Clamp(plot.Bottom - (hoverSpec[i] - yMin) / yRng * plot.Height, plot.Top - 8, plot.Bottom + 8);
+                    float py = Clamp(plot.Bottom - (hoverSpec[i] - yMin) / yRng * plot.Height, plot.Top - 8, plot.Bottom + 8);
                     hp.Add(new PointF(px, py));
                 }
                 if (hp.Count > 1)
@@ -1018,7 +1049,7 @@ namespace SpecimenFX17.Imaging
                     {
                         if (float.IsNaN(spec[i]) || float.IsInfinity(spec[i])) continue;
                         float px = plot.Left + (float)(((wls != null && i < wls.Count ? wls[i] : xMin + i * xRng / spec.Length) - xMin) / xRng * plot.Width);
-                        float py = Math.Clamp(plot.Bottom - (spec[i] - yMin) / yRng * plot.Height, plot.Top - 8, plot.Bottom + 8);
+                        float py = Clamp(plot.Bottom - (spec[i] - yMin) / yRng * plot.Height, plot.Top - 8, plot.Bottom + 8);
                         pts.Add(new PointF(px, py));
                     }
                     if (pts.Count > 1)
@@ -1058,6 +1089,60 @@ namespace SpecimenFX17.Imaging
                 }
             });
             _btnExpAll.Enabled = true;
+        }
+
+        // --- NUEVOS MÉTODOS DE EXPORTACIÓN ---
+
+        private void BtnExpMeanSpec_Click(object? s, EventArgs e)
+        {
+            if (_cube == null) return;
+
+            using var dlg = new SaveFileDialog
+            {
+                Filter = "Archivo CSV (*.csv)|*.csv",
+                FileName = $"EspectroMedio_{Path.GetFileNameWithoutExtension(_loadedFileName)}.csv",
+                Title = "Guardar Espectro Medio Global"
+            };
+
+            if (dlg.ShowDialog() == DialogResult.OK)
+            {
+                var wls = _cube.Header.Wavelengths;
+                float[] meanSpec = _cube.GetGlobalMeanSpectrum();
+                var sb = new System.Text.StringBuilder();
+
+                sb.AppendLine("Banda,Longitud_Onda_nm,Valor_Medio");
+
+                for (int i = 0; i < _cube.Bands; i++)
+                {
+                    double wl = (wls != null && wls.Count > i) ? wls[i] : i;
+                    sb.AppendLine($"{i + 1},{wl.ToString("F2", System.Globalization.CultureInfo.InvariantCulture)},{meanSpec[i].ToString("G5", System.Globalization.CultureInfo.InvariantCulture)}");
+                }
+
+                File.WriteAllText(dlg.FileName, sb.ToString(), System.Text.Encoding.UTF8);
+                MessageBox.Show("El espectro medio de la vista actual se ha exportado correctamente a CSV.", "Exportación exitosa", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            }
+        }
+
+        private void BtnExpGraph_Click(object? s, EventArgs e)
+        {
+            if (_specPlot.Image == null)
+            {
+                MessageBox.Show("No hay ninguna gráfica generada en este momento. Selecciona algún punto en la imagen, carga una ROI o pasa el ratón sobre la muestra primero.", "Aviso", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+
+            using var dlg = new SaveFileDialog
+            {
+                Filter = "Imagen PNG (*.png)|*.png",
+                FileName = $"GraficaEspectral_{Path.GetFileNameWithoutExtension(_loadedFileName)}.png",
+                Title = "Guardar Gráfica de Firmas Espectrales"
+            };
+
+            if (dlg.ShowDialog() == DialogResult.OK)
+            {
+                _specPlot.Image.Save(dlg.FileName, ImageFormat.Png);
+                MessageBox.Show("La gráfica inferior ha sido exportada con éxito.", "Exportación exitosa", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            }
         }
 
         private double WlAt(int b) => _cube != null && _cube.Header.Wavelengths != null && _cube.Header.Wavelengths.Count > b ? _cube.Header.Wavelengths[b] : b;
