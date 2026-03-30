@@ -28,4 +28,9 @@
 	  <Content Include="favicon.ico" />
 	</ItemGroup>
 
+	<ItemGroup>
+	  <PackageReference Include="DockPanelSuite" Version="3.1.1" />
+	  <PackageReference Include="DockPanelSuite.ThemeVS2015" Version="3.1.1" />
+	</ItemGroup>
+
 </Project>

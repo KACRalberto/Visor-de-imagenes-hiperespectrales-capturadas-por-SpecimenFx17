@@ -11,7 +11,7 @@ using System.Windows.Forms;
 
 namespace SpecimenFX17.Imaging
 {
-    public class PlsPredictionForm : Form
+    public class PlsPredictionForm : WeifenLuo.WinFormsUI.Docking.DockContent
     {
         private readonly HyperspectralCube _cube;
         private readonly IReadOnlyList<SelectionShape> _selections;
@@ -26,7 +26,9 @@ namespace SpecimenFX17.Imaging
         {
             _cube = cube; _selections = selections;
             Text = "Predicción PLS de °Brix";
-            Size = new Size(1000, 700); BackColor = Color.FromArgb(18, 18, 26); ForeColor = Color.White;
+            Size = new Size(1000, 700);
+            BackColor = Color.FromArgb(18, 18, 26);
+            ForeColor = Color.White;
             Font = new Font("Segoe UI", 9f);
             BuildUI();
         }
@@ -38,16 +40,17 @@ namespace SpecimenFX17.Imaging
                 Dock = DockStyle.Top,
                 AutoSize = true,
                 AutoSizeMode = AutoSizeMode.GrowAndShrink,
-                Padding = new Padding(5),
+                Padding = new Padding(10),
                 BackColor = Color.FromArgb(22, 22, 34)
             };
 
-            var btnExport = new Button { Text = "📥 1. Exportar Espectros (CSV)", AutoSize = true, MinimumSize = new Size(200, 35), BackColor = Color.FromArgb(40, 90, 140), FlatStyle = FlatStyle.Flat };
-            var btnLoadModel = new Button { Text = "📂 2. Cargar Modelo PLS", AutoSize = true, MinimumSize = new Size(180, 35), BackColor = Color.FromArgb(110, 40, 110), FlatStyle = FlatStyle.Flat };
-            var btnPredict = new Button { Text = "🔥 3. Generar Mapa °Brix", AutoSize = true, MinimumSize = new Size(180, 35), BackColor = Color.FromArgb(35, 110, 55), FlatStyle = FlatStyle.Flat, Enabled = false };
+            // FIX 4K: Botones estirables con Padding en lugar de MinimumSize
+            var btnExport = new Button { Text = "📥 1. Exportar Espectros (CSV)", AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, Padding = new Padding(15, 8, 15, 8), BackColor = Color.FromArgb(40, 90, 140), FlatStyle = FlatStyle.Flat };
+            var btnLoadModel = new Button { Text = "📂 2. Cargar Modelo PLS", AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, Padding = new Padding(15, 8, 15, 8), BackColor = Color.FromArgb(110, 40, 110), FlatStyle = FlatStyle.Flat };
+            var btnPredict = new Button { Text = "🔥 3. Generar Mapa °Brix", AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, Padding = new Padding(15, 8, 15, 8), BackColor = Color.FromArgb(35, 110, 55), FlatStyle = FlatStyle.Flat, Enabled = false };
 
-            _pb = new ProgressBar { MinimumSize = new Size(120, 20), Visible = false, Style = ProgressBarStyle.Continuous, Margin = new Padding(15, 8, 5, 5) };
-            _lblStatus = new Label { MinimumSize = new Size(250, 20), AutoSize = true, ForeColor = Color.FromArgb(150, 200, 150), Margin = new Padding(5, 10, 5, 5) };
+            _pb = new ProgressBar { MinimumSize = new Size(150, 25), Visible = false, Style = ProgressBarStyle.Continuous, Margin = new Padding(15, 12, 5, 5) };
+            _lblStatus = new Label { AutoSize = true, ForeColor = Color.FromArgb(150, 200, 150), Margin = new Padding(5, 15, 5, 5) };
 
             btnExport.Click += ExportSpectraToCsv;
             btnLoadModel.Click += (s, e) => { LoadPlsModel(); btnPredict.Enabled = _plsCoefs != null; };
@@ -55,7 +58,9 @@ namespace SpecimenFX17.Imaging
 
             pnlTop.Controls.AddRange(new Control[] { btnExport, btnLoadModel, btnPredict, _pb, _lblStatus });
             _picBrixMap = new PictureBox { Dock = DockStyle.Fill, SizeMode = PictureBoxSizeMode.Zoom, BackColor = Color.Black };
-            Controls.Add(_picBrixMap); Controls.Add(pnlTop);
+
+            Controls.Add(_picBrixMap);
+            Controls.Add(pnlTop);
         }
 
         private bool[,] BuildSelectionMask()
@@ -206,7 +211,6 @@ namespace SpecimenFX17.Imaging
                         for (int b = 0; b < maxBands; b++)
                         {
                             float v = _cube[b, y, x];
-                            // ANTIVENENO NaN: Si hay un valor corrupto lo ignoramos
                             if (float.IsNaN(v) || float.IsInfinity(v)) v = 0f;
                             pred += v * _plsCoefs[b];
                         }
@@ -225,7 +229,6 @@ namespace SpecimenFX17.Imaging
                 if (validBrix.Count > 0)
                 {
                     validBrix.Sort();
-                    // AUTO-CONTRASTE: Ignoramos el 2% superior e inferior de ruido
                     int idxMin = (int)(validBrix.Count * 0.02);
                     int idxMax = (int)(validBrix.Count * 0.98);
                     idxMax = Math.Clamp(idxMax, 0, validBrix.Count - 1);
@@ -240,7 +243,6 @@ namespace SpecimenFX17.Imaging
                 float range = maxBrix - minBrix;
                 if (range <= 0.0001f) range = 1f;
 
-                // Calculamos estadísticas de la banda 0 para dibujar un fondo "fantasma"
                 var (bgMin, bgMax) = _cube.GetBandStats(0);
                 float bgRange = bgMax - bgMin;
                 if (bgRange <= 0.0001f) bgRange = 1f;
@@ -253,7 +255,6 @@ namespace SpecimenFX17.Imaging
                         int off = row + x * 3;
                         if (float.IsNaN(brixMap[y, x]))
                         {
-                            // FONDO VISIBLE: Dibuja una radiografía gris del fondo para no ver todo negro
                             float bgV = _cube[0, y, x];
                             if (float.IsNaN(bgV) || float.IsInfinity(bgV)) bgV = bgMin;
                             byte gray = (byte)(Math.Clamp((bgV - bgMin) / bgRange, 0f, 1f) * 255 * 0.2f);
@@ -261,7 +262,6 @@ namespace SpecimenFX17.Imaging
                             continue;
                         }
 
-                        // CLAMP: Asegura que el valor esté estrictamente entre 0 y 1 para no desbordar el color
                         float t = Math.Clamp((brixMap[y, x] - minBrix) / range, 0f, 1f);
                         var (r, g, b) = GetHeatMapColor(t);
                         pixels[off] = b; pixels[off + 1] = g; pixels[off + 2] = r;

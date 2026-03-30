@@ -17,7 +17,9 @@ namespace SpecimenFX17.Imaging
         {
             _shape = shape;
             Text = "Etiquetado de Datos (Ground Truth)";
-            Size = new Size(350, 280);
+
+            // CAMBIO: Aumentamos un poco el tamaño base para dar holgura al contenedor dinámico
+            Size = new Size(350, 320);
             FormBorderStyle = FormBorderStyle.FixedDialog;
             StartPosition = FormStartPosition.CenterParent;
             BackColor = Color.FromArgb(24, 24, 36);
@@ -44,11 +46,42 @@ namespace SpecimenFX17.Imaging
             _txtNotes = new TextBox { Location = new Point(100, cy), Width = 200, Height = 50, Multiline = true, Text = shape.Notes, BackColor = Color.FromArgb(40, 40, 55), ForeColor = Color.White };
             Controls.Add(_txtNotes); cy += 65;
 
-            var btnOk = new Button { Text = "Guardar", Location = new Point(100, cy), Width = 90, BackColor = Color.FromArgb(40, 100, 50), FlatStyle = FlatStyle.Flat };
-            var btnCancel = new Button { Text = "Cancelar", Location = new Point(210, cy), Width = 90, BackColor = Color.FromArgb(100, 40, 40), FlatStyle = FlatStyle.Flat };
+            // CAMBIO: Los botones ahora son dinámicos. Su tamaño se define por el contenido + Padding
+            var btnOk = new Button
+            {
+                Text = "Guardar",
+                AutoSize = true,
+                Padding = new Padding(15, 5, 15, 5),
+                BackColor = Color.FromArgb(40, 100, 50),
+                FlatStyle = FlatStyle.Flat
+            };
+
+            var btnCancel = new Button
+            {
+                Text = "Cancelar",
+                AutoSize = true,
+                Padding = new Padding(15, 5, 15, 5),
+                BackColor = Color.FromArgb(100, 40, 40),
+                FlatStyle = FlatStyle.Flat
+            };
+
             btnOk.Click += BtnOk_Click;
             btnCancel.Click += (s, e) => DialogResult = DialogResult.Cancel;
-            Controls.Add(btnOk); Controls.Add(btnCancel);
+
+            // CAMBIO: Contenedor inferior para alinear los botones sin posiciones absolutas
+            var pnlButtons = new FlowLayoutPanel
+            {
+                Dock = DockStyle.Bottom,
+                FlowDirection = FlowDirection.RightToLeft, // Empuja los botones a la derecha
+                Height = 55, // Altura suficiente para absorber el Padding en 4K
+                Padding = new Padding(10, 10, 25, 10)
+            };
+
+            // Al estar en RightToLeft, el primero que añadimos es el que se sitúa más a la derecha
+            pnlButtons.Controls.Add(btnCancel);
+            pnlButtons.Controls.Add(btnOk);
+
+            Controls.Add(pnlButtons);
         }
 
         private void AddLabel(string text, int y) => Controls.Add(new Label { Text = text, Location = new Point(15, y + 2), Width = 80, ForeColor = Color.LightGray });

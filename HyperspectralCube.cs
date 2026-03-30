@@ -1,9 +1,9 @@
 using System;
-using System.Buffers;
 using System.Collections.Generic;
 using System.IO;
+using System.IO.MemoryMappedFiles;
 using System.Linq;
-using System.Runtime.InteropServices;
+using System.Threading;
 using System.Threading.Tasks;
 using System.Drawing;
 
@@ -17,15 +17,176 @@ namespace SpecimenFX17.Imaging
         public float Std;
     }
 
-    public class HyperspectralCube
+    // ──────────────────────────────────────────────────────────────────────────
+    //  MOTOR DE ALMACENAMIENTO: MEMORY-MAPPED FILES
+    // ──────────────────────────────────────────────────────────────────────────
+    internal unsafe interface ICubeStorage : IDisposable
+    {
+        int Bands { get; }
+        int Lines { get; }
+        int Samples { get; }
+        float Get(int b, int l, int s);
+        void Set(int b, int l, int s, float v);
+        ICubeStorage Clone();
+        TempMappedStorage ConvertToWritable(CancellationToken ct = default);
+    }
+
+    internal unsafe class TempMappedStorage : ICubeStorage
+    {
+        private MemoryMappedFile? _mmf;
+        private MemoryMappedViewAccessor? _acc;
+        private byte* _ptr = null;
+        public int Bands { get; }
+        public int Lines { get; }
+        public int Samples { get; }
+
+        public TempMappedStorage(int bands, int lines, int samples)
+        {
+            Bands = bands; Lines = lines; Samples = samples;
+            long bytes = (long)Bands * Lines * Samples * 4L;
+
+            _mmf = MemoryMappedFile.CreateNew(null, bytes, MemoryMappedFileAccess.ReadWrite);
+            _acc = _mmf.CreateViewAccessor(0, bytes, MemoryMappedFileAccess.ReadWrite);
+            _acc.SafeMemoryMappedViewHandle.AcquirePointer(ref _ptr);
+        }
+
+        public float Get(int b, int l, int s) => ((float*)_ptr)[((long)b * Lines + l) * Samples + s];
+        public void Set(int b, int l, int s, float v) => ((float*)_ptr)[((long)b * Lines + l) * Samples + s] = v;
+
+        public ICubeStorage Clone()
+        {
+            var clone = new TempMappedStorage(Bands, Lines, Samples);
+            long bytes = (long)Bands * Lines * Samples * 4L;
+            Buffer.MemoryCopy(_ptr, clone._ptr, bytes, bytes);
+            return clone;
+        }
+
+        public TempMappedStorage ConvertToWritable(CancellationToken ct = default) => this;
+
+        public void Dispose()
+        {
+            if (_ptr != null) { _acc?.SafeMemoryMappedViewHandle.ReleasePointer(); _ptr = null; }
+            _acc?.Dispose(); _mmf?.Dispose();
+        }
+    }
+
+    internal unsafe class MappedFileStorage : ICubeStorage
+    {
+        private FileStream? _fs;
+        private MemoryMappedFile? _mmf;
+        private MemoryMappedViewAccessor? _acc;
+        private byte* _ptr = null;
+        private EnviHeader _h;
+
+        public int Bands => _h.Bands;
+        public int Lines => _h.Lines;
+        public int Samples => _h.Samples;
+
+        public MappedFileStorage(string path, EnviHeader h)
+        {
+            _h = h;
+            _fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+            long capacity = _fs.Length;
+            _mmf = MemoryMappedFile.CreateFromFile(_fs, null, 0, MemoryMappedFileAccess.Read, HandleInheritability.None, false);
+            _acc = _mmf.CreateViewAccessor(0, capacity, MemoryMappedFileAccess.Read);
+            _acc.SafeMemoryMappedViewHandle.AcquirePointer(ref _ptr);
+        }
+
+        public float Get(int b, int l, int s)
+        {
+            long off = _h.HeaderOffset;
+            long B = _h.Bands, L = _h.Lines, S = _h.Samples;
+            long bVal = _h.BytesPerValue;
+
+            long pos = _h.Interleave switch
+            {
+                EnviInterleave.BSQ => off + ((long)b * L * S + l * S + s) * bVal,
+                EnviInterleave.BIL => off + ((long)l * B * S + b * S + s) * bVal,
+                EnviInterleave.BIP => off + ((long)l * S * B + s * B + b) * bVal,
+                _ => 0
+            };
+
+            return ReadValue(_ptr + pos);
+        }
+
+        private float ReadValue(byte* p)
+        {
+            if (!_h.IsBigEndian)
+            {
+                return _h.DataType switch
+                {
+                    EnviDataType.Byte => *p,
+                    EnviDataType.Int16 => *(short*)p,
+                    EnviDataType.UInt16 => *(ushort*)p,
+                    EnviDataType.Int32 => *(int*)p,
+                    EnviDataType.UInt32 => *(uint*)p,
+                    EnviDataType.Float32 => *(float*)p,
+                    EnviDataType.Float64 => (float)*(double*)p,
+                    _ => *(float*)p
+                };
+            }
+            else
+            {
+                return _h.DataType switch
+                {
+                    EnviDataType.Byte => *p,
+                    EnviDataType.Int16 => (short)((p[0] << 8) | p[1]),
+                    EnviDataType.UInt16 => (ushort)((p[0] << 8) | p[1]),
+                    EnviDataType.Int32 => (p[0] << 24) | (p[1] << 16) | (p[2] << 8) | p[3],
+                    EnviDataType.UInt32 => (uint)((p[0] << 24) | (p[1] << 16) | (p[2] << 8) | p[3]),
+                    EnviDataType.Float32 => ReverseFloat32(p),
+                    EnviDataType.Float64 => ReverseFloat64(p),
+                    _ => 0f
+                };
+            }
+        }
+
+        private float ReverseFloat32(byte* p) { int i = (p[0] << 24) | (p[1] << 16) | (p[2] << 8) | p[3]; return *(float*)&i; }
+        private float ReverseFloat64(byte* p) { long l = ((long)p[0] << 56) | ((long)p[1] << 48) | ((long)p[2] << 40) | ((long)p[3] << 32) | ((long)p[4] << 24) | ((long)p[5] << 16) | ((long)p[6] << 8) | p[7]; return (float)*(double*)&l; }
+
+        public void Set(int b, int l, int s, float v) => throw new InvalidOperationException("No se puede escribir en el archivo RAW original.");
+
+        public TempMappedStorage ConvertToWritable(CancellationToken ct = default)
+        {
+            var temp = new TempMappedStorage(Bands, Lines, Samples);
+            var po = new ParallelOptions { CancellationToken = ct };
+            try
+            {
+                Parallel.For(0, Bands, po, b => {
+                    for (int l = 0; l < Lines; l++)
+                        for (int s = 0; s < Samples; s++)
+                            temp.Set(b, l, s, Get(b, l, s));
+                });
+                return temp;
+            }
+            catch
+            {
+                temp.Dispose();
+                throw;
+            }
+        }
+
+        public ICubeStorage Clone() => ConvertToWritable();
+
+        public void Dispose()
+        {
+            if (_ptr != null) { _acc?.SafeMemoryMappedViewHandle.ReleasePointer(); _ptr = null; }
+            _acc?.Dispose(); _mmf?.Dispose(); _fs?.Dispose();
+        }
+    }
+
+
+    // ──────────────────────────────────────────────────────────────────────────
+    // CLASE PRINCIPAL
+    // ──────────────────────────────────────────────────────────────────────────
+    public class HyperspectralCube : IDisposable
     {
         public EnviHeader Header { get; }
-        public int Bands => _cube.GetLength(0);
+        private ICubeStorage _storage;
 
-        public int Lines => _cube.GetLength(1);
-        public int Samples => _cube.GetLength(2);
-
-        private float[,,] _cube;
+        public int Bands => _storage.Bands;
+        public int Lines => _storage.Lines;
+        public int Samples => _storage.Samples;
 
         public float GlobalMin { get; private set; }
         public float GlobalMax { get; private set; }
@@ -34,33 +195,55 @@ namespace SpecimenFX17.Imaging
 
         public List<BandStat> BandStats { get; private set; } = new();
         public string AnalysisReport { get; set; } = "";
-
         public Guid Version { get; private set; } = Guid.NewGuid();
 
-        public HyperspectralCube(EnviHeader header, float[,,] cube)
+        internal HyperspectralCube(EnviHeader header, ICubeStorage storage)
         {
             Header = header;
-            _cube = cube;
+            _storage = storage;
             ComputeStats();
+        }
+
+        ~HyperspectralCube() => Dispose(false);
+
+        public void Dispose()
+        {
+            Dispose(true);
+            GC.SuppressFinalize(this);
+        }
+
+        protected virtual void Dispose(bool disposing)
+        {
+            _storage?.Dispose();
         }
 
         public HyperspectralCube Clone()
         {
-            int b = Bands, l = Lines, s = Samples;
-            float[,,] newCube = new float[b, l, s];
-            Array.Copy(_cube, newCube, _cube.Length);
-
-            var clone = new HyperspectralCube(Header, newCube)
+            var cloneStorage = _storage.Clone();
+            return new HyperspectralCube(Header, cloneStorage)
             {
                 IsCalibrated = this.IsCalibrated,
                 IsAbsorbance = this.IsAbsorbance,
                 AnalysisReport = this.AnalysisReport,
                 Version = Guid.NewGuid()
             };
-            return clone;
         }
 
-        public float this[int band, int line, int sample] => _cube[band, line, sample];
+        private void EnsureWritable(CancellationToken ct = default)
+        {
+            if (_storage is MappedFileStorage mfs)
+            {
+                var temp = mfs.ConvertToWritable(ct);
+                _storage.Dispose();
+                _storage = temp;
+            }
+        }
+
+        public float this[int band, int line, int sample]
+        {
+            get => _storage.Get(band, line, sample);
+            set { EnsureWritable(); _storage.Set(band, line, sample, value); }
+        }
 
         public float[,] GetBand(int bandIndex)
         {
@@ -68,14 +251,14 @@ namespace SpecimenFX17.Imaging
             var img = new float[Lines, Samples];
             for (int l = 0; l < Lines; l++)
                 for (int s = 0; s < Samples; s++)
-                    img[l, s] = _cube[bandIndex, l, s];
+                    img[l, s] = _storage.Get(bandIndex, l, s);
             return img;
         }
 
         public float[] GetSpectrum(int line, int sample)
         {
             var spec = new float[Bands];
-            for (int b = 0; b < Bands; b++) spec[b] = _cube[b, line, sample];
+            for (int b = 0; b < Bands; b++) spec[b] = _storage.Get(b, line, sample);
             return spec;
         }
 
@@ -87,7 +270,7 @@ namespace SpecimenFX17.Imaging
             for (int l = 0; l < Lines; l++)
                 for (int s = 0; s < Samples; s++)
                 {
-                    float v = _cube[bandIndex, l, s];
+                    float v = _storage.Get(bandIndex, l, s);
                     if (float.IsNaN(v) || Math.Abs(v - ignore) < 1e-5) continue;
                     if (v < min) min = v;
                     if (v > max) max = v;
@@ -96,7 +279,7 @@ namespace SpecimenFX17.Imaging
             return (min == float.MaxValue ? 0f : min, max == float.MinValue ? 1f : max);
         }
 
-        public void ApplySpatialRotation(float angleDegrees)
+        public void ApplySpatialRotation(float angleDegrees, CancellationToken ct = default)
         {
             if (angleDegrees == 0f || angleDegrees % 360 == 0) return;
 
@@ -104,17 +287,11 @@ namespace SpecimenFX17.Imaging
             double cosA = Math.Cos(angleRad);
             double sinA = Math.Sin(angleRad);
 
-            int oldW = Samples;
-            int oldH = Lines;
-            double cx = oldW / 2.0;
-            double cy = oldH / 2.0;
+            int oldW = Samples, oldH = Lines;
+            double cx = oldW / 2.0, cy = oldH / 2.0;
 
-            PointF[] corners = {
-                new PointF(0, 0), new PointF(oldW, 0),
-                new PointF(0, oldH), new PointF(oldW, oldH)
-            };
-            double minX = double.MaxValue, maxX = double.MinValue;
-            double minY = double.MaxValue, maxY = double.MinValue;
+            PointF[] corners = { new PointF(0, 0), new PointF(oldW, 0), new PointF(0, oldH), new PointF(oldW, oldH) };
+            double minX = double.MaxValue, maxX = double.MinValue, minY = double.MaxValue, maxY = double.MinValue;
 
             foreach (var pt in corners)
             {
@@ -127,213 +304,181 @@ namespace SpecimenFX17.Imaging
             int newW = (int)Math.Ceiling(maxX - minX);
             int newH = (int)Math.Ceiling(maxY - minY);
 
-            float[,,] newCube = new float[Bands, newH, newW];
+            var newStorage = new TempMappedStorage(Bands, newH, newW);
+            var po = new ParallelOptions { CancellationToken = ct };
 
-            Parallel.For(0, Bands, b => {
-                for (int y = 0; y < newH; y++)
-                {
-                    for (int x = 0; x < newW; x++)
+            try
+            {
+                Parallel.For(0, Bands, po, b => {
+                    for (int y = 0; y < newH; y++)
                     {
-                        double px = x + minX;
-                        double py = y + minY;
+                        for (int x = 0; x < newW; x++)
+                        {
+                            double origX = cosA * ((x + minX) - cx) + sinA * ((y + minY) - cy) + cx;
+                            double origY = -sinA * ((x + minX) - cx) + cosA * ((y + minY) - cy) + cy;
 
-                        double origX = cosA * (px - cx) + sinA * (py - cy) + cx;
-                        double origY = -sinA * (px - cx) + cosA * (py - cy) + cy;
+                            int ix = (int)Math.Round(origX), iy = (int)Math.Round(origY);
 
-                        int ix = (int)Math.Round(origX);
-                        int iy = (int)Math.Round(origY);
-
-                        if (ix >= 0 && ix < oldW && iy >= 0 && iy < oldH)
-                            newCube[b, y, x] = _cube[b, iy, ix];
-                        else
-                            newCube[b, y, x] = float.NaN;
+                            if (ix >= 0 && ix < oldW && iy >= 0 && iy < oldH)
+                                newStorage.Set(b, y, x, _storage.Get(b, iy, ix));
+                            else
+                                newStorage.Set(b, y, x, float.NaN);
+                        }
                     }
-                }
-            });
+                });
 
-            _cube = newCube;
-            ComputeStats();
-            Version = Guid.NewGuid();
+                _storage.Dispose();
+                _storage = newStorage;
+                ComputeStats();
+                Version = Guid.NewGuid();
+            }
+            catch
+            {
+                newStorage.Dispose();
+                throw;
+            }
         }
 
-        // ====================================================================
-        // PARCHE APLICADO AQUI: Tolerancia a Binning (112 vs 224 bandas)
-        // ====================================================================
-        public void Calibrate(HyperspectralCube whiteRef, HyperspectralCube darkRef)
+        public void Calibrate(HyperspectralCube whiteRef, HyperspectralCube darkRef, CancellationToken ct = default)
         {
-            // Solo exigimos que el ancho (Samples) sea igual. Permitimos diferencia de bandas.
             if (whiteRef.Samples != Samples || darkRef.Samples != Samples)
-                throw new ArgumentException($"El ancho de la imagen ({Samples}px) no coincide con las referencias (Blanca={whiteRef.Samples}px, Oscura={darkRef.Samples}px).");
+                throw new ArgumentException($"El ancho de la imagen ({Samples}px) no coincide con las referencias.");
 
-            int[] wMap = new int[Bands];
-            int[] dMap = new int[Bands];
+            EnsureWritable(ct);
+            var po = new ParallelOptions { CancellationToken = ct };
 
-            // Mapeo dinámico de las bandas por su longitud de onda real
+            int[] wMap = new int[Bands], dMap = new int[Bands];
             for (int b = 0; b < Bands; b++)
             {
-                double targetWl = (Header.Wavelengths != null && Header.Wavelengths.Count > b)
-                    ? Header.Wavelengths[b]
-                    : 0;
-
+                double targetWl = (Header.Wavelengths != null && Header.Wavelengths.Count > b) ? Header.Wavelengths[b] : 0;
                 wMap[b] = GetClosestBandIndex(whiteRef, targetWl, b);
                 dMap[b] = GetClosestBandIndex(darkRef, targetWl, b);
             }
 
-            float[,] maxWhite = new float[Bands, Samples];
-            float[,] minDark = new float[Bands, Samples];
+            float[,] maxWhite = new float[Bands, Samples], minDark = new float[Bands, Samples];
 
-            Parallel.For(0, Bands, b =>
+            Parallel.For(0, Bands, po, b =>
             {
-                int mappedW = wMap[b];
-                int mappedD = dMap[b];
-
+                int mappedW = wMap[b], mappedD = dMap[b];
                 for (int s = 0; s < Samples; s++)
                 {
-                    float wMax = float.MinValue;
-                    float dMin = float.MaxValue;
-
-                    for (int l = 0; l < whiteRef.Lines; l++)
-                    {
-                        float v = whiteRef[mappedW, l, s];
-                        if (!float.IsNaN(v) && !float.IsInfinity(v) && v > wMax) wMax = v;
-                    }
-                    for (int l = 0; l < darkRef.Lines; l++)
-                    {
-                        float v = darkRef[mappedD, l, s];
-                        if (!float.IsNaN(v) && !float.IsInfinity(v) && v < dMin) dMin = v;
-                    }
-
+                    float wMax = float.MinValue, dMin = float.MaxValue;
+                    for (int l = 0; l < whiteRef.Lines; l++) { float v = whiteRef[mappedW, l, s]; if (!float.IsNaN(v) && !float.IsInfinity(v) && v > wMax) wMax = v; }
+                    for (int l = 0; l < darkRef.Lines; l++) { float v = darkRef[mappedD, l, s]; if (!float.IsNaN(v) && !float.IsInfinity(v) && v < dMin) dMin = v; }
                     maxWhite[b, s] = wMax == float.MinValue ? 1f : wMax;
                     minDark[b, s] = dMin == float.MaxValue ? 0f : dMin;
                 }
             });
 
-            Parallel.For(0, Bands, b =>
+            Parallel.For(0, Bands, po, b =>
             {
                 for (int l = 0; l < Lines; l++)
                 {
                     for (int s = 0; s < Samples; s++)
                     {
-                        float val = _cube[b, l, s];
+                        float val = _storage.Get(b, l, s);
                         if (float.IsNaN(val) || float.IsInfinity(val)) continue;
 
-                        float w = maxWhite[b, s];
-                        float d = minDark[b, s];
-
-                        float range = w - d;
+                        float range = maxWhite[b, s] - minDark[b, s];
                         if (range <= 0.0001f) range = 0.0001f;
 
-                        // Normalización matemática multiplicada por el alfa (ej. 0.99f para 99% de reflectancia)
-                        float alfaBlanco = 0.99f;
-                        float res = ((val - d) / range) * alfaBlanco;
+                        float res = ((val - minDark[b, s]) / range) * 0.99f;
+                        if (float.IsNaN(res) || float.IsInfinity(res) || res < 0f) res = 0f;
+                        else if (res > 1.0f) res = 1.0f;
 
-                        // Protección contra Infinity/NaN y Clamping seguro [0, 1]
-                        if (float.IsNaN(res) || float.IsInfinity(res)) res = 0f;
-                        else if (res < 0f) res = 0f;
-                        else if (res > 1.0f) res = 1.0f; // Satura a 1 solo si hay brillos especulares extremos
-
-                        _cube[b, l, s] = res;
+                        _storage.Set(b, l, s, res);
                     }
                 }
             });
 
-            IsCalibrated = true;
-            IsAbsorbance = false;
-            ComputeStats();
-            Version = Guid.NewGuid();
+            IsCalibrated = true; IsAbsorbance = false;
+            ComputeStats(); Version = Guid.NewGuid();
         }
 
-        // Subrutina auxiliar para encontrar la banda equivalente
         private int GetClosestBandIndex(HyperspectralCube refCube, double targetWl, int fallbackIndex)
         {
             if (refCube.Header.Wavelengths == null || refCube.Header.Wavelengths.Count == 0 || targetWl == 0)
-            {
-                // Si no hay información de longitud de onda, usamos una interpolación proporcional
-                double ratio = (double)fallbackIndex / Math.Max(1, Bands - 1);
-                int mapped = (int)Math.Round(ratio * (refCube.Bands - 1));
-                return Math.Clamp(mapped, 0, refCube.Bands - 1);
-            }
+                return Math.Clamp((int)Math.Round((double)fallbackIndex / Math.Max(1, Bands - 1) * (refCube.Bands - 1)), 0, refCube.Bands - 1);
 
-            int bestIdx = 0;
-            double minDiff = double.MaxValue;
+            int bestIdx = 0; double minDiff = double.MaxValue;
             for (int i = 0; i < refCube.Header.Wavelengths.Count; i++)
             {
                 double diff = Math.Abs(refCube.Header.Wavelengths[i] - targetWl);
-                if (diff < minDiff)
-                {
-                    minDiff = diff;
-                    bestIdx = i;
-                }
+                if (diff < minDiff) { minDiff = diff; bestIdx = i; }
             }
             return bestIdx;
         }
-        // ====================================================================
 
-        public void ConvertToAbsorbance()
+        public void ConvertToAbsorbance(CancellationToken ct = default)
         {
             if (!IsCalibrated || IsAbsorbance) return;
-            Parallel.For(0, Bands, b =>
+            EnsureWritable(ct);
+            var po = new ParallelOptions { CancellationToken = ct };
+
+            Parallel.For(0, Bands, po, b =>
             {
                 for (int l = 0; l < Lines; l++)
                     for (int s = 0; s < Samples; s++)
                     {
-                        float r = _cube[b, l, s];
+                        float r = _storage.Get(b, l, s);
                         if (!float.IsNaN(r) && !float.IsInfinity(r))
                         {
                             float res = r <= 0.0001f ? (float)-Math.Log10(0.0001) : (float)-Math.Log10(r);
-                            // PARCHE: Protección contra Infinity/NaN
                             if (float.IsNaN(res) || float.IsInfinity(res)) res = 0f;
-                            _cube[b, l, s] = res;
+                            _storage.Set(b, l, s, res);
                         }
                     }
             });
-            IsAbsorbance = true;
-            ComputeStats();
-            Version = Guid.NewGuid();
+            IsAbsorbance = true; ComputeStats(); Version = Guid.NewGuid();
         }
 
-        public void ApplySNV()
+        public void ApplySNV(CancellationToken ct = default)
         {
-            Parallel.For(0, Lines, l => {
+            EnsureWritable(ct);
+            var po = new ParallelOptions { CancellationToken = ct };
+
+            Parallel.For(0, Lines, po, l => {
                 for (int s = 0; s < Samples; s++)
                 {
                     float mean = 0; int valid = 0;
-                    for (int b = 0; b < Bands; b++) { float v = _cube[b, l, s]; if (!float.IsNaN(v) && !float.IsInfinity(v)) { mean += v; valid++; } }
+                    for (int b = 0; b < Bands; b++) { float v = _storage.Get(b, l, s); if (!float.IsNaN(v) && !float.IsInfinity(v)) { mean += v; valid++; } }
                     if (valid == 0) continue;
                     mean /= valid;
 
                     float variance = 0;
-                    for (int b = 0; b < Bands; b++) { float v = _cube[b, l, s]; if (!float.IsNaN(v) && !float.IsInfinity(v)) variance += (v - mean) * (v - mean); }
+                    for (int b = 0; b < Bands; b++) { float v = _storage.Get(b, l, s); if (!float.IsNaN(v) && !float.IsInfinity(v)) variance += (v - mean) * (v - mean); }
                     float std = (float)Math.Sqrt(variance / valid);
                     if (std < 1e-6f || float.IsNaN(std)) std = 1f;
 
                     for (int b = 0; b < Bands; b++)
                     {
-                        float v = _cube[b, l, s];
+                        float v = _storage.Get(b, l, s);
                         if (!float.IsNaN(v) && !float.IsInfinity(v))
                         {
                             float res = (v - mean) / std;
                             if (float.IsNaN(res) || float.IsInfinity(res)) res = 0f;
-                            _cube[b, l, s] = res;
+                            _storage.Set(b, l, s, res);
                         }
                     }
                 }
             });
-            ComputeStats();
-            Version = Guid.NewGuid();
+            ComputeStats(); Version = Guid.NewGuid();
         }
 
-        public void ApplyMSC()
+        public void ApplyMSC(CancellationToken ct = default)
         {
+            EnsureWritable(ct);
+            var po = new ParallelOptions { CancellationToken = ct };
+
             double[] meanSpec = new double[Bands]; int[] validCounts = new int[Bands];
-            for (int l = 0; l < Lines; l++) { for (int s = 0; s < Samples; s++) { for (int b = 0; b < Bands; b++) { float v = _cube[b, l, s]; if (!float.IsNaN(v) && !float.IsInfinity(v)) { meanSpec[b] += v; validCounts[b]++; } } } }
+            for (int l = 0; l < Lines; l++) { for (int s = 0; s < Samples; s++) { for (int b = 0; b < Bands; b++) { float v = _storage.Get(b, l, s); if (!float.IsNaN(v) && !float.IsInfinity(v)) { meanSpec[b] += v; validCounts[b]++; } } } }
             for (int b = 0; b < Bands; b++) if (validCounts[b] > 0) meanSpec[b] /= validCounts[b];
 
-            Parallel.For(0, Lines, l => {
+            Parallel.For(0, Lines, po, l => {
                 for (int s = 0; s < Samples; s++)
                 {
                     double sumX = 0, sumY = 0, sumXY = 0, sumX2 = 0; int n = 0;
-                    for (int b = 0; b < Bands; b++) { float y = _cube[b, l, s]; if (!float.IsNaN(y) && !float.IsInfinity(y)) { double x = meanSpec[b]; sumX += x; sumY += y; sumXY += x * y; sumX2 += x * x; n++; } }
+                    for (int b = 0; b < Bands; b++) { float y = _storage.Get(b, l, s); if (!float.IsNaN(y) && !float.IsInfinity(y)) { double x = meanSpec[b]; sumX += x; sumY += y; sumXY += x * y; sumX2 += x * x; n++; } }
                     if (n < 2) continue;
 
                     double xMean = sumX / n, yMean = sumY / n, denominator = sumX2 - n * xMean * xMean;
@@ -344,58 +489,62 @@ namespace SpecimenFX17.Imaging
 
                     for (int b = 0; b < Bands; b++)
                     {
-                        float v = _cube[b, l, s];
+                        float v = _storage.Get(b, l, s);
                         if (!float.IsNaN(v) && !float.IsInfinity(v))
                         {
                             float res = (float)((v - a) / m);
                             if (float.IsNaN(res) || float.IsInfinity(res)) res = 0f;
-                            _cube[b, l, s] = res;
+                            _storage.Set(b, l, s, res);
                         }
                     }
                 }
             });
-            ComputeStats();
-            Version = Guid.NewGuid();
+            ComputeStats(); Version = Guid.NewGuid();
         }
 
-        public void ApplySavitzkyGolay(int windowSize, int polyOrder, int derivOrder)
+        public void ApplySavitzkyGolay(int windowSize, int polyOrder, int derivOrder, CancellationToken ct = default)
         {
             if (Bands < 4) return;
             if (windowSize % 2 == 0) windowSize++;
             if (windowSize > Bands) windowSize = (Bands % 2 == 0) ? Bands - 1 : Bands;
-            if (windowSize < 3) return;
-            if (polyOrder >= windowSize) polyOrder = windowSize - 1;
+            if (windowSize < 3 || polyOrder >= windowSize) return;
 
             double[] coeffs = GetSavitzkyGolayCoefficients(windowSize, polyOrder, derivOrder);
             int m = windowSize / 2;
-            float[,,] newCube = new float[Bands, Lines, Samples];
 
-            Parallel.For(0, Lines, l => {
-                for (int s = 0; s < Samples; s++)
-                {
-                    float[] spec = new float[Bands];
-                    for (int b = 0; b < Bands; b++) spec[b] = _cube[b, l, s];
+            var newStorage = new TempMappedStorage(Bands, Lines, Samples);
+            var po = new ParallelOptions { CancellationToken = ct };
 
-                    for (int b = 0; b < Bands; b++)
+            try
+            {
+                Parallel.For(0, Lines, po, l => {
+                    for (int s = 0; s < Samples; s++)
                     {
-                        if (float.IsNaN(spec[b]) || float.IsInfinity(spec[b])) { newCube[b, l, s] = float.NaN; continue; }
-                        double sum = 0;
-                        for (int i = -m; i <= m; i++)
-                        {
-                            int idx = Math.Clamp(b + i, 0, Bands - 1);
-                            sum += spec[idx] * coeffs[i + m];
-                        }
+                        float[] spec = new float[Bands];
+                        for (int b = 0; b < Bands; b++) spec[b] = _storage.Get(b, l, s);
 
-                        float result = (float)sum;
-                        // PARCHE: Protección contra Infinity/NaN
-                        if (float.IsNaN(result) || float.IsInfinity(result)) result = 0f;
-                        newCube[b, l, s] = result;
+                        for (int b = 0; b < Bands; b++)
+                        {
+                            if (float.IsNaN(spec[b]) || float.IsInfinity(spec[b])) { newStorage.Set(b, l, s, float.NaN); continue; }
+                            double sum = 0;
+                            for (int i = -m; i <= m; i++) sum += spec[Math.Clamp(b + i, 0, Bands - 1)] * coeffs[i + m];
+
+                            float result = (float)sum;
+                            if (float.IsNaN(result) || float.IsInfinity(result)) result = 0f;
+                            newStorage.Set(b, l, s, result);
+                        }
                     }
-                }
-            });
-            Array.Copy(newCube, _cube, newCube.Length);
-            ComputeStats();
-            Version = Guid.NewGuid();
+                });
+
+                _storage.Dispose();
+                _storage = newStorage;
+                ComputeStats(); Version = Guid.NewGuid();
+            }
+            catch
+            {
+                newStorage.Dispose();
+                throw;
+            }
         }
 
         private static double[] GetSavitzkyGolayCoefficients(int windowSize, int polyOrder, int derivOrder)
@@ -430,284 +579,261 @@ namespace SpecimenFX17.Imaging
             return result;
         }
 
-        public void ApplySpatialMedianFilter(int kernelSize)
+        public void ApplySpatialMedianFilter(int kernelSize, CancellationToken ct = default)
         {
             if (kernelSize <= 1) return;
             int offset = kernelSize / 2;
-            float[,,] newCube = new float[Bands, Lines, Samples];
+            var newStorage = new TempMappedStorage(Bands, Lines, Samples);
+            var po = new ParallelOptions { CancellationToken = ct };
 
-            Parallel.For(0, Bands, b =>
+            try
             {
-                float[] window = new float[kernelSize * kernelSize];
-                for (int l = 0; l < Lines; l++)
+                Parallel.For(0, Bands, po, b =>
                 {
-                    for (int s = 0; s < Samples; s++)
+                    float[] window = new float[kernelSize * kernelSize];
+                    for (int l = 0; l < Lines; l++)
                     {
-                        int count = 0;
-                        for (int dy = -offset; dy <= offset; dy++)
+                        for (int s = 0; s < Samples; s++)
                         {
-                            int yy = Math.Clamp(l + dy, 0, Lines - 1);
-                            for (int dx = -offset; dx <= offset; dx++)
+                            int count = 0;
+                            for (int dy = -offset; dy <= offset; dy++)
                             {
-                                int xx = Math.Clamp(s + dx, 0, Samples - 1);
-                                window[count++] = _cube[b, yy, xx];
+                                int yy = Math.Clamp(l + dy, 0, Lines - 1);
+                                for (int dx = -offset; dx <= offset; dx++)
+                                {
+                                    int xx = Math.Clamp(s + dx, 0, Samples - 1);
+                                    window[count++] = _storage.Get(b, yy, xx);
+                                }
                             }
+                            Array.Sort(window, 0, count);
+                            newStorage.Set(b, l, s, window[count / 2]);
                         }
-                        Array.Sort(window, 0, count);
-                        newCube[b, l, s] = window[count / 2];
                     }
-                }
-            });
-            _cube = newCube;
-            ComputeStats();
-            Version = Guid.NewGuid();
+                });
+                _storage.Dispose();
+                _storage = newStorage;
+                ComputeStats(); Version = Guid.NewGuid();
+            }
+            catch
+            {
+                newStorage.Dispose();
+                throw;
+            }
         }
 
-        public HyperspectralCube GenerateAnalyzedCube(int numPca = 10, bool[,]? mask = null)
+        public HyperspectralCube GenerateAnalyzedCube(int numPca = 10, bool[,]? mask = null, CancellationToken ct = default)
         {
             var sw = System.Diagnostics.Stopwatch.StartNew();
             int origBands = Header.Bands;
 
             int newBands = origBands + 4 + numPca;
-            float[,,] newCube = new float[newBands, Lines, Samples];
+            var newStorage = new TempMappedStorage(newBands, Lines, Samples);
+            var po = new ParallelOptions { CancellationToken = ct };
 
-            if (mask == null)
+            try
             {
-                mask = new bool[Lines, Samples];
-                for (int l = 0; l < Lines; l++) for (int s = 0; s < Samples; s++) mask[l, s] = true;
-            }
-
-            Parallel.For(0, Lines, y => {
-                for (int x = 0; x < Samples; x++)
+                if (mask == null)
                 {
-                    float min = float.MaxValue, max = float.MinValue, sum = 0;
-                    int valid = 0;
-
-                    for (int b = 0; b < origBands; b++)
-                    {
-                        float v = _cube[b, y, x];
-                        newCube[b, y, x] = v;
-                        if (!float.IsNaN(v) && !float.IsInfinity(v))
-                        {
-                            if (v < min) min = v;
-                            if (v > max) max = v;
-                            sum += v;
-                            valid++;
-                        }
-                    }
-
-                    if (!mask[y, x] || float.IsNaN(_cube[0, y, x]))
-                    {
-                        newCube[origBands, y, x] = float.NaN;
-                        newCube[origBands + 1, y, x] = float.NaN;
-                        newCube[origBands + 2, y, x] = float.NaN;
-                        newCube[origBands + 3, y, x] = float.NaN;
-                    }
-                    else if (valid > 0)
-                    {
-                        newCube[origBands, y, x] = sum / valid;
-                        newCube[origBands + 1, y, x] = min;
-                        newCube[origBands + 2, y, x] = max;
-                        newCube[origBands + 3, y, x] = max - min;
-                    }
+                    mask = new bool[Lines, Samples];
+                    for (int l = 0; l < Lines; l++) for (int s = 0; s < Samples; s++) mask[l, s] = true;
                 }
-            });
 
-            var mean = new double[origBands];
-            int n = 0;
-            object syncObj = new object();
-
-            Parallel.For(0, Lines, y => {
-                double[] localMean = new double[origBands];
-                int localN = 0;
-                for (int x = 0; x < Samples; x++)
-                {
-                    if (!mask[y, x] || float.IsNaN(_cube[0, y, x])) continue;
-                    for (int b = 0; b < origBands; b++)
-                    {
-                        float v = _cube[b, y, x];
-                        if (!float.IsNaN(v) && !float.IsInfinity(v)) localMean[b] += v;
-                    }
-                    localN++;
-                }
-                lock (syncObj)
-                {
-                    for (int b = 0; b < origBands; b++) mean[b] += localMean[b];
-                    n += localN;
-                }
-            });
-
-            string report = $"Bandas para PCA: {origBands}\n";
-
-            if (n > 1)
-            {
-                for (int b = 0; b < origBands; b++) mean[b] /= n;
-
-                var cov = new double[origBands, origBands];
-                Parallel.For(0, Lines, y => {
-                    var localCov = new double[origBands, origBands];
+                Parallel.For(0, Lines, po, y => {
                     for (int x = 0; x < Samples; x++)
                     {
-                        if (!mask[y, x] || float.IsNaN(_cube[0, y, x])) continue;
-                        for (int i = 0; i < origBands; i++)
-                        {
-                            float vi = _cube[i, y, x];
-                            if (float.IsNaN(vi) || float.IsInfinity(vi)) continue;
-                            double devI = vi - mean[i];
+                        float min = float.MaxValue, max = float.MinValue, sum = 0;
+                        int valid = 0;
 
-                            for (int j = i; j < origBands; j++)
+                        for (int b = 0; b < origBands; b++)
+                        {
+                            float v = _storage.Get(b, y, x);
+                            newStorage.Set(b, y, x, v);
+                            if (!float.IsNaN(v) && !float.IsInfinity(v))
                             {
-                                float vj = _cube[j, y, x];
-                                if (!float.IsNaN(vj) && !float.IsInfinity(vj))
-                                    localCov[i, j] += devI * (vj - mean[j]);
+                                if (v < min) min = v;
+                                if (v > max) max = v;
+                                sum += v;
+                                valid++;
                             }
                         }
-                    }
-                    lock (syncObj)
-                    {
-                        for (int i = 0; i < origBands; i++)
-                            for (int j = i; j < origBands; j++) cov[i, j] += localCov[i, j];
-                    }
-                });
 
-                for (int i = 0; i < origBands; i++)
-                    for (int j = i; j < origBands; j++)
-                    {
-                        cov[i, j] /= (n - 1);
-                        cov[j, i] = cov[i, j];
-                    }
-
-                var evecs = JacobiEigenLocal(cov, origBands);
-
-                float[] pcMins = new float[numPca];
-                float[] pcMaxs = new float[numPca];
-                for (int i = 0; i < numPca; i++) { pcMins[i] = float.MaxValue; pcMaxs[i] = float.MinValue; }
-
-                Parallel.For(0, Lines, y => {
-                    for (int x = 0; x < Samples; x++)
-                    {
-                        if (!mask[y, x] || float.IsNaN(_cube[0, y, x]))
+                        if (!mask[y, x] || float.IsNaN(_storage.Get(0, y, x)))
                         {
-                            for (int pc = 0; pc < numPca; pc++) newCube[origBands + 4 + pc, y, x] = float.NaN;
-                            continue;
+                            newStorage.Set(origBands, y, x, float.NaN);
+                            newStorage.Set(origBands + 1, y, x, float.NaN);
+                            newStorage.Set(origBands + 2, y, x, float.NaN);
+                            newStorage.Set(origBands + 3, y, x, float.NaN);
                         }
-                        for (int pc = 0; pc < numPca; pc++)
+                        else if (valid > 0)
                         {
-                            float val = 0;
-                            for (int b = 0; b < origBands; b++)
-                            {
-                                float vb = _cube[b, y, x];
-                                if (!float.IsNaN(vb) && !float.IsInfinity(vb))
-                                    val += (float)(vb * evecs[b, pc]);
-                            }
-                            newCube[origBands + 4 + pc, y, x] = val;
-
-                            lock (syncObj)
-                            {
-                                if (val < pcMins[pc]) pcMins[pc] = val;
-                                if (val > pcMaxs[pc]) pcMaxs[pc] = val;
-                            }
+                            newStorage.Set(origBands, y, x, sum / valid);
+                            newStorage.Set(origBands + 1, y, x, min);
+                            newStorage.Set(origBands + 2, y, x, max);
+                            newStorage.Set(origBands + 3, y, x, max - min);
                         }
                     }
                 });
 
-                sw.Stop();
-                report += $"PCA: {sw.Elapsed.TotalSeconds:F2}s\nRango PC:\n";
+                var mean = new double[origBands];
+                int n = 0;
+                object syncObj = new object();
 
-                float globalRan = 0;
-                for (int pc = 0; pc < numPca; pc++)
-                {
-                    float r = pcMaxs[pc] - pcMins[pc];
-                    if (r > globalRan) globalRan = r;
-                    report += $"PC{pc + 1}: [{pcMins[pc]:G5}, {pcMaxs[pc]:G5}], {r:G5}\n";
-                }
-
-                Parallel.For(0, numPca, pc => {
-                    float range = pcMaxs[pc] - pcMins[pc];
-                    if (range < 1e-9f) range = 1f;
-                    for (int y = 0; y < Lines; y++)
+                Parallel.For(0, Lines, po, y => {
+                    double[] localMean = new double[origBands];
+                    int localN = 0;
+                    for (int x = 0; x < Samples; x++)
                     {
+                        if (!mask[y, x] || float.IsNaN(_storage.Get(0, y, x))) continue;
+                        for (int b = 0; b < origBands; b++)
+                        {
+                            float v = _storage.Get(b, y, x);
+                            if (!float.IsNaN(v) && !float.IsInfinity(v)) localMean[b] += v;
+                        }
+                        localN++;
+                    }
+                    lock (syncObj) { for (int b = 0; b < origBands; b++) mean[b] += localMean[b]; n += localN; }
+                });
+
+                string report = $"Bandas para PCA: {origBands}\n";
+
+                if (n > 1)
+                {
+                    for (int b = 0; b < origBands; b++) mean[b] /= n;
+
+                    var cov = new double[origBands, origBands];
+                    Parallel.For(0, Lines, po, y => {
+                        var localCov = new double[origBands, origBands];
                         for (int x = 0; x < Samples; x++)
                         {
-                            float val = newCube[origBands + 4 + pc, y, x];
-                            if (!float.IsNaN(val) && !float.IsInfinity(val))
+                            if (!mask[y, x] || float.IsNaN(_storage.Get(0, y, x))) continue;
+                            for (int i = 0; i < origBands; i++)
                             {
-                                float res = (val - pcMins[pc]) / range;
-                                // PARCHE: Protección adicional post-PCA
-                                if (float.IsNaN(res) || float.IsInfinity(res)) res = 0f;
-                                newCube[origBands + 4 + pc, y, x] = res;
+                                float vi = _storage.Get(i, y, x);
+                                if (float.IsNaN(vi) || float.IsInfinity(vi)) continue;
+                                double devI = vi - mean[i];
+
+                                for (int j = i; j < origBands; j++)
+                                {
+                                    float vj = _storage.Get(j, y, x);
+                                    if (!float.IsNaN(vj) && !float.IsInfinity(vj))
+                                        localCov[i, j] += devI * (vj - mean[j]);
+                                }
                             }
                         }
-                    }
-                });
-            }
+                        lock (syncObj)
+                        {
+                            for (int i = 0; i < origBands; i++)
+                                for (int j = i; j < origBands; j++) cov[i, j] += localCov[i, j];
+                        }
+                    });
 
-            var resultCube = new HyperspectralCube(Header, newCube)
+                    for (int i = 0; i < origBands; i++)
+                        for (int j = i; j < origBands; j++) { cov[i, j] /= (n - 1); cov[j, i] = cov[i, j]; }
+
+                    var evecs = JacobiEigenLocal(cov, origBands);
+
+                    float[] pcMins = new float[numPca], pcMaxs = new float[numPca];
+                    for (int i = 0; i < numPca; i++) { pcMins[i] = float.MaxValue; pcMaxs[i] = float.MinValue; }
+
+                    Parallel.For(0, Lines, po, y => {
+                        for (int x = 0; x < Samples; x++)
+                        {
+                            if (!mask[y, x] || float.IsNaN(_storage.Get(0, y, x)))
+                            {
+                                for (int pc = 0; pc < numPca; pc++) newStorage.Set(origBands + 4 + pc, y, x, float.NaN);
+                                continue;
+                            }
+                            for (int pc = 0; pc < numPca; pc++)
+                            {
+                                float val = 0;
+                                for (int b = 0; b < origBands; b++)
+                                {
+                                    float vb = _storage.Get(b, y, x);
+                                    if (!float.IsNaN(vb) && !float.IsInfinity(vb)) val += (float)(vb * evecs[b, pc]);
+                                }
+                                newStorage.Set(origBands + 4 + pc, y, x, val);
+                                lock (syncObj) { if (val < pcMins[pc]) pcMins[pc] = val; if (val > pcMaxs[pc]) pcMaxs[pc] = val; }
+                            }
+                        }
+                    });
+
+                    sw.Stop(); report += $"PCA: {sw.Elapsed.TotalSeconds:F2}s\nRango PC:\n";
+
+                    float globalRan = 0;
+                    for (int pc = 0; pc < numPca; pc++)
+                    {
+                        float r = pcMaxs[pc] - pcMins[pc]; if (r > globalRan) globalRan = r;
+                        report += $"PC{pc + 1}: [{pcMins[pc]:G5}, {pcMaxs[pc]:G5}], {r:G5}\n";
+                    }
+
+                    Parallel.For(0, numPca, po, pc => {
+                        float range = pcMaxs[pc] - pcMins[pc]; if (range < 1e-9f) range = 1f;
+                        for (int y = 0; y < Lines; y++)
+                        {
+                            for (int x = 0; x < Samples; x++)
+                            {
+                                float val = newStorage.Get(origBands + 4 + pc, y, x);
+                                if (!float.IsNaN(val) && !float.IsInfinity(val))
+                                {
+                                    float res = (val - pcMins[pc]) / range;
+                                    if (float.IsNaN(res) || float.IsInfinity(res)) res = 0f;
+                                    newStorage.Set(origBands + 4 + pc, y, x, res);
+                                }
+                            }
+                        }
+                    });
+                }
+
+                return new HyperspectralCube(Header, newStorage)
+                {
+                    IsCalibrated = this.IsCalibrated,
+                    IsAbsorbance = this.IsAbsorbance,
+                    AnalysisReport = report,
+                    Version = Guid.NewGuid()
+                };
+            }
+            catch
             {
-                IsCalibrated = this.IsCalibrated,
-                IsAbsorbance = this.IsAbsorbance,
-                AnalysisReport = report,
-                Version = Guid.NewGuid()
-            };
-            return resultCube;
+                newStorage.Dispose();
+                throw;
+            }
         }
 
         private double[,] JacobiEigenLocal(double[,] cov, int n)
         {
             double[,] v = new double[n, n];
             for (int i = 0; i < n; i++) v[i, i] = 1.0;
-
-            int maxIter = 100;
-            for (int iter = 0; iter < maxIter; iter++)
+            for (int iter = 0; iter < 100; iter++)
             {
                 double max = 0.0; int p = 0, q = 1;
-                for (int i = 0; i < n - 1; i++)
-                    for (int j = i + 1; j < n; j++)
-                        if (Math.Abs(cov[i, j]) > max) { max = Math.Abs(cov[i, j]); p = i; q = j; }
-
+                for (int i = 0; i < n - 1; i++) for (int j = i + 1; j < n; j++) if (Math.Abs(cov[i, j]) > max) { max = Math.Abs(cov[i, j]); p = i; q = j; }
                 if (max < 1e-9) break;
 
                 double theta = (cov[q, q] - cov[p, p]) / (2.0 * cov[p, q]);
                 double t = 1.0 / (Math.Abs(theta) + Math.Sqrt(theta * theta + 1.0));
                 if (theta < 0) t = -t;
-
                 double c = 1.0 / Math.Sqrt(t * t + 1.0);
                 double s = t * c;
 
-                cov[p, p] -= t * cov[p, q];
-                cov[q, q] += t * cov[p, q];
-                cov[p, q] = 0.0;
-
+                cov[p, p] -= t * cov[p, q]; cov[q, q] += t * cov[p, q]; cov[p, q] = 0.0;
                 for (int i = 0; i < n; i++)
                 {
-                    if (i != p && i != q)
-                    {
-                        double a = cov[p, i], b = cov[q, i];
-                        cov[p, i] = cov[i, p] = c * a - s * b;
-                        cov[q, i] = cov[i, q] = s * a + c * b;
-                    }
-                    double vip = v[i, p], viq = v[i, q];
-                    v[i, p] = c * vip - s * viq;
-                    v[i, q] = s * vip + c * viq;
+                    if (i != p && i != q) { double a = cov[p, i], b = cov[q, i]; cov[p, i] = cov[i, p] = c * a - s * b; cov[q, i] = cov[i, q] = s * a + c * b; }
+                    double vip = v[i, p], viq = v[i, q]; v[i, p] = c * vip - s * viq; v[i, q] = s * vip + c * viq;
                 }
             }
 
-            var eigenPairs = new List<(double val, double[] vec)>();
-            for (int i = 0; i < n; i++)
-            {
-                double[] vec = new double[n];
-                for (int j = 0; j < n; j++) vec[j] = v[j, i];
-                eigenPairs.Add((cov[i, i], vec));
-            }
-            eigenPairs = eigenPairs.OrderByDescending(x => x.val).ToList();
-
+            var pairs = new List<(double val, double[] vec)>();
+            for (int i = 0; i < n; i++) { double[] vec = new double[n]; for (int j = 0; j < n; j++) vec[j] = v[j, i]; pairs.Add((cov[i, i], vec)); }
+            pairs = pairs.OrderByDescending(x => x.val).ToList();
             double[,] result = new double[n, n];
-            for (int i = 0; i < n; i++)
-                for (int j = 0; j < n; j++) result[j, i] = eigenPairs[i].vec[j];
-
+            for (int i = 0; i < n; i++) for (int j = 0; j < n; j++) result[j, i] = pairs[i].vec[j];
             return result;
         }
 
+        // ──────────────────────────────────────────────────────────────────────────
+        // LECTURA DIRECTA A MMF
+        // ──────────────────────────────────────────────────────────────────────────
         public static HyperspectralCube Load(string hdrOrRawPath, IProgress<int>? progress = null)
         {
             string dir = Path.GetDirectoryName(hdrOrRawPath) ?? "";
@@ -721,79 +847,27 @@ namespace SpecimenFX17.Imaging
             if (!File.Exists(rawPath))
             {
                 string[] exts = { ".img", ".dat", ".bil", ".bip", ".bsq" };
-                foreach (var ext in exts)
-                {
-                    if (File.Exists(Path.Combine(dir, baseName + ext))) { rawPath = Path.Combine(dir, baseName + ext); break; }
-                }
-
-                if (!File.Exists(rawPath) && File.Exists(Path.Combine(dir, baseName)))
-                    rawPath = Path.Combine(dir, baseName);
+                foreach (var ext in exts) { if (File.Exists(Path.Combine(dir, baseName + ext))) { rawPath = Path.Combine(dir, baseName + ext); break; } }
+                if (!File.Exists(rawPath) && File.Exists(Path.Combine(dir, baseName))) rawPath = Path.Combine(dir, baseName);
             }
 
-            if (!File.Exists(rawPath)) throw new FileNotFoundException($"Archivo binario de datos no encontrado para: {baseName}");
+            if (!File.Exists(rawPath)) throw new FileNotFoundException($"Archivo binario no encontrado: {baseName}");
 
             var header = EnviHeader.Load(hdrPath);
-            var cube = ReadRaw(rawPath, header, progress);
-            return new HyperspectralCube(header, cube);
+            var storage = new MappedFileStorage(rawPath, header);
+            progress?.Report(100);
+
+            return new HyperspectralCube(header, storage);
         }
 
-        private static float[,,] ReadRaw(string rawPath, EnviHeader h, IProgress<int>? progress)
-        {
-            var cube = new float[h.Bands, h.Lines, h.Samples];
-            using var fs = new FileStream(rawPath, FileMode.Open, FileAccess.Read, FileShare.Read, 1 << 20);
-            using var reader = new BinaryReader(fs);
-            if (h.HeaderOffset > 0) fs.Seek(h.HeaderOffset, SeekOrigin.Begin);
-
-            switch (h.Interleave)
-            {
-                case EnviInterleave.BSQ:
-                    for (int b = 0; b < h.Bands; b++)
-                    {
-                        for (int l = 0; l < h.Lines; l++) for (int s = 0; s < h.Samples; s++) cube[b, l, s] = ReadValue(reader, h);
-                        progress?.Report((b + 1) * 100 / h.Bands);
-                    }
-                    break;
-                case EnviInterleave.BIL:
-                    for (int l = 0; l < h.Lines; l++)
-                    {
-                        for (int b = 0; b < h.Bands; b++) for (int s = 0; s < h.Samples; s++) cube[b, l, s] = ReadValue(reader, h);
-                        progress?.Report((l + 1) * 100 / h.Lines);
-                    }
-                    break;
-                case EnviInterleave.BIP:
-                    for (int l = 0; l < h.Lines; l++)
-                    {
-                        for (int s = 0; s < h.Samples; s++) for (int b = 0; b < h.Bands; b++) cube[b, l, s] = ReadValue(reader, h);
-                        progress?.Report((l + 1) * 100 / h.Lines);
-                    }
-                    break;
-            }
-            return cube;
-        }
-
-        private static float ReadValue(BinaryReader r, EnviHeader h)
-        {
-            return h.DataType switch
-            {
-                EnviDataType.Byte => r.ReadByte(),
-                EnviDataType.Int16 => h.IsBigEndian ? BitConverter.ToInt16(Reverse(r.ReadBytes(2))) : r.ReadInt16(),
-                EnviDataType.UInt16 => h.IsBigEndian ? BitConverter.ToUInt16(Reverse(r.ReadBytes(2))) : r.ReadUInt16(),
-                EnviDataType.Int32 => h.IsBigEndian ? BitConverter.ToInt32(Reverse(r.ReadBytes(4))) : r.ReadInt32(),
-                EnviDataType.UInt32 => h.IsBigEndian ? BitConverter.ToUInt32(Reverse(r.ReadBytes(4))) : r.ReadUInt32(),
-                EnviDataType.Float32 => h.IsBigEndian ? BitConverter.ToSingle(Reverse(r.ReadBytes(4))) : r.ReadSingle(),
-                EnviDataType.Float64 => (float)(h.IsBigEndian ? BitConverter.ToDouble(Reverse(r.ReadBytes(8))) : r.ReadDouble()),
-                _ => r.ReadSingle()
-            };
-        }
-        private static byte[] Reverse(byte[] b) { Array.Reverse(b); return b; }
-
-        public float[] GetGlobalMeanSpectrum()
+        public float[] GetGlobalMeanSpectrum(CancellationToken ct = default)
         {
             float[] meanSpectrum = new float[Bands];
             int[] validCounts = new int[Bands];
             object syncObj = new object();
+            var po = new ParallelOptions { CancellationToken = ct };
 
-            Parallel.For(0, Lines, l =>
+            Parallel.For(0, Lines, po, l =>
             {
                 float[] localSum = new float[Bands];
                 int[] localCounts = new int[Bands];
@@ -802,7 +876,7 @@ namespace SpecimenFX17.Imaging
                 {
                     for (int b = 0; b < Bands; b++)
                     {
-                        float val = _cube[b, l, s];
+                        float val = _storage.Get(b, l, s);
                         if (!float.IsNaN(val) && !float.IsInfinity(val))
                         {
                             localSum[b] += val;
@@ -821,14 +895,7 @@ namespace SpecimenFX17.Imaging
                 }
             });
 
-            for (int b = 0; b < Bands; b++)
-            {
-                if (validCounts[b] > 0)
-                    meanSpectrum[b] /= validCounts[b];
-                else
-                    meanSpectrum[b] = 0f;
-            }
-
+            for (int b = 0; b < Bands; b++) meanSpectrum[b] = validCounts[b] > 0 ? meanSpectrum[b] / validCounts[b] : 0f;
             return meanSpectrum;
         }
 
@@ -843,7 +910,7 @@ namespace SpecimenFX17.Imaging
                 for (int l = 0; l < Lines; l++)
                     for (int s = 0; s < Samples; s++)
                     {
-                        float v = _cube[b, l, s];
+                        float v = _storage.Get(b, l, s);
                         if (float.IsNaN(v) || float.IsInfinity(v)) continue;
                         if (v < bMin) bMin = v; if (v > bMax) bMax = v;
                         if (v < min) min = v; if (v > max) max = v;

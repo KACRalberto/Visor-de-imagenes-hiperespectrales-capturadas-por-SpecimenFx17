@@ -8,7 +8,7 @@ using System.Windows.Forms;
 
 namespace SpecimenFX17.Imaging
 {
-    public class DualViewerForm : Form
+    public class DualViewerForm : WeifenLuo.WinFormsUI.Docking.DockContent
     {
         private HyperspectralCube? _cube1;
         private HyperspectralCube? _cube2;
@@ -46,8 +46,26 @@ namespace SpecimenFX17.Imaging
                 BackColor = Color.FromArgb(22, 22, 34)
             };
 
-            _btnLoad1 = new Button { Text = "📂 Cargar Cubo Izquierdo", AutoSize = true, MinimumSize = new Size(200, 35), BackColor = Color.FromArgb(50, 90, 140), FlatStyle = FlatStyle.Flat };
-            _btnLoad2 = new Button { Text = "📂 Cargar Cubo Derecho", AutoSize = true, MinimumSize = new Size(200, 35), BackColor = Color.FromArgb(140, 90, 50), FlatStyle = FlatStyle.Flat };
+            // FIX 4K: Botones fluidos adaptables
+            _btnLoad1 = new Button
+            {
+                Text = "📂 Cargar Cubo Izquierdo",
+                AutoSize = true,
+                AutoSizeMode = AutoSizeMode.GrowAndShrink,
+                Padding = new Padding(15, 8, 15, 8),
+                BackColor = Color.FromArgb(50, 90, 140),
+                FlatStyle = FlatStyle.Flat
+            };
+
+            _btnLoad2 = new Button
+            {
+                Text = "📂 Cargar Cubo Derecho",
+                AutoSize = true,
+                AutoSizeMode = AutoSizeMode.GrowAndShrink,
+                Padding = new Padding(15, 8, 15, 8),
+                BackColor = Color.FromArgb(140, 90, 50),
+                FlatStyle = FlatStyle.Flat
+            };
 
             _btnLoad1.Click += (s, e) => LoadCube(1);
             _btnLoad2.Click += (s, e) => LoadCube(2);
@@ -82,7 +100,6 @@ namespace SpecimenFX17.Imaging
 
         private async void LoadCube(int target)
         {
-            // BUG 2.1 SOLUCIONADO: Try-catch imprescindible para evitar cierre súbito en "async void"
             try
             {
                 using var dlg = new OpenFileDialog { Title = "Abrir imagen hiperespectral ENVI", Filter = "ENVI Header (*.hdr)|*.hdr|Todos|*.*" };
@@ -93,7 +110,6 @@ namespace SpecimenFX17.Imaging
 
                 if (target == 1)
                 {
-                    // BUG 1.2 SOLUCIONADO: Limpieza profunda del Large Object Heap (LOH)
                     _cube1 = null;
                     GC.Collect(); GC.WaitForPendingFinalizers();
                     _cube1 = cube; _pt1 = null; RenderImage(1);
@@ -246,7 +262,6 @@ namespace SpecimenFX17.Imaging
         private void DrawLine(Graphics g, Rectangle rect, float[] spec, List<double> wls, float yMin, float yRng, Color col, string legend, int legendLine)
         {
             if (spec.Length < 2) return;
-            // BUG 2.2 SOLUCIONADO: Validación segura al recuperar longitudes de onda en el gráfico
             if (wls == null || wls.Count < spec.Length) wls = Enumerable.Range(0, spec.Length).Select(i => (double)i).ToList();
 
             double xMin = wls[0], xMax = wls[^1], xRng = xMax - xMin;
@@ -260,7 +275,6 @@ namespace SpecimenFX17.Imaging
                 float px = rect.Left + (float)((wls[i] - xMin) / xRng * rect.Width);
                 float py = rect.Bottom - ((spec[i] - yMin) / yRng * rect.Height);
 
-                // BUG 4.2 SOLUCIONADO: Prevención de Crash en GDI+ recortando valores excesivos
                 if (float.IsNaN(py) || float.IsInfinity(py)) continue;
                 py = Math.Clamp(py, rect.Top - 10000, rect.Bottom + 10000);
                 pts.Add(new PointF(px, py));

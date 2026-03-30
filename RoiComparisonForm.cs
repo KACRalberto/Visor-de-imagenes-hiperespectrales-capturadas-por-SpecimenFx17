@@ -7,7 +7,7 @@ using System.Windows.Forms;
 
 namespace SpecimenFX17.Imaging
 {
-    public class RoiComparisonForm : Form
+    public class RoiComparisonForm : WeifenLuo.WinFormsUI.Docking.DockContent
     {
         private readonly HyperspectralCube _origCube;
         private readonly HyperspectralCube _treatCube;
@@ -49,7 +49,7 @@ namespace SpecimenFX17.Imaging
             };
             tlp.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50f));
             tlp.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50f));
-            tlp.RowStyles.Add(new RowStyle(SizeType.Absolute, 30f));
+            tlp.RowStyles.Add(new RowStyle(SizeType.AutoSize)); // FIX 4K: Para el título
             tlp.RowStyles.Add(new RowStyle(SizeType.Percent, 50f));
             tlp.RowStyles.Add(new RowStyle(SizeType.Percent, 50f));
 
@@ -73,14 +73,27 @@ namespace SpecimenFX17.Imaging
             tlp.Controls.Add(_picOrigPlot, 0, 2);
             tlp.Controls.Add(_picTreatPlot, 1, 2);
 
-            var pnlBot = new Panel { Dock = DockStyle.Bottom, Height = 50, BackColor = Color.FromArgb(22, 22, 34) };
+            // FIX 4K: Panel inferior convertido en elástico
+            var pnlBot = new TableLayoutPanel
+            {
+                Dock = DockStyle.Bottom,
+                AutoSize = true,
+                AutoSizeMode = AutoSizeMode.GrowAndShrink,
+                ColumnCount = 1,
+                RowCount = 2,
+                BackColor = Color.FromArgb(22, 22, 34),
+                Padding = new Padding(10)
+            };
+            pnlBot.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            pnlBot.RowStyles.Add(new RowStyle(SizeType.AutoSize));
 
-            _lblBand = new Label { Dock = DockStyle.Bottom, Height = 18, ForeColor = Color.LightSkyBlue, Font = new Font("Consolas", 9f, FontStyle.Bold), TextAlign = ContentAlignment.MiddleCenter };
             _slider = new TrackBar { Dock = DockStyle.Fill, Minimum = 0, Maximum = _origCube.Bands - 1, Value = _currentBand, TickStyle = TickStyle.None };
             _slider.Scroll += (_, _) => { _currentBand = _slider.Value; RefreshAll(); };
 
-            pnlBot.Controls.Add(_slider);
-            pnlBot.Controls.Add(_lblBand);
+            _lblBand = new Label { Dock = DockStyle.Fill, AutoSize = true, Padding = new Padding(5), ForeColor = Color.LightSkyBlue, Font = new Font("Consolas", 9f, FontStyle.Bold), TextAlign = ContentAlignment.MiddleCenter };
+
+            pnlBot.Controls.Add(_slider, 0, 0);
+            pnlBot.Controls.Add(_lblBand, 0, 1);
 
             Controls.Add(tlp);
             Controls.Add(pnlBot);
@@ -90,6 +103,8 @@ namespace SpecimenFX17.Imaging
         {
             Text = text,
             Dock = DockStyle.Fill,
+            AutoSize = true,
+            Padding = new Padding(5),
             TextAlign = ContentAlignment.MiddleCenter,
             Font = new Font("Segoe UI", 10f, FontStyle.Bold),
             ForeColor = Color.FromArgb(180, 200, 220),
@@ -163,7 +178,6 @@ namespace SpecimenFX17.Imaging
             if (yRng < 1e-10f) yRng = 1f;
             yMin -= yRng * 0.05f; yMax += yRng * 0.05f; yRng = yMax - yMin;
 
-            // BUG 10 SOLUCIONADO: Validación segura si Wavelengths es nulo, vacío o tiene menos elementos que bandas
             var wls = cube.Header.Wavelengths;
             int bands = cube.Bands;
             double xMin = wls != null && wls.Count > 0 ? wls[0] : 0;
@@ -183,7 +197,6 @@ namespace SpecimenFX17.Imaging
                     float px = rect.Left + (float)((currentWl - xMin) / xRng * rect.Width);
                     float py = rect.Bottom - ((spec[i] - yMin) / yRng * rect.Height);
 
-                    // BUG 9 SOLUCIONADO: Prevención de crash GDI+ limitando coordenadas de dibujo
                     py = Math.Clamp(py, rect.Top - 5000, rect.Bottom + 5000);
                     pts.Add(new PointF(px, py));
                 }

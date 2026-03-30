@@ -10,7 +10,7 @@ using System.Windows.Forms;
 
 namespace SpecimenFX17.Imaging
 {
-    public class Hypercube3DForm : Form
+    public class Hypercube3DForm : WeifenLuo.WinFormsUI.Docking.DockContent
     {
         private readonly HyperspectralCube _cube;
         private readonly IReadOnlyList<SelectionShape> _selections;
@@ -28,6 +28,11 @@ namespace SpecimenFX17.Imaging
         private TrackBar _trkXMin = null!, _trkXMax = null!;
         private TrackBar _trkYMin = null!, _trkYMax = null!;
         private TrackBar _trkZMin = null!, _trkZMax = null!;
+
+        private Label _lblCorteX = null!;
+        private Label _lblCorteY = null!;
+        private Label _lblCorteZ = null!;
+
         private TrackBar _trkActiveBand = null!;
         private Label _lblActiveBand = null!;
 
@@ -40,7 +45,6 @@ namespace SpecimenFX17.Imaging
         private bool _isRendering = false;
         private bool _needsRender = false;
 
-        // BUG 6 SOLUCIONADO: Objeto de bloqueo para evitar Race Conditions en el Render 3D
         private readonly object _renderLock = new object();
 
         private struct Vector3
@@ -48,6 +52,10 @@ namespace SpecimenFX17.Imaging
             public float X, Y, Z;
             public Vector3(float x, float y, float z) { X = x; Y = y; Z = z; }
         }
+
+        private static int Clamp(int val, int min, int max) => Math.Max(min, Math.Min(max, val));
+        private static float Clamp(float val, float min, float max) => Math.Max(min, Math.Min(max, val));
+        private static double Clamp(double val, double min, double max) => Math.Max(min, Math.Min(max, val));
 
         public Hypercube3DForm(HyperspectralCube cube, IReadOnlyList<SelectionShape> selections)
         {
@@ -116,80 +124,157 @@ namespace SpecimenFX17.Imaging
 
         private void BuildUI()
         {
-            var pnlLeft = new Panel { Dock = DockStyle.Left, Width = 300, BackColor = Color.FromArgb(24, 24, 34), Padding = new Padding(10), AutoScroll = true };
-
-            int cy = 15;
-            AddLabel(pnlLeft, "📐 CORTES ESPACIALES 3D", cy, true); cy += 30;
-
-            void LinkTrackbars(TrackBar tMin, TrackBar tMax)
+            // FIX 4K TOTAL: Sustituimos el Panel por un FlowLayoutPanel para que todo se apile sin usar X/Y
+            var pnlLeft = new FlowLayoutPanel
             {
-                tMin.Scroll += (_, _) => { if (tMin.Value >= tMax.Value - 5) tMax.Value = Math.Min(tMax.Maximum, tMin.Value + 5); UpdateBitmapsAsync(); };
-                tMax.Scroll += (_, _) => { if (tMax.Value <= tMin.Value + 5) tMin.Value = Math.Max(tMin.Minimum, tMax.Value - 5); UpdateBitmapsAsync(); };
+                Dock = DockStyle.Left,
+                Width = 360,
+                BackColor = Color.FromArgb(24, 24, 34),
+                Padding = new Padding(15),
+                AutoScroll = true,
+                FlowDirection = FlowDirection.TopDown,
+                WrapContents = false
+            };
+
+            void AddHeader(string text) => pnlLeft.Controls.Add(new Label
+            {
+                Text = text,
+                AutoSize = true,
+                ForeColor = Color.LightSkyBlue,
+                Font = new Font("Segoe UI", 10f, FontStyle.Bold),
+                Margin = new Padding(0, 15, 0, 5)
+            });
+
+            void AddNormalLabel(Label lbl)
+            {
+                lbl.AutoSize = true;
+                lbl.ForeColor = Color.LightGray;
+                lbl.Margin = new Padding(0, 5, 0, 5);
+                pnlLeft.Controls.Add(lbl);
             }
 
-            AddLabel(pnlLeft, "Corte X (Ancho) [Mín / Máx]:", cy); cy += 20;
-            _trkXMin = new TrackBar { Location = new Point(5, cy), Width = 135, Minimum = 0, Maximum = _cube.Samples - 1, Value = 0, TickStyle = TickStyle.None };
-            _trkXMax = new TrackBar { Location = new Point(145, cy), Width = 135, Minimum = 0, Maximum = _cube.Samples - 1, Value = _cube.Samples - 1, TickStyle = TickStyle.None };
-            LinkTrackbars(_trkXMin, _trkXMax);
-            pnlLeft.Controls.Add(_trkXMin); pnlLeft.Controls.Add(_trkXMax); cy += 40;
+            void LinkTrackbars(TrackBar tMin, TrackBar tMax, Action onUpdate)
+            {
+                tMin.Scroll += (_, _) => { if (tMin.Value >= tMax.Value - 5) tMax.Value = Math.Min(tMax.Maximum, tMin.Value + 5); onUpdate(); UpdateBitmapsAsync(); };
+                tMax.Scroll += (_, _) => { if (tMax.Value <= tMin.Value + 5) tMin.Value = Math.Max(tMin.Minimum, tMax.Value - 5); onUpdate(); UpdateBitmapsAsync(); };
+            }
 
-            AddLabel(pnlLeft, "Corte Y (Alto) [Mín / Máx]:", cy); cy += 20;
-            _trkYMin = new TrackBar { Location = new Point(5, cy), Width = 135, Minimum = 0, Maximum = _cube.Lines - 1, Value = 0, TickStyle = TickStyle.None };
-            _trkYMax = new TrackBar { Location = new Point(145, cy), Width = 135, Minimum = 0, Maximum = _cube.Lines - 1, Value = _cube.Lines - 1, TickStyle = TickStyle.None };
-            LinkTrackbars(_trkYMin, _trkYMax);
-            pnlLeft.Controls.Add(_trkYMin); pnlLeft.Controls.Add(_trkYMax); cy += 40;
+            // --- SECCIÓN CORTES ESPACIALES ---
+            AddHeader("📐 CORTES ESPACIALES 3D");
 
-            AddLabel(pnlLeft, "Corte Z (Bandas) [Mín / Máx]:", cy); cy += 20;
-            _trkZMin = new TrackBar { Location = new Point(5, cy), Width = 135, Minimum = 0, Maximum = _cube.Bands - 1, Value = 0, TickStyle = TickStyle.None };
-            _trkZMax = new TrackBar { Location = new Point(145, cy), Width = 135, Minimum = 0, Maximum = _cube.Bands - 1, Value = _cube.Bands - 1, TickStyle = TickStyle.None };
-            LinkTrackbars(_trkZMin, _trkZMax);
-            pnlLeft.Controls.Add(_trkZMin); pnlLeft.Controls.Add(_trkZMax); cy += 50;
+            _lblCorteX = new Label { Font = new Font("Segoe UI", 9f) };
+            AddNormalLabel(_lblCorteX);
+            _trkXMin = new TrackBar { Width = 150, Minimum = 0, Maximum = _cube.Samples - 1, Value = 0, TickStyle = TickStyle.None };
+            _trkXMax = new TrackBar { Width = 150, Minimum = 0, Maximum = _cube.Samples - 1, Value = _cube.Samples - 1, TickStyle = TickStyle.None };
+            var pnlX = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.LeftToRight, Margin = new Padding(0, 0, 0, 10) };
+            pnlX.Controls.Add(_trkXMin); pnlX.Controls.Add(_trkXMax);
+            pnlLeft.Controls.Add(pnlX);
 
-            AddLabel(pnlLeft, "🔬 BANDA FRONTAL ACTIVA", cy, true); cy += 28;
+            Action updateX = () => _lblCorteX.Text = $"Corte X (Ancho): Píxel {_trkXMin.Value} a {_trkXMax.Value}";
+            LinkTrackbars(_trkXMin, _trkXMax, updateX); updateX();
 
+            _lblCorteY = new Label { Font = new Font("Segoe UI", 9f) };
+            AddNormalLabel(_lblCorteY);
+            _trkYMin = new TrackBar { Width = 150, Minimum = 0, Maximum = _cube.Lines - 1, Value = 0, TickStyle = TickStyle.None };
+            _trkYMax = new TrackBar { Width = 150, Minimum = 0, Maximum = _cube.Lines - 1, Value = _cube.Lines - 1, TickStyle = TickStyle.None };
+            var pnlY = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.LeftToRight, Margin = new Padding(0, 0, 0, 10) };
+            pnlY.Controls.Add(_trkYMin); pnlY.Controls.Add(_trkYMax);
+            pnlLeft.Controls.Add(pnlY);
+
+            Action updateY = () => _lblCorteY.Text = $"Corte Y (Alto): Píxel {_trkYMin.Value} a {_trkYMax.Value}";
+            LinkTrackbars(_trkYMin, _trkYMax, updateY); updateY();
+
+            _lblCorteZ = new Label { Font = new Font("Segoe UI", 9f) };
+            AddNormalLabel(_lblCorteZ);
+            _trkZMin = new TrackBar { Width = 150, Minimum = 0, Maximum = _cube.Bands - 1, Value = 0, TickStyle = TickStyle.None };
+            _trkZMax = new TrackBar { Width = 150, Minimum = 0, Maximum = _cube.Bands - 1, Value = _cube.Bands - 1, TickStyle = TickStyle.None };
+            var pnlZ = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.LeftToRight, Margin = new Padding(0, 0, 0, 15) };
+            pnlZ.Controls.Add(_trkZMin); pnlZ.Controls.Add(_trkZMax);
+            pnlLeft.Controls.Add(pnlZ);
+
+            Action updateZ = () => {
+                double wlMin = _cube.Header.Wavelengths != null && _cube.Header.Wavelengths.Count > _trkZMin.Value ? _cube.Header.Wavelengths[_trkZMin.Value] : _trkZMin.Value;
+                double wlMax = _cube.Header.Wavelengths != null && _cube.Header.Wavelengths.Count > _trkZMax.Value ? _cube.Header.Wavelengths[_trkZMax.Value] : _trkZMax.Value;
+                string unit = _cube.Header.WavelengthUnits ?? "nm";
+                _lblCorteZ.Text = $"Corte Z (Espectro): {wlMin:F1} a {wlMax:F1} {unit}";
+            };
+            LinkTrackbars(_trkZMin, _trkZMax, updateZ); updateZ();
+
+
+            // --- SECCIÓN BANDA FRONTAL ---
+            AddHeader("🔬 BANDA FRONTAL ACTIVA");
             _lblActiveBand = new Label
             {
-                Location = new Point(10, cy),
-                Width = 270,
-                Height = 32,
+                AutoSize = true,
                 ForeColor = Color.LightGreen,
                 Font = new Font("Consolas", 9f, FontStyle.Bold),
-                Text = GetBandLabel(_cube.Bands - 1)
+                Text = GetBandLabel(_cube.Bands - 1),
+                Margin = new Padding(0, 5, 0, 5)
             };
-            pnlLeft.Controls.Add(_lblActiveBand); cy += 36;
+            pnlLeft.Controls.Add(_lblActiveBand);
 
             _trkActiveBand = new TrackBar
             {
-                Location = new Point(5, cy),
-                Width = 275,
+                Width = 310,
                 Minimum = 0,
                 Maximum = _cube.Bands - 1,
                 Value = _cube.Bands - 1,
                 TickStyle = TickStyle.None,
-                LargeChange = Math.Max(1, _cube.Bands / 20)
+                LargeChange = Math.Max(1, _cube.Bands / 20),
+                Margin = new Padding(0, 0, 0, 15)
             };
             _trkActiveBand.Scroll += (_, _) =>
             {
                 _lblActiveBand.Text = GetBandLabel(_trkActiveBand.Value);
                 UpdateBitmapsAsync();
             };
-            pnlLeft.Controls.Add(_trkActiveBand); cy += 45;
+            pnlLeft.Controls.Add(_trkActiveBand);
 
-            AddLabel(pnlLeft, "💾 EXPORTACIÓN Y ROI", cy, true); cy += 30;
 
-            var btnExportRoi = new Button { Text = "📦 Guardar ROI (Exportar ENVI)", Location = new Point(10, cy), Width = 265, Height = 35, BackColor = Color.FromArgb(140, 90, 40), FlatStyle = FlatStyle.Flat, Cursor = Cursors.Hand };
+            // --- SECCIÓN EXPORTACIÓN ---
+            AddHeader("💾 EXPORTACIÓN Y ROI");
+            var btnExportRoi = new Button
+            {
+                Text = "📦 Guardar ROI (Exportar ENVI)",
+                AutoSize = true,
+                Padding = new Padding(15, 8, 15, 8),
+                BackColor = Color.FromArgb(140, 90, 40),
+                FlatStyle = FlatStyle.Flat,
+                Cursor = Cursors.Hand,
+                Margin = new Padding(0, 5, 0, 10)
+            };
             btnExportRoi.FlatAppearance.BorderColor = Color.FromArgb(180, 130, 80);
             btnExportRoi.Click += BtnExportRoi_Click;
-            pnlLeft.Controls.Add(btnExportRoi); cy += 45;
+            pnlLeft.Controls.Add(btnExportRoi);
 
-            var btnExportImg = new Button { Text = "📸 Exportar Vista 3D (PNG)", Location = new Point(10, cy), Width = 265, Height = 35, BackColor = Color.FromArgb(40, 90, 140), FlatStyle = FlatStyle.Flat, Cursor = Cursors.Hand };
+            var btnExportImg = new Button
+            {
+                Text = "📸 Exportar Vista 3D (PNG)",
+                AutoSize = true,
+                Padding = new Padding(15, 8, 15, 8),
+                BackColor = Color.FromArgb(40, 90, 140),
+                FlatStyle = FlatStyle.Flat,
+                Cursor = Cursors.Hand,
+                Margin = new Padding(0, 5, 0, 15)
+            };
             btnExportImg.FlatAppearance.BorderColor = Color.FromArgb(80, 130, 180);
             btnExportImg.Click += BtnExportImg_Click;
-            pnlLeft.Controls.Add(btnExportImg); cy += 45;
+            pnlLeft.Controls.Add(btnExportImg);
 
-            AddLabel(pnlLeft, "💡 Controles de Cámara Orbital:", cy, true); cy += 25;
-            AddLabel(pnlLeft, "• Clic Izq + Arrastrar:\n   Rotación 360º Orbital\n\n• Clic Derecho + Arrastrar:\n   Mover la cámara (Pan)\n\n• Rueda del Ratón:\n   Acercar / Alejar zoom", cy);
 
+            // --- SECCIÓN CONTROLES CÁMARA ---
+            AddHeader("💡 Controles de Cámara Orbital:");
+            var lblControls = new Label
+            {
+                Text = "• Clic Izq + Arrastrar:\n   Rotación 360º Orbital\n\n• Clic Derecho + Arrastrar:\n   Mover la cámara (Pan)\n\n• Rueda del Ratón:\n   Acercar / Alejar zoom",
+                AutoSize = true,
+                ForeColor = Color.LightGray,
+                Margin = new Padding(0, 5, 0, 20)
+            };
+            pnlLeft.Controls.Add(lblControls);
+
+
+            // --- CANVAS 3D ---
             _canvas = new PictureBox { Dock = DockStyle.Fill, BackColor = Color.FromArgb(10, 10, 16) };
             _canvas.Paint += Canvas_Paint;
             _canvas.MouseDown += (s, e) => {
@@ -207,7 +292,7 @@ namespace SpecimenFX17.Imaging
                 {
                     _yaw -= dx * 0.01f;
                     _pitch -= dy * 0.01f;
-                    _pitch = Math.Clamp(_pitch, (float)(-Math.PI / 2 + 0.05), (float)(Math.PI / 2 - 0.05));
+                    _pitch = Clamp(_pitch, (float)(-Math.PI / 2 + 0.05), (float)(Math.PI / 2 - 0.05));
                     _canvas.Invalidate();
                 }
                 else if (_isPanning)
@@ -223,8 +308,6 @@ namespace SpecimenFX17.Imaging
             Controls.Add(_canvas);
             Controls.Add(pnlLeft);
         }
-
-        private void AddLabel(Control p, string text, int y, bool title = false) => p.Controls.Add(new Label { Text = text, Location = new Point(10, y), AutoSize = true, ForeColor = title ? Color.LightSkyBlue : Color.LightGray, Font = new Font("Segoe UI", title ? 10f : 9f, title ? FontStyle.Bold : FontStyle.Regular) });
 
         private async void BtnExportRoi_Click(object? sender, EventArgs e)
         {
@@ -370,7 +453,7 @@ namespace SpecimenFX17.Imaging
             float range = _vmax - _vmin; if (range <= 0) range = 1f;
             int cx = x1 - x0 + 1, cy = y1 - y0 + 1, cz = z1 - z0 + 1;
 
-            int frontBand = Math.Clamp(activeBand, 0, _cube.Bands - 1);
+            int frontBand = Clamp(activeBand, 0, _cube.Bands - 1);
 
             var bF = new Bitmap(cx, cy, PixelFormat.Format32bppArgb);
             var bB = new Bitmap(cx, cy, PixelFormat.Format32bppArgb);
@@ -386,7 +469,7 @@ namespace SpecimenFX17.Imaging
                 {
                     if (_mask[y + y0, x + x0])
                     {
-                        float t = Math.Clamp((_cube[frontBand, y + y0, x + x0] - _vmin) / range, 0, 1);
+                        float t = Clamp((_cube[frontBand, y + y0, x + x0] - _vmin) / range, 0, 1);
                         var c = GetRainbowColor(t);
                         row[x * 4] = c.B; row[x * 4 + 1] = c.G; row[x * 4 + 2] = c.R; row[x * 4 + 3] = 255;
                     }
@@ -402,7 +485,7 @@ namespace SpecimenFX17.Imaging
                 {
                     if (_mask[y + y0, x + x0])
                     {
-                        float t = Math.Clamp((_cube[z0, y + y0, x + x0] - _vmin) / range, 0, 1);
+                        float t = Clamp((_cube[z0, y + y0, x + x0] - _vmin) / range, 0, 1);
                         var c = GetRainbowColor(t);
                         row[x * 4] = c.B; row[x * 4 + 1] = c.G; row[x * 4 + 2] = c.R; row[x * 4 + 3] = 255;
                     }
@@ -420,7 +503,7 @@ namespace SpecimenFX17.Imaging
                     int eY = -1; for (int iy = y0; iy <= y1; iy++) if (_mask[iy, x + x0]) { eY = iy; break; }
                     if (eY != -1)
                     {
-                        float t = Math.Clamp((_cube[actualZ, eY, x + x0] - _vmin) / range, 0, 1);
+                        float t = Clamp((_cube[actualZ, eY, x + x0] - _vmin) / range, 0, 1);
                         float i = 0.25f + 0.75f * t;
                         row[x * 4] = (byte)(wlCol.B * i); row[x * 4 + 1] = (byte)(wlCol.G * i); row[x * 4 + 2] = (byte)(wlCol.R * i); row[x * 4 + 3] = 240;
                     }
@@ -438,7 +521,7 @@ namespace SpecimenFX17.Imaging
                     int eY = -1; for (int iy = y1; iy >= y0; iy--) if (_mask[iy, x + x0]) { eY = iy; break; }
                     if (eY != -1)
                     {
-                        float t = Math.Clamp((_cube[actualZ, eY, x + x0] - _vmin) / range, 0, 1);
+                        float t = Clamp((_cube[actualZ, eY, x + x0] - _vmin) / range, 0, 1);
                         float i = 0.25f + 0.75f * t;
                         row[x * 4] = (byte)(wlCol.B * i); row[x * 4 + 1] = (byte)(wlCol.G * i); row[x * 4 + 2] = (byte)(wlCol.R * i); row[x * 4 + 3] = 240;
                     }
@@ -456,7 +539,7 @@ namespace SpecimenFX17.Imaging
                     int eX = -1; for (int ix = x1; ix >= x0; ix--) if (_mask[y + y0, ix]) { eX = ix; break; }
                     if (eX != -1)
                     {
-                        float t = Math.Clamp((_cube[actualZ, y + y0, eX] - _vmin) / range, 0, 1);
+                        float t = Clamp((_cube[actualZ, y + y0, eX] - _vmin) / range, 0, 1);
                         float i = 0.25f + 0.75f * t;
                         row[x * 4] = (byte)(wlCol.B * i); row[x * 4 + 1] = (byte)(wlCol.G * i); row[x * 4 + 2] = (byte)(wlCol.R * i); row[x * 4 + 3] = 240;
                     }
@@ -474,7 +557,7 @@ namespace SpecimenFX17.Imaging
                     int eX = -1; for (int ix = x0; ix <= x1; ix++) if (_mask[y + y0, ix]) { eX = ix; break; }
                     if (eX != -1)
                     {
-                        float t = Math.Clamp((_cube[actualZ, y + y0, eX] - _vmin) / range, 0, 1);
+                        float t = Clamp((_cube[actualZ, y + y0, eX] - _vmin) / range, 0, 1);
                         float i = 0.25f + 0.75f * t;
                         row[x * 4] = (byte)(wlCol.B * i); row[x * 4 + 1] = (byte)(wlCol.G * i); row[x * 4 + 2] = (byte)(wlCol.R * i); row[x * 4 + 3] = 240;
                     }
@@ -585,7 +668,7 @@ namespace SpecimenFX17.Imaging
             else if (t < 0.625f) { r = (t - .375f) * 4f; g = 1f; b = 1f - (t - .375f) * 4f; }
             else if (t < 0.875f) { r = 1f; g = 1f - (t - .625f) * 4f; b = 0f; }
             else { r = 1f; g = (t - .875f) * 8f; b = (t - .875f) * 8f; }
-            return ((byte)Math.Clamp(r * 255, 0, 255), (byte)Math.Clamp(g * 255, 0, 255), (byte)Math.Clamp(b * 255, 0, 255));
+            return ((byte)Clamp(r * 255, 0, 255), (byte)Clamp(g * 255, 0, 255), (byte)Clamp(b * 255, 0, 255));
         }
 
         private static Color ColorFromHSL(float h, float s, float l)

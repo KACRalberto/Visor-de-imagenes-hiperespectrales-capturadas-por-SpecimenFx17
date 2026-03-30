@@ -8,7 +8,7 @@ using System.Windows.Forms;
 
 namespace SpecimenFX17.Imaging
 {
-    public class GraphicalInfoForm : Form
+    public class GraphicalInfoForm : WeifenLuo.WinFormsUI.Docking.DockContent
     {
         private HyperspectralCube _cube;
         private PictureBox _picStats;

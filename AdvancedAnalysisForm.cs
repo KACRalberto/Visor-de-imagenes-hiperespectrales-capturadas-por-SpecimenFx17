@@ -10,7 +10,7 @@ using System.Windows.Forms;
 
 namespace SpecimenFX17.Imaging
 {
-    public class AdvancedAnalysisForm : Form
+    public class AdvancedAnalysisForm : WeifenLuo.WinFormsUI.Docking.DockContent
     {
         private readonly HyperspectralCube _cube;
         private readonly IReadOnlyList<SelectionShape> _selections;
@@ -46,10 +46,11 @@ namespace SpecimenFX17.Imaging
                 BackColor = Color.FromArgb(22, 22, 34)
             };
 
-            var btnPca = new Button { Text = "📊 Ejecutar PCA (RGB Top 3)", AutoSize = true, MinimumSize = new Size(180, 35), BackColor = Color.FromArgb(40, 90, 140), FlatStyle = FlatStyle.Flat };
-            var btnSam = new Button { Text = "🎯 Mapear Similitud (SAM)", AutoSize = true, MinimumSize = new Size(180, 35), BackColor = Color.FromArgb(35, 110, 55), FlatStyle = FlatStyle.Flat };
-            var btnDeriv = new Button { Text = "📈 Trazar Derivadas", AutoSize = true, MinimumSize = new Size(150, 35), BackColor = Color.FromArgb(110, 40, 110), FlatStyle = FlatStyle.Flat };
-            var btnScatter = new Button { Text = "🌌 PCA Scatter (2D)", AutoSize = true, MinimumSize = new Size(150, 35), BackColor = Color.FromArgb(140, 90, 40), FlatStyle = FlatStyle.Flat };
+            // FIX 4K: Botones fluidos adaptables
+            var btnPca = new Button { Text = "📊 Ejecutar PCA (RGB Top 3)", AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, Padding = new Padding(15, 8, 15, 8), BackColor = Color.FromArgb(40, 90, 140), FlatStyle = FlatStyle.Flat };
+            var btnSam = new Button { Text = "🎯 Mapear Similitud (SAM)", AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, Padding = new Padding(15, 8, 15, 8), BackColor = Color.FromArgb(35, 110, 55), FlatStyle = FlatStyle.Flat };
+            var btnDeriv = new Button { Text = "📈 Trazar Derivadas", AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, Padding = new Padding(15, 8, 15, 8), BackColor = Color.FromArgb(110, 40, 110), FlatStyle = FlatStyle.Flat };
+            var btnScatter = new Button { Text = "🌌 PCA Scatter (2D)", AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, Padding = new Padding(15, 8, 15, 8), BackColor = Color.FromArgb(140, 90, 40), FlatStyle = FlatStyle.Flat };
 
             _pb = new ProgressBar { MinimumSize = new Size(150, 20), Visible = false, Style = ProgressBarStyle.Continuous, Margin = new Padding(15, 8, 5, 5) };
             _lblStatus = new Label { MinimumSize = new Size(350, 20), AutoSize = true, ForeColor = Color.FromArgb(150, 200, 150), Margin = new Padding(5, 10, 5, 5) };
@@ -488,7 +489,6 @@ namespace SpecimenFX17.Imaging
             {
                 float[] spec = sel.GetSpectrum(_cube);
 
-                // SOLUCIÓN AL CRASH: Restringimos el bucle al límite físico de Wavelengths
                 int validBands = Math.Min(spec.Length, wls.Count);
                 if (validBands < 3) continue;
 
@@ -498,7 +498,7 @@ namespace SpecimenFX17.Imaging
                 for (int i = 1; i < validBands - 1; i++)
                 {
                     double dw = wls[i + 1] - wls[i - 1];
-                    if (Math.Abs(dw) < 1e-6) dw = 1; // Defensa extra contra división por cero
+                    if (Math.Abs(dw) < 1e-6) dw = 1;
                     d1[i] = (float)((spec[i + 1] - spec[i - 1]) / dw);
                 }
                 for (int i = 2; i < validBands - 2; i++)

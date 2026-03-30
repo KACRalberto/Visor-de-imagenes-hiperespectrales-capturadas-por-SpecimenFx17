@@ -12,7 +12,7 @@ using System.Windows.Forms;
 
 namespace SpecimenFX17.Imaging
 {
-    public class SpectralCalculatorForm : Form
+    public class SpectralCalculatorForm : WeifenLuo.WinFormsUI.Docking.DockContent
     {
         private readonly HyperspectralCube _cube;
         private readonly IReadOnlyList<SelectionShape> _selections;
@@ -71,7 +71,7 @@ namespace SpecimenFX17.Imaging
             _selections = selections ?? Array.Empty<SelectionShape>();
             Text = "Calculadora Espectral — SpecimenFX17";
 
-            Size = new Size(1000, 700);
+            Size = new Size(1100, 750);
             MinimumSize = new Size(800, 500);
 
             BackColor = Color.FromArgb(18, 18, 26);
@@ -82,7 +82,19 @@ namespace SpecimenFX17.Imaging
 
         private void BuildUI()
         {
-            var leftPanel = new Panel { Dock = DockStyle.Left, Width = 240, BackColor = Color.FromArgb(22, 22, 34), Padding = new Padding(8), AutoScroll = true };
+            // FIX 4K: FlowLayoutPanel dinámico en lugar de absolute X/Y
+            var leftPanel = new FlowLayoutPanel 
+            { 
+                Dock = DockStyle.Left, 
+                AutoSize = true, 
+                AutoSizeMode = AutoSizeMode.GrowAndShrink,
+                MinimumSize = new Size(280, 0),
+                FlowDirection = FlowDirection.TopDown, 
+                WrapContents = false, 
+                BackColor = Color.FromArgb(22, 22, 34), 
+                Padding = new Padding(10), 
+                AutoScroll = true 
+            };
             BuildLeftPanel(leftPanel);
 
             var centerLayout = new TableLayoutPanel
@@ -96,10 +108,11 @@ namespace SpecimenFX17.Imaging
             };
 
             centerLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f));
-            centerLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 130f));
-            centerLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 22f));
-            centerLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 26f));
-            centerLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 36f));
+            // FIX 4K: Las filas cambian a AutoSize para adaptarse al contenido escalado
+            centerLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            centerLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            centerLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            centerLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
             centerLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100f));
 
             var formulaPanel = BuildFormulaPanel();
@@ -107,12 +120,6 @@ namespace SpecimenFX17.Imaging
             var statusPanel = BuildStatusPanel();
             var toolPanel = BuildToolPanel();
             _tabs = BuildTabs();
-
-            formulaPanel.Dock = DockStyle.Fill;
-            selBanner.Dock = DockStyle.Fill;
-            statusPanel.Dock = DockStyle.Fill;
-            toolPanel.Dock = DockStyle.Fill;
-            _tabs.Dock = DockStyle.Fill;
 
             centerLayout.Controls.Add(formulaPanel, 0, 0);
             centerLayout.Controls.Add(selBanner, 0, 1);
@@ -126,51 +133,64 @@ namespace SpecimenFX17.Imaging
             UpdatePreview();
         }
 
-        private void BuildLeftPanel(Panel p)
+        private void BuildLeftPanel(FlowLayoutPanel p)
         {
-            int cy = 4;
-            AddLbl(p, "BANDAS DISPONIBLES", cy, bold: true, color: Color.FromArgb(100, 160, 220)); cy += 20;
-            AddLbl(p, "Doble clic para insertar:", cy, size: 8); cy += 18;
+            p.Controls.Add(CreateLbl("BANDAS DISPONIBLES", true, Color.FromArgb(100, 160, 220)));
+            p.Controls.Add(CreateLbl("Doble clic para insertar:"));
 
-            _lstBands = new ListBox { Location = new Point(6, cy), Size = new Size(210, 200), BackColor = Color.FromArgb(30, 30, 45), ForeColor = Color.FromArgb(200, 220, 255), Font = new Font("Consolas", 8f), BorderStyle = BorderStyle.FixedSingle };
+            _lstBands = new ListBox { Width = 260, Height = 200, BackColor = Color.FromArgb(30, 30, 45), ForeColor = Color.FromArgb(200, 220, 255), Font = new Font("Consolas", 8f), BorderStyle = BorderStyle.FixedSingle, Margin = new Padding(3, 5, 3, 15) };
             RefreshBandList();
             _lstBands.DoubleClick += (_, _) => { if (_lstBands.SelectedIndex < 0) return; double wl = _cube.Header.Wavelengths != null && _cube.Header.Wavelengths.Count > _lstBands.SelectedIndex ? _cube.Header.Wavelengths[_lstBands.SelectedIndex] : _lstBands.SelectedIndex; _txtFormula.SelectedText = $"B{{{wl:F1}}}"; _txtFormula.Focus(); };
-            p.Controls.Add(_lstBands); cy += 208;
+            p.Controls.Add(_lstBands);
 
-            AddLbl(p, "EXCLUIR LONGITUDES DE ONDA", cy, bold: true, color: Color.FromArgb(220, 140, 80)); cy += 20;
+            p.Controls.Add(CreateLbl("EXCLUIR LONGITUDES DE ONDA", true, Color.FromArgb(220, 140, 80)));
+            p.Controls.Add(CreateLbl("Desde (nm):"));
+            _nudExclFrom = new NumericUpDown { Width = 260, Minimum = (decimal)(_cube.Header.Wavelengths != null && _cube.Header.Wavelengths.Count > 0 ? _cube.Header.Wavelengths[0] : 0), Maximum = (decimal)(_cube.Header.Wavelengths != null && _cube.Header.Wavelengths.Count > 0 ? _cube.Header.Wavelengths[^1] : 9999), Value = (decimal)(_cube.Header.Wavelengths != null && _cube.Header.Wavelengths.Count > 0 ? _cube.Header.Wavelengths[0] : 0), DecimalPlaces = 1, Increment = 1m, BackColor = Color.FromArgb(36, 36, 52), ForeColor = Color.White, Margin = new Padding(3, 5, 3, 10) };
+            p.Controls.Add(_nudExclFrom);
 
-            AddLbl(p, "Desde (nm):", cy, size: 8); cy += 16;
-            _nudExclFrom = new NumericUpDown { Location = new Point(6, cy), Width = 210, Height = 22, Minimum = (decimal)(_cube.Header.Wavelengths != null && _cube.Header.Wavelengths.Count > 0 ? _cube.Header.Wavelengths[0] : 0), Maximum = (decimal)(_cube.Header.Wavelengths != null && _cube.Header.Wavelengths.Count > 0 ? _cube.Header.Wavelengths[^1] : 9999), Value = (decimal)(_cube.Header.Wavelengths != null && _cube.Header.Wavelengths.Count > 0 ? _cube.Header.Wavelengths[0] : 0), DecimalPlaces = 1, Increment = 1m, BackColor = Color.FromArgb(36, 36, 52), ForeColor = Color.White };
-            p.Controls.Add(_nudExclFrom); cy += 26;
+            p.Controls.Add(CreateLbl("Hasta (nm):"));
+            _nudExclTo = new NumericUpDown { Width = 260, Minimum = (decimal)(_cube.Header.Wavelengths != null && _cube.Header.Wavelengths.Count > 0 ? _cube.Header.Wavelengths[0] : 0), Maximum = (decimal)(_cube.Header.Wavelengths != null && _cube.Header.Wavelengths.Count > 0 ? _cube.Header.Wavelengths[^1] : 9999), Value = (decimal)(_cube.Header.Wavelengths != null && _cube.Header.Wavelengths.Count > 0 ? _cube.Header.Wavelengths[^1] : 9999), DecimalPlaces = 1, Increment = 1m, BackColor = Color.FromArgb(36, 36, 52), ForeColor = Color.White, Margin = new Padding(3, 5, 3, 10) };
+            p.Controls.Add(_nudExclTo);
 
-            AddLbl(p, "Hasta (nm):", cy, size: 8); cy += 16;
-            _nudExclTo = new NumericUpDown { Location = new Point(6, cy), Width = 210, Height = 22, Minimum = (decimal)(_cube.Header.Wavelengths != null && _cube.Header.Wavelengths.Count > 0 ? _cube.Header.Wavelengths[0] : 0), Maximum = (decimal)(_cube.Header.Wavelengths != null && _cube.Header.Wavelengths.Count > 0 ? _cube.Header.Wavelengths[^1] : 9999), Value = (decimal)(_cube.Header.Wavelengths != null && _cube.Header.Wavelengths.Count > 0 ? _cube.Header.Wavelengths[^1] : 9999), DecimalPlaces = 1, Increment = 1m, BackColor = Color.FromArgb(36, 36, 52), ForeColor = Color.White };
-            p.Controls.Add(_nudExclTo); cy += 26;
-
-            var btnAddExcl = new Button { Text = "+ Añadir", Location = new Point(6, cy), Width = 100, Height = 24, FlatStyle = FlatStyle.Flat, BackColor = Color.FromArgb(120, 60, 20), ForeColor = Color.FromArgb(255, 200, 150), Font = new Font("Segoe UI", 8f), Cursor = Cursors.Hand };
+            var btnPnl = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.LeftToRight, Margin = new Padding(0) };
+            
+            var btnAddExcl = new Button { Text = "+ Añadir", AutoSize = true, Padding = new Padding(15, 5, 15, 5), FlatStyle = FlatStyle.Flat, BackColor = Color.FromArgb(120, 60, 20), ForeColor = Color.FromArgb(255, 200, 150), Cursor = Cursors.Hand, Margin = new Padding(3, 0, 10, 0) };
             btnAddExcl.FlatAppearance.BorderColor = Color.FromArgb(180, 100, 40);
             btnAddExcl.Click += (_, _) => { double f = (double)_nudExclFrom.Value; double t = (double)_nudExclTo.Value; if (f > t) (f, t) = (t, f); _excludedRanges.Add((f, t)); _lstExcluded.Items.Add($"{f:F1} – {t:F1} nm"); RefreshBandList(); UpdateExclInfo(); UpdatePreview(); };
-            p.Controls.Add(btnAddExcl);
-
-            var btnDelExcl = new Button { Text = "✕ Eliminar", Location = new Point(116, cy), Width = 100, Height = 24, FlatStyle = FlatStyle.Flat, BackColor = Color.FromArgb(65, 30, 30), ForeColor = Color.FromArgb(255, 150, 150), Font = new Font("Segoe UI", 8f), Cursor = Cursors.Hand };
+            
+            var btnDelExcl = new Button { Text = "✕ Eliminar", AutoSize = true, Padding = new Padding(15, 5, 15, 5), FlatStyle = FlatStyle.Flat, BackColor = Color.FromArgb(65, 30, 30), ForeColor = Color.FromArgb(255, 150, 150), Cursor = Cursors.Hand };
             btnDelExcl.FlatAppearance.BorderColor = Color.FromArgb(120, 50, 50);
             btnDelExcl.Click += (_, _) => { int idx = _lstExcluded.SelectedIndex; if (idx < 0) return; _excludedRanges.RemoveAt(idx); _lstExcluded.Items.RemoveAt(idx); RefreshBandList(); UpdateExclInfo(); UpdatePreview(); };
-            p.Controls.Add(btnDelExcl); cy += 28;
+            
+            btnPnl.Controls.Add(btnAddExcl); btnPnl.Controls.Add(btnDelExcl);
+            p.Controls.Add(btnPnl);
 
-            _lstExcluded = new ListBox { Location = new Point(6, cy), Size = new Size(210, 68), BackColor = Color.FromArgb(28, 20, 20), ForeColor = Color.FromArgb(255, 190, 120), Font = new Font("Consolas", 7.5f), BorderStyle = BorderStyle.FixedSingle };
-            p.Controls.Add(_lstExcluded); cy += 76;
+            _lstExcluded = new ListBox { Width = 260, Height = 70, BackColor = Color.FromArgb(28, 20, 20), ForeColor = Color.FromArgb(255, 190, 120), Font = new Font("Consolas", 7.5f), BorderStyle = BorderStyle.FixedSingle, Margin = new Padding(3, 15, 3, 5) };
+            p.Controls.Add(_lstExcluded);
 
-            _lblExclInfo = new Label { Location = new Point(6, cy), Size = new Size(210, 32), ForeColor = Color.FromArgb(170, 130, 80), Font = new Font("Segoe UI", 7.5f, FontStyle.Italic), Text = "Sin exclusiones activas", AutoSize = false };
-            p.Controls.Add(_lblExclInfo); cy += 36;
+            _lblExclInfo = new Label { AutoSize = true, ForeColor = Color.FromArgb(170, 130, 80), Font = new Font("Segoe UI", 7.5f, FontStyle.Italic), Text = "Sin exclusiones activas", Margin = new Padding(3, 0, 3, 15) };
+            p.Controls.Add(_lblExclInfo);
 
-            AddLbl(p, "FÓRMULAS RÁPIDAS", cy, bold: true, color: Color.FromArgb(100, 160, 220)); cy += 20;
+            p.Controls.Add(CreateLbl("FÓRMULAS RÁPIDAS", true, Color.FromArgb(100, 160, 220)));
             foreach (var (name, formula) in Presets)
             {
-                var btn = new Button { Text = name, Location = new Point(6, cy), Width = 210, Height = 26, FlatStyle = FlatStyle.Flat, BackColor = Color.FromArgb(36, 36, 56), ForeColor = Color.FromArgb(180, 200, 240), Font = new Font("Segoe UI", 8.5f), Cursor = Cursors.Hand, Tag = formula };
+                var btn = new Button { Text = name, AutoSize = true, MinimumSize = new Size(260, 0), Padding = new Padding(5, 5, 5, 5), FlatStyle = FlatStyle.Flat, BackColor = Color.FromArgb(36, 36, 56), ForeColor = Color.FromArgb(180, 200, 240), Cursor = Cursors.Hand, Tag = formula, Margin = new Padding(3, 5, 3, 0) };
                 btn.FlatAppearance.BorderColor = Color.FromArgb(55, 55, 80);
                 btn.Click += (s, _) => { _txtFormula.Text = (string)((Button)s!).Tag!; };
-                p.Controls.Add(btn); cy += 30;
+                p.Controls.Add(btn);
             }
+        }
+
+        private Label CreateLbl(string text, bool bold = false, Color? color = null)
+        {
+            return new Label 
+            { 
+                Text = text, 
+                AutoSize = true, 
+                Margin = new Padding(3, 10, 3, 0), 
+                ForeColor = color ?? Color.FromArgb(130, 130, 175), 
+                Font = new Font("Segoe UI", 8.5f, bold ? FontStyle.Bold : FontStyle.Regular) 
+            };
         }
 
         private void RefreshBandList()
@@ -216,71 +236,87 @@ namespace SpecimenFX17.Imaging
             string msg; Color bannerColor;
             if (hasSel) { var parts = new List<string> { $"{selCount} selección(es): " + string.Join(", ", _selections.Select(s => s.LegendIcon + s.ShortLabel)) }; msg = $"  🎯  Modo selección activo:  {string.Join("  +  ", parts)}   —   solo se calculará sobre esta selección"; bannerColor = Color.FromArgb(28, 55, 28); }
             else { msg = $"  🌐  Imagen completa:  {_cube.Samples} × {_cube.Lines} px  ({(long)_cube.Samples * _cube.Lines:N0} píxeles)   —   selecciona píxeles/regiones en la ventana principal para limitar el cálculo"; bannerColor = Color.FromArgb(25, 30, 45); }
-            var banner = new Panel { Margin = new Padding(0), BackColor = bannerColor };
-            var lbl = new Label { Dock = DockStyle.Fill, Text = msg, ForeColor = hasSel ? Color.FromArgb(130, 230, 130) : Color.FromArgb(110, 130, 180), Font = new Font("Segoe UI", 8f, hasSel ? FontStyle.Bold : FontStyle.Regular), TextAlign = ContentAlignment.MiddleLeft, Padding = new Padding(4, 0, 0, 0) };
+            var banner = new Panel { AutoSize = true, Margin = new Padding(0), BackColor = bannerColor };
+            var lbl = new Label { Dock = DockStyle.Fill, AutoSize = true, Text = msg, ForeColor = hasSel ? Color.FromArgb(130, 230, 130) : Color.FromArgb(110, 130, 180), Font = new Font("Segoe UI", 8f, hasSel ? FontStyle.Bold : FontStyle.Regular), TextAlign = ContentAlignment.MiddleLeft, Padding = new Padding(4, 5, 0, 5) };
             banner.Controls.Add(lbl); return banner;
         }
 
-        private Panel BuildFormulaPanel()
+        private TableLayoutPanel BuildFormulaPanel()
         {
-            var fp = new Panel { Width = 1000, Height = 130, Margin = new Padding(0), BackColor = Color.FromArgb(22, 22, 34) };
-            AddLbl(fp, "EXPRESIÓN MATEMÁTICA", 6, bold: true, color: Color.FromArgb(100, 160, 220));
+            // FIX 4K: Usamos un TableLayoutPanel para alinear la barra de texto y los botones a la derecha
+            var fp = new TableLayoutPanel
+            {
+                Dock = DockStyle.Fill,
+                AutoSize = true,
+                AutoSizeMode = AutoSizeMode.GrowAndShrink,
+                ColumnCount = 2,
+                RowCount = 3,
+                BackColor = Color.FromArgb(22, 22, 34),
+                Padding = new Padding(10)
+            };
+            fp.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f));
+            fp.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
 
-            _txtFormula = new RichTextBox { Location = new Point(10, 24), Width = fp.Width - 140, Height = 44, Anchor = AnchorStyles.Left | AnchorStyles.Right | AnchorStyles.Top, BackColor = Color.FromArgb(28, 28, 50), ForeColor = Color.FromArgb(190, 240, 190), Font = new Font("Consolas", 12f), BorderStyle = BorderStyle.FixedSingle, WordWrap = false, Multiline = false, Text = "(B{800} - B{680}) / (B{800} + B{680})" };
+            var title = new Label { Text = "EXPRESIÓN MATEMÁTICA", ForeColor = Color.FromArgb(100, 160, 220), Font = new Font("Segoe UI", 9f, FontStyle.Bold), AutoSize = true, Margin = new Padding(0, 0, 0, 10) };
+            fp.Controls.Add(title, 0, 0);
+            fp.SetColumnSpan(title, 2);
+
+            _txtFormula = new RichTextBox { Dock = DockStyle.Fill, MinimumSize = new Size(0, 44), BackColor = Color.FromArgb(28, 28, 50), ForeColor = Color.FromArgb(190, 240, 190), Font = new Font("Consolas", 12f), BorderStyle = BorderStyle.FixedSingle, WordWrap = false, Multiline = false, Text = "(B{800} - B{680}) / (B{800} + B{680})" };
             _txtFormula.TextChanged += (_, _) => UpdatePreview();
-            fp.Controls.Add(_txtFormula);
+            fp.Controls.Add(_txtFormula, 0, 1);
 
-            var syntaxLbl = new Label { Location = new Point(10, 73), Width = fp.Width - 140, Height = 50, Anchor = AnchorStyles.Left | AnchorStyles.Right | AnchorStyles.Top, ForeColor = Color.FromArgb(100, 100, 140), Font = new Font("Consolas", 7.5f), Text = "B{λ} = banda más cercana a λ nm   •   B[n] = banda por índice\nOps: + - * / ^    sqrt  log  log2  log10  exp  abs\nsin  cos  tan  asin  acos  atan  min(a,b)  max(a,b)  pow(a,b)  PI  E" };
-            fp.Controls.Add(syntaxLbl);
+            var syntaxLbl = new Label { Dock = DockStyle.Fill, AutoSize = true, ForeColor = Color.FromArgb(100, 100, 140), Font = new Font("Consolas", 8f), Text = "B{λ} = banda más cercana a λ nm   •   B[n] = banda por índice\nOps: + - * / ^    sqrt  log  log2  log10  exp  abs\nsin  cos  tan  asin  acos  atan  min(a,b)  max(a,b)  pow(a,b)  PI  E", Margin = new Padding(0, 10, 0, 0) };
+            fp.Controls.Add(syntaxLbl, 0, 2);
 
-            _btnCalc = new Button { Text = "▶  Calcular", Location = new Point(fp.Width - 120, 24), Width = 110, Height = 28, Anchor = AnchorStyles.Right | AnchorStyles.Top, FlatStyle = FlatStyle.Flat, BackColor = Color.FromArgb(35, 110, 55), ForeColor = Color.White, Font = new Font("Segoe UI", 9f, FontStyle.Bold), Cursor = Cursors.Hand };
+            _btnCalc = new Button { Text = "▶  Calcular", AutoSize = true, Padding = new Padding(15, 5, 15, 5), FlatStyle = FlatStyle.Flat, BackColor = Color.FromArgb(35, 110, 55), ForeColor = Color.White, Font = new Font("Segoe UI", 9f, FontStyle.Bold), Cursor = Cursors.Hand, Anchor = AnchorStyles.Top | AnchorStyles.Right, Margin = new Padding(10, 0, 0, 10) };
             _btnCalc.FlatAppearance.BorderColor = Color.FromArgb(55, 150, 75);
             _btnCalc.Click += BtnCalc_Click;
-            fp.Controls.Add(_btnCalc);
+            fp.Controls.Add(_btnCalc, 1, 1);
 
-            _btnSave = new Button { Text = "💾  Guardar imagen", Location = new Point(fp.Width - 120, 56), Width = 110, Height = 28, Anchor = AnchorStyles.Right | AnchorStyles.Top, FlatStyle = FlatStyle.Flat, BackColor = Color.FromArgb(35, 70, 115), ForeColor = Color.White, Cursor = Cursors.Hand, Enabled = false };
+            _btnSave = new Button { Text = "💾  Guardar imagen", AutoSize = true, Padding = new Padding(15, 5, 15, 5), FlatStyle = FlatStyle.Flat, BackColor = Color.FromArgb(35, 70, 115), ForeColor = Color.White, Cursor = Cursors.Hand, Enabled = false, Anchor = AnchorStyles.Top | AnchorStyles.Right, Margin = new Padding(10, 0, 0, 0) };
             _btnSave.FlatAppearance.BorderColor = Color.FromArgb(55, 100, 155);
             _btnSave.Click += BtnSave_Click;
-            fp.Controls.Add(_btnSave);
+            fp.Controls.Add(_btnSave, 1, 2);
 
             return fp;
         }
 
-        private Panel BuildStatusPanel()
+        private TableLayoutPanel BuildStatusPanel()
         {
-            var sp = new TableLayoutPanel { Margin = new Padding(0), BackColor = Color.FromArgb(14, 14, 24), ColumnCount = 2, RowCount = 1 };
+            var sp = new TableLayoutPanel { AutoSize = true, Margin = new Padding(0), BackColor = Color.FromArgb(14, 14, 24), ColumnCount = 2, RowCount = 1 };
             sp.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50f));
             sp.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50f));
 
-            _lblPreview = new Label { Dock = DockStyle.Fill, ForeColor = Color.FromArgb(120, 210, 120), Font = new Font("Consolas", 8.5f), TextAlign = ContentAlignment.MiddleLeft, Padding = new Padding(8, 0, 0, 0) };
-            _lblError = new Label { Dock = DockStyle.Fill, ForeColor = Color.FromArgb(255, 100, 100), Font = new Font("Consolas", 8.5f), TextAlign = ContentAlignment.MiddleLeft, Padding = new Padding(4, 0, 0, 0) };
+            _lblPreview = new Label { Dock = DockStyle.Fill, AutoSize = true, ForeColor = Color.FromArgb(120, 210, 120), Font = new Font("Consolas", 8.5f), TextAlign = ContentAlignment.MiddleLeft, Padding = new Padding(8, 5, 0, 5) };
+            _lblError = new Label { Dock = DockStyle.Fill, AutoSize = true, ForeColor = Color.FromArgb(255, 100, 100), Font = new Font("Consolas", 8.5f), TextAlign = ContentAlignment.MiddleLeft, Padding = new Padding(4, 5, 0, 5) };
 
             sp.Controls.Add(_lblPreview, 0, 0);
             sp.Controls.Add(_lblError, 1, 0);
             return sp;
         }
 
-        private Panel BuildToolPanel()
+        private TableLayoutPanel BuildToolPanel()
         {
             var tp = new TableLayoutPanel
             {
+                AutoSize = true,
                 Margin = new Padding(0),
                 BackColor = Color.FromArgb(20, 20, 32),
                 ColumnCount = 4,
                 RowCount = 1
             };
-            tp.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 60f));
-            tp.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 160f));
-            tp.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 200f));
+            tp.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+            tp.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+            tp.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
             tp.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f));
 
-            var lblPaleta = new Label { Text = "Paleta:", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleRight, ForeColor = Color.FromArgb(130, 130, 175), Font = new Font("Segoe UI", 8.5f) };
+            var lblPaleta = new Label { Text = "Paleta:", AutoSize = true, Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleRight, ForeColor = Color.FromArgb(130, 130, 175), Font = new Font("Segoe UI", 8.5f), Margin = new Padding(5, 10, 0, 5) };
 
-            _cmbColormap = new ComboBox { Dock = DockStyle.Fill, DropDownStyle = ComboBoxStyle.DropDownList, BackColor = Color.FromArgb(36, 36, 55), ForeColor = Color.White, FlatStyle = FlatStyle.Flat, Margin = new Padding(4, 6, 4, 6) };
+            _cmbColormap = new ComboBox { AutoSize = true, MinimumSize = new Size(160, 0), DropDownStyle = ComboBoxStyle.DropDownList, BackColor = Color.FromArgb(36, 36, 55), ForeColor = Color.White, FlatStyle = FlatStyle.Flat, Margin = new Padding(10, 8, 10, 8) };
             _cmbColormap.Items.AddRange(Enum.GetNames(typeof(BliColormap))); _cmbColormap.SelectedIndex = 0;
 
-            _progress = new ProgressBar { Dock = DockStyle.Fill, Style = ProgressBarStyle.Continuous, Visible = false, Margin = new Padding(10, 8, 10, 8) };
-            _lblStatus = new Label { Dock = DockStyle.Fill, ForeColor = Color.FromArgb(140, 150, 190), Font = new Font("Consolas", 8f), TextAlign = ContentAlignment.MiddleLeft };
+            _progress = new ProgressBar { AutoSize = true, MinimumSize = new Size(150, 20), Style = ProgressBarStyle.Continuous, Visible = false, Margin = new Padding(10, 10, 10, 10) };
+            _lblStatus = new Label { Dock = DockStyle.Fill, AutoSize = true, ForeColor = Color.FromArgb(140, 150, 190), Font = new Font("Consolas", 8f), TextAlign = ContentAlignment.MiddleLeft, Margin = new Padding(5, 10, 5, 5) };
 
             tp.Controls.Add(lblPaleta, 0, 0);
             tp.Controls.Add(_cmbColormap, 1, 0);
@@ -307,14 +343,14 @@ namespace SpecimenFX17.Imaging
             var pgPH = new TabPage("↔  Perfil fila") { BackColor = Color.FromArgb(10, 10, 18) };
             var phContainer = new Panel { Dock = DockStyle.Fill, BackColor = Color.FromArgb(10, 10, 18) };
 
-            var phBar = new TableLayoutPanel { Dock = DockStyle.Top, Height = 34, BackColor = Color.FromArgb(18, 18, 28), ColumnCount = 3, RowCount = 1 };
-            phBar.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 60f));
+            var phBar = new TableLayoutPanel { Dock = DockStyle.Top, AutoSize = true, BackColor = Color.FromArgb(18, 18, 28), ColumnCount = 3, RowCount = 1 };
+            phBar.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
             phBar.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f));
-            phBar.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 120f));
+            phBar.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
 
-            var lblH = new Label { Text = "Fila:", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleCenter, ForeColor = Color.FromArgb(130, 130, 175), Font = new Font("Segoe UI", 8.5f) };
+            var lblH = new Label { Text = "Fila:", AutoSize = true, Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleCenter, ForeColor = Color.FromArgb(130, 130, 175), Font = new Font("Segoe UI", 8.5f), Padding = new Padding(10) };
             _trkRow = new TrackBar { Dock = DockStyle.Fill, Minimum = 0, Maximum = Math.Max(0, _cube.Lines - 1), Value = _cube.Lines / 2, TickStyle = TickStyle.None, BackColor = Color.FromArgb(18, 18, 28) };
-            _lblRow = new Label { Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleCenter, ForeColor = Color.FromArgb(150, 200, 255), Font = new Font("Consolas", 8.5f), Text = $"y = {_cube.Lines / 2}" };
+            _lblRow = new Label { Dock = DockStyle.Fill, AutoSize = true, TextAlign = ContentAlignment.MiddleCenter, ForeColor = Color.FromArgb(150, 200, 255), Font = new Font("Consolas", 8.5f), Text = $"y = {_cube.Lines / 2}", Padding = new Padding(10) };
 
             _trkRow.Scroll += (_, _) => { _lblRow.Text = $"y = {_trkRow.Value}"; if (_resultData != null) DrawProfileH(); };
             phBar.Controls.Add(lblH, 0, 0);
@@ -329,14 +365,14 @@ namespace SpecimenFX17.Imaging
             var pgPV = new TabPage("↕  Perfil columna") { BackColor = Color.FromArgb(10, 10, 18) };
             var pvContainer = new Panel { Dock = DockStyle.Fill, BackColor = Color.FromArgb(10, 10, 18) };
 
-            var pvBar = new TableLayoutPanel { Dock = DockStyle.Top, Height = 34, BackColor = Color.FromArgb(18, 18, 28), ColumnCount = 3, RowCount = 1 };
-            pvBar.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 75f));
+            var pvBar = new TableLayoutPanel { Dock = DockStyle.Top, AutoSize = true, BackColor = Color.FromArgb(18, 18, 28), ColumnCount = 3, RowCount = 1 };
+            pvBar.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
             pvBar.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f));
-            pvBar.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 120f));
+            pvBar.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
 
-            var lblV = new Label { Text = "Columna:", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleCenter, ForeColor = Color.FromArgb(130, 130, 175), Font = new Font("Segoe UI", 8.5f) };
+            var lblV = new Label { Text = "Columna:", AutoSize = true, Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleCenter, ForeColor = Color.FromArgb(130, 130, 175), Font = new Font("Segoe UI", 8.5f), Padding = new Padding(10) };
             _trkCol = new TrackBar { Dock = DockStyle.Fill, Minimum = 0, Maximum = Math.Max(0, _cube.Samples - 1), Value = _cube.Samples / 2, TickStyle = TickStyle.None, BackColor = Color.FromArgb(18, 18, 28) };
-            _lblCol = new Label { Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleCenter, ForeColor = Color.FromArgb(150, 200, 255), Font = new Font("Consolas", 8.5f), Text = $"x = {_cube.Samples / 2}" };
+            _lblCol = new Label { Dock = DockStyle.Fill, AutoSize = true, TextAlign = ContentAlignment.MiddleCenter, ForeColor = Color.FromArgb(150, 200, 255), Font = new Font("Consolas", 8.5f), Text = $"x = {_cube.Samples / 2}", Padding = new Padding(10) };
 
             _trkCol.Scroll += (_, _) => { _lblCol.Text = $"x = {_trkCol.Value}"; if (_resultData != null) DrawProfileV(); };
             pvBar.Controls.Add(lblV, 0, 0);
@@ -440,7 +476,6 @@ namespace SpecimenFX17.Imaging
             {
                 if (counts[i] == 0) continue;
                 float t = (float)i / (bins - 1), normH = Math.Clamp((counts[i] - histoYMin2) / yRangeH, 0f, 1f);
-                // BUG 9 SOLUCIONADO: Cuidado con desbordamientos por Infinity en UI
                 float barH = float.IsNaN(normH) || float.IsInfinity(normH) ? 0f : Math.Clamp(normH * plot.Height, 0f, 10000f);
                 float x = plot.Left + i * binW, y = plot.Bottom - barH;
                 var (r2, g2, b2) = GetColor(t, (BliColormap)_cmbColormap.SelectedIndex);
@@ -469,7 +504,6 @@ namespace SpecimenFX17.Imaging
             for (int i = iStart; i <= iEnd; i++)
             {
                 float px = plot.Left + (i - xMin) / xRng * plot.Width, v = float.IsNaN(values[i]) || float.IsInfinity(values[i]) ? vMin : values[i];
-                // BUG 9 SOLUCIONADO: Evita crasheo por OverflowException en motor GDI+ limitando coordenadas absolutas
                 float py = plot.Bottom - (v - vMin) / vRng * plot.Height;
                 py = float.IsNaN(py) || float.IsInfinity(py) ? plot.Bottom : Math.Clamp(py, -5000f, 5000f);
                 pts.Add(new PointF(px, Math.Clamp(py, plot.Top - 5, plot.Bottom + 5)));
@@ -561,11 +595,6 @@ namespace SpecimenFX17.Imaging
             pb.MouseMove += (s, e) => { if (!dragging) return; dragCur = e.Location; pb.Invalidate(); };
             pb.MouseUp += (s, e) => { if (!dragging || e.Button != MouseButtons.Left) return; dragging = false; pb.Invalidate(); int dx = Math.Abs(e.X - dragStart.X); int dy = Math.Abs(e.Y - dragStart.Y); if (dx < 6 && dy < 6) return; int plotLeft = padL, plotRight = pb.Width - padR, plotTop = padT, plotBottom = pb.Height - padB, plotW = plotRight - plotLeft, plotH = plotBottom - plotTop; if (plotW < 1 || plotH < 1) return; float nx0 = Math.Clamp((float)(Math.Min(dragStart.X, e.X) - plotLeft) / plotW, 0f, 1f), nx1 = Math.Clamp((float)(Math.Max(dragStart.X, e.X) - plotLeft) / plotW, 0f, 1f), ny1 = Math.Clamp(1f - (float)(Math.Min(dragStart.Y, e.Y) - plotTop) / plotH, 0f, 1f), ny0 = Math.Clamp(1f - (float)(Math.Max(dragStart.Y, e.Y) - plotTop) / plotH, 0f, 1f); if (nx1 - nx0 < 0.01f || ny1 - ny0 < 0.01f) return; setZoom(new ZoomRange(nx0, nx1, ny0, ny1)); redraw(); };
             pb.Paint += (s, e) => { if (!dragging) return; int x1 = Math.Min(dragStart.X, dragCur.X), y1 = Math.Min(dragStart.Y, dragCur.Y), rw = Math.Abs(dragCur.X - dragStart.X), rh = Math.Abs(dragCur.Y - dragStart.Y); if (rw < 3 || rh < 3) return; using var fill = new SolidBrush(Color.FromArgb(40, 80, 200, 255)); e.Graphics.FillRectangle(fill, x1, y1, rw, rh); using var pen = new Pen(Color.FromArgb(200, 80, 200, 255), 1.5f) { DashStyle = DashStyle.Dash }; e.Graphics.DrawRectangle(pen, x1, y1, rw, rh); int c = 7; using var cp = new Pen(Color.FromArgb(220, 120, 220, 255), 2f); e.Graphics.DrawLine(cp, x1, y1, x1 + c, y1); e.Graphics.DrawLine(cp, x1, y1, x1, y1 + c); e.Graphics.DrawLine(cp, x1 + rw, y1, x1 + rw - c, y1); e.Graphics.DrawLine(cp, x1 + rw, y1, x1 + rw, y1 + c); e.Graphics.DrawLine(cp, x1, y1 + rh, x1 + c, y1 + rh); e.Graphics.DrawLine(cp, x1, y1 + rh, x1, y1 + rh - c); e.Graphics.DrawLine(cp, x1 + rw, y1 + rh, x1 + rw - c, y1 + rh); e.Graphics.DrawLine(cp, x1 + rw, y1 + rh, x1 + rw, y1 + rh - c); };
-        }
-
-        private static void AddLbl(Control p, string text, int cy, bool bold = false, Color? color = null, float size = 8.5f)
-        {
-            p.Controls.Add(new Label { Text = text, Location = new Point(8, cy), Width = 200, Height = 18, ForeColor = color ?? Color.FromArgb(130, 130, 175), Font = new Font("Segoe UI", size, bold ? FontStyle.Bold : FontStyle.Regular), AutoSize = false });
         }
     }
 }

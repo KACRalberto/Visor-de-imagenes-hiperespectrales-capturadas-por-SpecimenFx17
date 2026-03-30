@@ -7,8 +7,10 @@ using System.Drawing.Printing;
 using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
+using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Forms;
+using WeifenLuo.WinFormsUI.Docking; // NUEVO: Librería de paneles
 
 namespace SpecimenFX17.Imaging
 {
@@ -21,7 +23,7 @@ namespace SpecimenFX17.Imaging
         private HyperspectralCube? _darkCube;
         private string _loadedFileName = "";
 
-        private readonly List<Form> _childForms = new();
+        private readonly List<DockContent> _childForms = new(); // AHORA SON DOCKCONTENT
 
         private int _currentBand = 0;
         private bool _grayscaleMode = false;
@@ -60,6 +62,7 @@ namespace SpecimenFX17.Imaging
         private TrackBar _slider = null!;
         private CheckBox _chkAnalyze = null!;
 
+        private ComboBox _cmbCamera = null!;
         private ComboBox _cmbCmap = null!;
         private CheckBox _chkCbar = null!;
         private CheckBox _chkGray = null!;
@@ -95,41 +98,68 @@ namespace SpecimenFX17.Imaging
 
         private Button _btnExport = null!;
         private Button _btnExpAll = null!;
-        private Button _btnExpMeanSpec = null!; // Botón espectro medio
-        private Button _btnExpGraph = null!;    // Botón gráfica
+        private Button _btnExpMeanSpec = null!;
+        private Button _btnExpGraph = null!;
         private Button _btnReport = null!;
         private Button _btnClear = null!;
+
         private ProgressBar _pb = null!;
         private StatusStrip _ss = null!;
         private ToolStripStatusLabel _slbl = null!;
+        private ToolStripButton _btnCancelTask = null!;
+        private CancellationTokenSource? _cts;
 
-        // --- MÉTODOS DE COMPATIBILIDAD MATH.CLAMP PARA .NET FRAMEWORK ---
+        private bool _estaCargando = false;
+
+        // --- SISTEMA DE PANELES ---
+        private DockPanel _dockPanel = null!;
+        private DockContent _imageDocument = null!;
+        private DockContent _toolWindow = null!;
+
         private static int Clamp(int val, int min, int max) => Math.Max(min, Math.Min(max, val));
         private static float Clamp(float val, float min, float max) => Math.Max(min, Math.Min(max, val));
 
         public MainForm()
         {
-            Text = "SpecimenFX17 — Visor BLI Hiperespectral";
-            Size = new Size(1400, 950); MinimumSize = new Size(1000, 700);
-            BackColor = Color.FromArgb(18, 18, 26); ForeColor = Color.White;
+            Text = "Specimen — Workspace Hiperespectral";
+            Size = new Size(1600, 950); MinimumSize = new Size(1000, 700);
+            BackColor = Color.FromArgb(45, 45, 48); // Color de fondo base estilo Visual Studio
+            ForeColor = Color.White;
             Font = new Font("Segoe UI", 9f);
             try { this.Icon = new Icon("favicon.ico"); } catch { }
+
+            IsMdiContainer = true; // Convierte el Form en un contenedor MDI
+
             BuildUI();
         }
 
         private void BuildUI()
         {
-            _ss = new StatusStrip { BackColor = Color.FromArgb(12, 12, 20), SizingGrip = false };
-            _slbl = new ToolStripStatusLabel("Carga un archivo .hdr")
-            { ForeColor = Color.FromArgb(100, 200, 100), Spring = true, TextAlign = ContentAlignment.MiddleLeft };
-            _pb = new ProgressBar { Style = ProgressBarStyle.Continuous, Visible = false, Size = new Size(200, 14) };
-            _ss.Items.Add(_slbl); _ss.Items.Add(new ToolStripControlHost(_pb));
+            // 1. Crear el DockPanel principal
+            _dockPanel = new DockPanel
+            {
+                Dock = DockStyle.Fill,
+                Theme = new VS2015DarkTheme(), // Tema oscuro profesional
+                DocumentStyle = DocumentStyle.DockingWindow,
+                ShowDocumentIcon = true
+            };
+            Controls.Add(_dockPanel);
 
+            // 2. Crear la barra de estado
+            _ss = new StatusStrip { BackColor = Color.FromArgb(0, 122, 204), ForeColor = Color.White, SizingGrip = false };
+            _slbl = new ToolStripStatusLabel("Arrastra y suelta un archivo .hdr en la pantalla para empezar")
+            { Spring = true, TextAlign = ContentAlignment.MiddleLeft };
+            _pb = new ProgressBar { Style = ProgressBarStyle.Continuous, Visible = false, Size = new Size(200, 14) };
+            _btnCancelTask = new ToolStripButton("🛑 Cancelar proceso") { ForeColor = Color.White, Font = new Font("Segoe UI", 9f, FontStyle.Bold), Visible = false, Margin = new Padding(10, 0, 5, 0) };
+            _btnCancelTask.Click += (s, e) => { if (_cts != null && !_cts.IsCancellationRequested) { _cts.Cancel(); _btnCancelTask.Enabled = false; _btnCancelTask.Text = "⏳ Cancelando..."; } };
+            _ss.Items.Add(_slbl); _ss.Items.Add(new ToolStripControlHost(_pb)); _ss.Items.Add(_btnCancelTask);
+            Controls.Add(_ss);
+
+            // 3. Construir el Panel Derecho (Herramientas)
             var rp = new FlowLayoutPanel
             {
-                Dock = DockStyle.Right,
-                Width = 280,
-                BackColor = Color.FromArgb(24, 24, 36),
+                Dock = DockStyle.Fill,
+                BackColor = Color.FromArgb(30, 30, 30),
                 AutoScroll = true,
                 FlowDirection = FlowDirection.TopDown,
                 WrapContents = false,
@@ -137,87 +167,108 @@ namespace SpecimenFX17.Imaging
             };
             BuildRightPanel(rp);
 
-            var cp = new Panel { Dock = DockStyle.Fill, BackColor = Color.Black };
-
-            var slPan = new Panel { Dock = DockStyle.Top, Height = 46, BackColor = Color.FromArgb(22, 22, 34) };
+            // 4. Construir el Panel Central (Imagen)
+            var cp = new Panel { Dock = DockStyle.Fill, BackColor = Color.FromArgb(20, 20, 20) };
+            var slPan = new Panel { Dock = DockStyle.Top, Height = 46, BackColor = Color.FromArgb(37, 37, 38) };
             var cmbContainer = new Panel { Dock = DockStyle.Left, Width = 260, Padding = new Padding(8, 10, 8, 10) };
-            _cmbBands = new ComboBox
-            {
-                Dock = DockStyle.Fill,
-                DropDownStyle = ComboBoxStyle.DropDownList,
-                BackColor = Color.FromArgb(38, 38, 55),
-                ForeColor = Color.White,
-                FlatStyle = FlatStyle.Flat,
-                Font = new Font("Consolas", 10f)
-            };
-            _cmbBands.SelectedIndexChanged += (_, _) => {
-                if (_cmbBands.SelectedIndex >= 0 && _slider.Value != _cmbBands.SelectedIndex)
-                {
-                    _slider.Value = _cmbBands.SelectedIndex; _currentBand = _slider.Value;
-                    if (_graphicalInfoForm != null && !_graphicalInfoForm.IsDisposed) _graphicalInfoForm.CurrentBand = _currentBand;
-                    RefreshDisplay();
-                }
-            };
+            _cmbBands = new ComboBox { Dock = DockStyle.Fill, DropDownStyle = ComboBoxStyle.DropDownList, BackColor = Color.FromArgb(50, 50, 50), ForeColor = Color.White, FlatStyle = FlatStyle.Flat, Font = new Font("Consolas", 10f) };
+            _cmbBands.SelectedIndexChanged += (_, _) => { if (_cmbBands.SelectedIndex >= 0 && _slider.Value != _cmbBands.SelectedIndex) { _slider.Value = _cmbBands.SelectedIndex; _currentBand = _slider.Value; if (_graphicalInfoForm != null && !_graphicalInfoForm.IsDisposed) _graphicalInfoForm.CurrentBand = _currentBand; RefreshDisplay(); } };
             cmbContainer.Controls.Add(_cmbBands);
 
-            _slider = new TrackBar { Dock = DockStyle.Fill, Minimum = 0, Maximum = 0, TickStyle = TickStyle.None, BackColor = Color.FromArgb(22, 22, 34) };
-            _slider.Scroll += (_, _) => {
-                _currentBand = _slider.Value; if (_cmbBands.Items.Count > _slider.Value) _cmbBands.SelectedIndex = _slider.Value;
-                if (_graphicalInfoForm != null && !_graphicalInfoForm.IsDisposed) _graphicalInfoForm.CurrentBand = _currentBand;
-                RefreshDisplay();
-            };
+            _slider = new TrackBar { Dock = DockStyle.Fill, Minimum = 0, Maximum = 0, TickStyle = TickStyle.None, BackColor = Color.FromArgb(37, 37, 38) };
+            _slider.Scroll += (_, _) => { _currentBand = _slider.Value; if (_cmbBands.Items.Count > _slider.Value) _cmbBands.SelectedIndex = _slider.Value; if (_graphicalInfoForm != null && !_graphicalInfoForm.IsDisposed) _graphicalInfoForm.CurrentBand = _currentBand; RefreshDisplay(); };
 
             slPan.Controls.Add(_slider); slPan.Controls.Add(cmbContainer);
 
-            var spCon = new Panel { Dock = DockStyle.Bottom, Height = 200, BackColor = Color.FromArgb(12, 12, 20) };
-            _lblSpecInfo = new Label
-            {
-                Dock = DockStyle.Top,
-                Height = 20,
-                BackColor = Color.FromArgb(20, 20, 32),
-                ForeColor = Color.FromArgb(140, 140, 190),
-                Font = new Font("Segoe UI", 8f, FontStyle.Italic),
-                Text = "  Rastreo activo con el ratón  •  Clic Izq = fijar selección  •  Clic Der = metadatos (°Brix)  •  Doble clic = limpiar",
-                TextAlign = ContentAlignment.MiddleLeft
-            };
+            var spCon = new Panel { Dock = DockStyle.Bottom, Height = 200, BackColor = Color.FromArgb(18, 18, 26) };
+            _lblSpecInfo = new Label { Dock = DockStyle.Top, AutoSize = true, Padding = new Padding(0, 5, 0, 5), BackColor = Color.FromArgb(28, 28, 28), ForeColor = Color.FromArgb(180, 180, 220), Font = new Font("Segoe UI", 8f, FontStyle.Italic), Text = "  Rastreo activo con el ratón  •  Clic Izq = fijar selección  •  Clic Der = metadatos (°Brix)  •  Doble clic = limpiar", TextAlign = ContentAlignment.MiddleLeft };
             _specPlot = new PictureBox { Dock = DockStyle.Fill, BackColor = Color.FromArgb(12, 12, 20), SizeMode = PictureBoxSizeMode.Normal };
             _specPlot.Resize += (_, _) => RedrawSpectrumPlot();
             spCon.Controls.Add(_specPlot); spCon.Controls.Add(_lblSpecInfo);
 
-            var div = new Panel { Dock = DockStyle.Bottom, Height = 3, BackColor = Color.FromArgb(50, 50, 70) };
+            var div = new Panel { Dock = DockStyle.Bottom, Height = 3, BackColor = Color.FromArgb(0, 122, 204) };
 
             _pictureBox = new PictureBox { Dock = DockStyle.Fill, SizeMode = PictureBoxSizeMode.Zoom, BackColor = Color.Black, Cursor = Cursors.Cross };
             _pictureBox.MouseMove += Pic_Move; _pictureBox.MouseDown += Pic_Down; _pictureBox.MouseUp += Pic_Up;
             _pictureBox.Paint += Pic_Paint; _pictureBox.MouseDoubleClick += Pic_DblClick; _pictureBox.MouseLeave += Pic_Leave;
 
-            _lblCoords = new Label
-            {
-                AutoSize = false,
-                Size = new Size(360, 20),
-                Location = new Point(6, 6),
-                BackColor = Color.FromArgb(160, 0, 0, 0),
-                ForeColor = Color.FromArgb(200, 255, 200),
-                Font = new Font("Consolas", 8f),
-                TextAlign = ContentAlignment.MiddleLeft,
-                Padding = new Padding(4, 0, 0, 0)
-            };
+            // --- DRAG AND DROP LÓGICA ---
+            _pictureBox.AllowDrop = true;
+            _pictureBox.DragEnter += HandleDragEnter;
+            _pictureBox.DragDrop += HandleDragDrop;
+
+            _lblCoords = new Label { AutoSize = true, Location = new Point(6, 6), BackColor = Color.FromArgb(160, 0, 0, 0), ForeColor = Color.FromArgb(200, 255, 200), Font = new Font("Consolas", 8f), TextAlign = ContentAlignment.MiddleLeft, Padding = new Padding(6) };
             _pictureBox.Controls.Add(_lblCoords);
 
             cp.Controls.Add(_pictureBox); cp.Controls.Add(div); cp.Controls.Add(spCon); cp.Controls.Add(slPan);
-            Controls.Add(cp); Controls.Add(rp); Controls.Add(_ss);
+
+            // 5. Acoplar los paneles al sistema DockPanel
+            _imageDocument = new DockContent { Text = "📸 Vista Principal", CloseButtonVisible = false, BackColor = Color.Black };
+            _imageDocument.Controls.Add(cp);
+
+            _toolWindow = new DockContent { Text = "⚙️ Herramientas", CloseButtonVisible = false, BackColor = Color.FromArgb(30, 30, 30) };
+            _toolWindow.Controls.Add(rp);
+
+            rp.Layout += (s, e) => { if (rp.ClientSize.Width == 0) return; int targetWidth = rp.ClientSize.Width - rp.Padding.Left - rp.Padding.Right; foreach (Control c in rp.Controls) c.Width = targetWidth - c.Margin.Left - c.Margin.Right; };
+
+            // Mostramos los paneles en el Dock
+            _toolWindow.Show(_dockPanel, DockState.DockRight);
+            _imageDocument.Show(_dockPanel, DockState.Document);
+
+            // Ajustamos el tamaño inicial de la barra de herramientas a ~350px
+            _dockPanel.DockRightPortion = 360d / this.Width;
         }
 
-        private void OpenChildForm(Form f)
+        // --- MANEJADORES DE ARRASTRAR Y SOLTAR ---
+        private void HandleDragEnter(object? sender, DragEventArgs e)
+        {
+            if (e.Data != null && e.Data.GetDataPresent(DataFormats.FileDrop))
+            {
+                string[] files = (string[])e.Data.GetData(DataFormats.FileDrop)!;
+                if (files.Any(f => f.EndsWith(".hdr", StringComparison.OrdinalIgnoreCase) || f.EndsWith(".raw", StringComparison.OrdinalIgnoreCase) || f.EndsWith(".bil", StringComparison.OrdinalIgnoreCase)))
+                    e.Effect = DragDropEffects.Copy;
+            }
+        }
+
+        private void HandleDragDrop(object? sender, DragEventArgs e)
+        {
+            if (e.Data != null && e.Data.GetDataPresent(DataFormats.FileDrop))
+            {
+                string[] files = (string[])e.Data.GetData(DataFormats.FileDrop)!;
+                var file = files.FirstOrDefault(f => f.EndsWith(".hdr", StringComparison.OrdinalIgnoreCase) || f.EndsWith(".raw", StringComparison.OrdinalIgnoreCase) || f.EndsWith(".bil", StringComparison.OrdinalIgnoreCase));
+                if (file != null) LoadCubeFromFile(file);
+            }
+        }
+
+        // Modificamos el OpenChildForm para que ancle como pestaña
+        private void OpenChildForm(DockContent f)
         {
             f.FormClosed += (s, e) => _childForms.Remove(f);
             _childForms.Add(f);
-            f.Show();
+            f.Show(_dockPanel, DockState.Document); // Lo abre como una pestaña al lado de la Vista Principal
         }
 
         private void BuildRightPanel(FlowLayoutPanel p)
         {
-            _btnLoad = Btn(p, "📂  Cargar Cubo .hdr/.raw", Color.FromArgb(40, 90, 140));
-            _btnLoad.Click += BtnLoad_Click;
+            Sec(p, "CONFIGURACIÓN DEL SENSOR");
+            Lbl(p, "Modelo de Cámara:");
+            _cmbCamera = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, BackColor = Color.FromArgb(45, 45, 48), ForeColor = Color.White, FlatStyle = FlatStyle.Flat, Margin = new Padding(8, 0, 8, 12) };
+            _cmbCamera.Items.AddRange(new string[] { "Specim FX17", "Specim FX10", "IDS Headwall" });
+            _cmbCamera.SelectedIndex = 0;
+
+            _cmbCamera.SelectedIndexChanged += (_, _) => {
+                string currentCam = _cmbCamera.SelectedItem.ToString();
+                this.Text = string.IsNullOrEmpty(_loadedFileName) ? $"Specimen — Workspace ({currentCam})" : $"Specimen — [{_loadedFileName}] ({currentCam})";
+                _slbl.Text = $"Cámara configurada: {currentCam}";
+            };
+            p.Controls.Add(_cmbCamera);
+            Sep(p);
+
+            _btnLoad = Btn(p, "📂  Cargar Cubo .hdr/.bil", Color.FromArgb(0, 122, 204));
+            _btnLoad.Click += (s, e) => {
+                using var dlg = new OpenFileDialog { Title = "Abrir imagen hiperespectral ENVI", Filter = "Imágenes ENVI (*.hdr, *.bil, *.raw)|*.hdr;*.bil;*.raw|Todos los archivos|*.*" };
+                if (dlg.ShowDialog() == DialogResult.OK) LoadCubeFromFile(dlg.FileName);
+            };
 
             _btnClose = Btn(p, "❌  Cerrar Imagen", Color.FromArgb(140, 50, 50));
             _btnClose.Click += BtnClose_Click;
@@ -227,59 +278,42 @@ namespace SpecimenFX17.Imaging
             btnReset.Click += (s, e) => {
                 if (_originalCube == null) return;
                 foreach (var f in _childForms.ToList()) f.Close();
-
                 _baseCube = _originalCube.Clone(); _cube = _baseCube;
-                ResetPipelineUI();
-                _chkAnalyze.Checked = false; _txtAnalysisReport.Text = "";
-                PopulateBandsCombo();
-                _slider.Maximum = _cube.Bands - 1; _currentBand = 0; _slider.Value = 0; _cmbBands.SelectedIndex = 0;
+                ResetPipelineUI(); _chkAnalyze.Checked = false; _txtAnalysisReport.Text = "";
+                PopulateBandsCombo(); _slider.Maximum = _cube.Bands - 1; _currentBand = 0; _slider.Value = 0; _cmbBands.SelectedIndex = 0;
                 ClearAll(); RefreshDisplay(); ClearSpectrumPlot(); UpdatePipelineLabel();
                 _slbl.Text = "Imagen restaurada al estado original crudo.";
             };
 
             Sep(p); Sec(p, "CALIBRACIÓN (Ref. B/N)");
 
-            var btnLoadWhite = Btn(p, "⚪ Cargar Ref. Blanca", Color.FromArgb(60, 60, 60));
-            _lblWhite = new Label { Width = 245, Height = 14, ForeColor = Color.Gray, Font = new Font("Segoe UI", 7f), Text = "Sin cargar", Margin = new Padding(8, 0, 8, 4) };
+            var btnLoadWhite = Btn(p, "⚪ Cargar Ref. Blanca", Color.FromArgb(80, 80, 80));
+            _lblWhite = new Label { AutoSize = true, ForeColor = Color.Gray, Font = new Font("Segoe UI", 8f), Text = "Sin cargar", Margin = new Padding(8, 0, 8, 4) };
             p.Controls.Add(_lblWhite);
 
-            var btnLoadDark = Btn(p, "⚫ Cargar Ref. Oscura", Color.FromArgb(25, 25, 25));
-            _lblDark = new Label { Width = 245, Height = 14, ForeColor = Color.Gray, Font = new Font("Segoe UI", 7f), Text = "Sin cargar", Margin = new Padding(8, 0, 8, 4) };
+            var btnLoadDark = Btn(p, "⚫ Cargar Ref. Oscura", Color.FromArgb(40, 40, 40));
+            _lblDark = new Label { AutoSize = true, ForeColor = Color.Gray, Font = new Font("Segoe UI", 8f), Text = "Sin cargar", Margin = new Padding(8, 0, 8, 4) };
             p.Controls.Add(_lblDark);
 
-            // NUEVO BOTÓN: Quitar referencias
             var btnClearRefs = Btn(p, "❌ Quitar Referencias B/N", Color.FromArgb(100, 45, 45));
             btnClearRefs.Click += async (s, e) => {
-                _whiteCube = null;
-                _darkCube = null;
-                _lblWhite.Text = "Sin cargar";
-                _lblDark.Text = "Sin cargar";
-                CheckCalibrationReady(); // Desactiva el botón de calibrar
+                _whiteCube = null; _darkCube = null; _lblWhite.Text = "Sin cargar"; _lblDark.Text = "Sin cargar"; CheckCalibrationReady();
                 _slbl.Text = "Referencias blanca y oscura eliminadas de la memoria.";
-
-                // Si la imagen estaba normalizada, deshacemos la normalización para evitar fallos
-                if (_stepNormalize)
-                {
-                    _stepNormalize = false;
-                    _stepAbsorbance = false;
-                    UpdateToggleButton(_btnCalibrate, false, Color.FromArgb(120, 80, 40));
-                    UpdateToggleButton(_btnAbsorbance, false, Color.FromArgb(100, 40, 80));
-                    await RebuildWorkingCube();
-                }
+                if (_stepNormalize) { _stepNormalize = false; _stepAbsorbance = false; UpdateToggleButton(_btnCalibrate, false, Color.FromArgb(120, 80, 40)); UpdateToggleButton(_btnAbsorbance, false, Color.FromArgb(100, 40, 80)); await RebuildWorkingCube(); }
             };
 
             _btnCalibrate = Btn(p, "✨ Normalizar Imagen", Color.FromArgb(120, 80, 40)); _btnCalibrate.Enabled = false;
             _btnAbsorbance = Btn(p, "🧪 Convertir a Absorbancia", Color.FromArgb(100, 40, 80)); _btnAbsorbance.Enabled = false;
 
-            btnLoadWhite.Click += async (s, e) => { using var dlg = new OpenFileDialog { Filter = "ENVI Header (*.hdr)|*.hdr|Todos|*.*" }; if (dlg.ShowDialog() == DialogResult.OK) { _slbl.Text = "Cargando referencia blanca..."; try { _whiteCube = await Task.Run(() => HyperspectralCube.Load(dlg.FileName)); _lblWhite.Text = Path.GetFileName(dlg.FileName); CheckCalibrationReady(); _slbl.Text = "Referencia blanca cargada."; } catch (Exception ex) { MessageBox.Show(ex.Message, "Error"); _slbl.Text = "Error."; } } };
-            btnLoadDark.Click += async (s, e) => { using var dlg = new OpenFileDialog { Filter = "ENVI Header (*.hdr)|*.hdr|Todos|*.*" }; if (dlg.ShowDialog() == DialogResult.OK) { _slbl.Text = "Cargando referencia oscura..."; try { _darkCube = await Task.Run(() => HyperspectralCube.Load(dlg.FileName)); _lblDark.Text = Path.GetFileName(dlg.FileName); CheckCalibrationReady(); _slbl.Text = "Referencia oscura cargada."; } catch (Exception ex) { MessageBox.Show(ex.Message, "Error"); _slbl.Text = "Error."; } } };
+            btnLoadWhite.Click += async (s, e) => { using var dlg = new OpenFileDialog { Filter = "Imágenes ENVI (*.hdr, *.bil, *.raw)|*.hdr;*.bil;*.raw|Todos los archivos|*.*" }; if (dlg.ShowDialog() == DialogResult.OK) { _slbl.Text = "Cargando referencia blanca..."; try { _whiteCube = await Task.Run(() => HyperspectralCube.Load(dlg.FileName)); _lblWhite.Text = Path.GetFileName(dlg.FileName); CheckCalibrationReady(); _slbl.Text = "Referencia blanca cargada."; } catch (Exception ex) { MessageBox.Show(ex.Message, "Error"); _slbl.Text = "Error."; } } };
+            btnLoadDark.Click += async (s, e) => { using var dlg = new OpenFileDialog { Filter = "Imágenes ENVI (*.hdr, *.bil, *.raw)|*.hdr;*.bil;*.raw|Todos los archivos|*.*" }; if (dlg.ShowDialog() == DialogResult.OK) { _slbl.Text = "Cargando referencia oscura..."; try { _darkCube = await Task.Run(() => HyperspectralCube.Load(dlg.FileName)); _lblDark.Text = Path.GetFileName(dlg.FileName); CheckCalibrationReady(); _slbl.Text = "Referencia oscura cargada."; } catch (Exception ex) { MessageBox.Show(ex.Message, "Error"); _slbl.Text = "Error."; } } };
 
             _btnCalibrate.Click += async (s, e) => { if (_originalCube == null || _whiteCube == null || _darkCube == null) return; _stepNormalize = !_stepNormalize; if (!_stepNormalize) { _stepAbsorbance = false; } _btnAbsorbance.Enabled = _stepNormalize; UpdateToggleButton(_btnCalibrate, _stepNormalize, Color.FromArgb(120, 80, 40)); UpdateToggleButton(_btnAbsorbance, _stepAbsorbance, Color.FromArgb(100, 40, 80)); await RebuildWorkingCube(); };
             _btnAbsorbance.Click += async (s, e) => { if (!_stepNormalize) return; _stepAbsorbance = !_stepAbsorbance; UpdateToggleButton(_btnAbsorbance, _stepAbsorbance, Color.FromArgb(100, 40, 80)); await RebuildWorkingCube(); };
 
             Sep(p); Sec(p, "PREPROCESAMIENTO QUIMIOMÉTRICO");
 
-            _lblPipeline = new Label { Width = 245, Height = 28, AutoSize = false, ForeColor = Color.FromArgb(100, 200, 130), BackColor = Color.FromArgb(18, 32, 22), Font = new Font("Consolas", 7.5f), Text = "Pipeline: Original", TextAlign = ContentAlignment.MiddleLeft, Padding = new Padding(4, 0, 0, 0), Margin = new Padding(8, 4, 8, 8) };
+            _lblPipeline = new Label { AutoSize = true, ForeColor = Color.FromArgb(100, 200, 130), BackColor = Color.FromArgb(18, 32, 22), Font = new Font("Consolas", 8f), Text = "Pipeline: Original", TextAlign = ContentAlignment.MiddleLeft, Padding = new Padding(6), Margin = new Padding(8, 4, 8, 8) };
             p.Controls.Add(_lblPipeline);
 
             Lbl(p, "⚠ SNV y MSC son mutuamente excluyentes:");
@@ -287,10 +321,10 @@ namespace SpecimenFX17.Imaging
             _btnMsc = Btn(p, "📉  MSC (activo: NO)", Color.FromArgb(50, 60, 90));
 
             Lbl(p, "Savitzky-Golay (Vent | Ord | Deriv):");
-            var pnlSg = new FlowLayoutPanel { Width = 245, Height = 28, Margin = new Padding(8, 0, 8, 4) };
-            var nudSgWin = new NumericUpDown { Width = 60, Minimum = 3, Maximum = 51, Value = 15, Increment = 2, BackColor = Color.FromArgb(36, 36, 52), ForeColor = Color.White };
-            var nudSgPol = new NumericUpDown { Width = 60, Minimum = 1, Maximum = 5, Value = 2, BackColor = Color.FromArgb(36, 36, 52), ForeColor = Color.White };
-            var nudSgDer = new NumericUpDown { Width = 60, Minimum = 0, Maximum = 2, Value = 1, BackColor = Color.FromArgb(36, 36, 52), ForeColor = Color.White };
+            var pnlSg = new FlowLayoutPanel { AutoSize = true, Margin = new Padding(8, 0, 8, 4) };
+            var nudSgWin = new NumericUpDown { Width = 60, Minimum = 3, Maximum = 51, Value = 15, Increment = 2, BackColor = Color.FromArgb(45, 45, 48), ForeColor = Color.White };
+            var nudSgPol = new NumericUpDown { Width = 60, Minimum = 1, Maximum = 5, Value = 2, BackColor = Color.FromArgb(45, 45, 48), ForeColor = Color.White };
+            var nudSgDer = new NumericUpDown { Width = 60, Minimum = 0, Maximum = 2, Value = 1, BackColor = Color.FromArgb(45, 45, 48), ForeColor = Color.White };
             pnlSg.Controls.Add(nudSgWin); pnlSg.Controls.Add(nudSgPol); pnlSg.Controls.Add(nudSgDer); p.Controls.Add(pnlSg);
             _btnSg = Btn(p, "〰️  Savitzky-Golay (activo: NO)", Color.FromArgb(90, 70, 50));
 
@@ -300,15 +334,35 @@ namespace SpecimenFX17.Imaging
             nudSgWin.ValueChanged += async (_, _) => { if (_stepSG) { _sgWindow = (int)nudSgWin.Value; await RebuildWorkingCube(); } }; nudSgPol.ValueChanged += async (_, _) => { if (_stepSG) { _sgPoly = (int)nudSgPol.Value; await RebuildWorkingCube(); } }; nudSgDer.ValueChanged += async (_, _) => { if (_stepSG) { _sgDeriv = (int)nudSgDer.Value; await RebuildWorkingCube(); } };
 
             Sep(p); Sec(p, "HERRAMIENTA DE SELECCIÓN");
-            _lblTip = new Label { Width = 245, Height = 16, ForeColor = Color.FromArgb(120, 200, 120), Font = new Font("Segoe UI", 7f, FontStyle.Italic), Text = "Arrastra para seleccionar un rectángulo", Margin = new Padding(8, 0, 8, 8) }; p.Controls.Add(_lblTip);
+            _lblTip = new Label { AutoSize = true, ForeColor = Color.FromArgb(120, 200, 120), Font = new Font("Segoe UI", 8f, FontStyle.Italic), Text = "Arrastra para seleccionar un rectángulo", Margin = new Padding(8, 0, 8, 8) }; p.Controls.Add(_lblTip);
 
-            var grid = new TableLayoutPanel { Width = 245, Height = 85, ColumnCount = 2, RowCount = 3, BackColor = Color.Transparent, Margin = new Padding(8, 0, 8, 8) };
+            var grid = new TableLayoutPanel { AutoSize = true, ColumnCount = 2, RowCount = 3, BackColor = Color.Transparent, Margin = new Padding(8, 0, 8, 8) };
             grid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50f)); grid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50f));
-            grid.RowStyles.Add(new RowStyle(SizeType.Percent, 33.3f)); grid.RowStyles.Add(new RowStyle(SizeType.Percent, 33.3f)); grid.RowStyles.Add(new RowStyle(SizeType.Percent, 33.3f));
+            grid.RowStyles.Add(new RowStyle(SizeType.AutoSize)); grid.RowStyles.Add(new RowStyle(SizeType.AutoSize)); grid.RowStyles.Add(new RowStyle(SizeType.AutoSize));
 
             var defs = new (string Lbl, SelectionTool Mode, string Tip)[] { ("▭ Rectángulo", SelectionTool.Rectangle, "Arrastra para rectángulo"), ("⬟ Polígono", SelectionTool.Polygon, "Clic = vértice • Enter = cerrar"), ("○ Círculo", SelectionTool.Circle, "Arrastra desde el centro"), ("✏ Lasso", SelectionTool.Freehand, "Mantén pulsado y dibuja"), ("🪄 Auto ROI", SelectionTool.AutoDetect, "Clic=Nuevo • Shift=Sumar • Alt=Restar") };
             _toolBtns = new Button[5];
-            for (int i = 0; i < 5; i++) { var (lbl, mode, tip) = defs[i]; var tb = new Button { Text = lbl, Dock = DockStyle.Fill, Margin = new Padding(2), FlatStyle = FlatStyle.Flat, BackColor = mode == _tool ? Color.FromArgb(50, 110, 170) : Color.FromArgb(32, 32, 48), ForeColor = Color.White, Font = new Font("Segoe UI", 7.5f), Cursor = Cursors.Hand, Tag = (mode, tip) }; tb.FlatAppearance.BorderColor = Color.FromArgb(70, 70, 100); tb.Click += (_, _) => { var (m, t) = ((SelectionTool, string))tb.Tag!; SetTool(m, t); }; grid.Controls.Add(tb, i % 2, i / 2); _toolBtns[i] = tb; }
+            for (int i = 0; i < 5; i++)
+            {
+                var (lbl, mode, tip) = defs[i];
+                var tb = new Button
+                {
+                    Text = lbl,
+                    Dock = DockStyle.Fill,
+                    Margin = new Padding(2),
+                    AutoSize = true,
+                    Padding = new Padding(4),
+                    FlatStyle = FlatStyle.Flat,
+                    BackColor = mode == _tool ? Color.FromArgb(0, 122, 204) : Color.FromArgb(45, 45, 48),
+                    ForeColor = Color.White,
+                    Font = new Font("Segoe UI", 8f),
+                    Cursor = Cursors.Hand,
+                    Tag = (mode, tip)
+                };
+                tb.FlatAppearance.BorderColor = Color.FromArgb(70, 70, 100);
+                tb.Click += (_, _) => { var (m, t) = ((SelectionTool, string))tb.Tag!; SetTool(m, t); };
+                grid.Controls.Add(tb, i % 2, i / 2); _toolBtns[i] = tb;
+            }
             p.Controls.Add(grid);
 
             _nudAutoTol = Num(p, "Tolerancia SAM (%):", 10m, 1m, 100m, 1m, 0);
@@ -345,10 +399,10 @@ namespace SpecimenFX17.Imaging
             var b3d = Btn(p, "🧊  Visor de Hipercubo 3D", Color.FromArgb(40, 110, 130)); b3d.Click += (_, _) => { if (_cube != null) OpenChildForm(new Hypercube3DForm(_cube, _selections.AsReadOnly())); };
             bc.Click += (_, _) => { if (_cube != null) OpenChildForm(new SpectralCalculatorForm(_cube, _selections.AsReadOnly())); }; ba.Click += (_, _) => { if (_cube != null) OpenChildForm(new AdvancedAnalysisForm(_cube, _selections.AsReadOnly())); }; bp.Click += (_, _) => { if (_cube != null) OpenChildForm(new PlsPredictionForm(_cube, _selections.AsReadOnly())); };
 
-            _txtAnalysisReport = new RichTextBox { Width = 245, Height = 100, ForeColor = Color.LightGray, BackColor = Color.FromArgb(20, 20, 28), Font = new Font("Consolas", 7f), ReadOnly = true, Margin = new Padding(8, 4, 8, 8) }; p.Controls.Add(_txtAnalysisReport);
+            _txtAnalysisReport = new RichTextBox { Height = 100, ForeColor = Color.LightGray, BackColor = Color.FromArgb(20, 20, 28), Font = new Font("Consolas", 8f), ReadOnly = true, Margin = new Padding(8, 4, 8, 8) }; p.Controls.Add(_txtAnalysisReport);
 
             Sep(p); Sec(p, "VISUALIZACIÓN");
-            Lbl(p, "Paleta de color:"); _cmbCmap = new ComboBox { Width = 245, DropDownStyle = ComboBoxStyle.DropDownList, BackColor = Color.FromArgb(38, 38, 55), ForeColor = Color.White, FlatStyle = FlatStyle.Flat, Margin = new Padding(8, 0, 8, 8) }; _cmbCmap.Items.AddRange(Enum.GetNames(typeof(BliColormap))); _cmbCmap.SelectedIndex = 0; _cmbCmap.SelectedIndexChanged += (_, _) => RefreshDisplay(); p.Controls.Add(_cmbCmap);
+            Lbl(p, "Paleta de color:"); _cmbCmap = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, BackColor = Color.FromArgb(45, 45, 48), ForeColor = Color.White, FlatStyle = FlatStyle.Flat, Margin = new Padding(8, 0, 8, 8) }; _cmbCmap.Items.AddRange(Enum.GetNames(typeof(BliColormap))); _cmbCmap.SelectedIndex = 0; _cmbCmap.SelectedIndexChanged += (_, _) => RefreshDisplay(); p.Controls.Add(_cmbCmap);
             _chkCbar = Chk(p, "Mostrar barra de escala", true); _chkGray = Chk(p, "Modo escala de grises", false); _chkRgb = Chk(p, "Modo RGB (Color real visible)", false);
             _chkCbar.CheckedChanged += (_, _) => RefreshDisplay();
             _chkGray.CheckedChanged += (_, _) => { _grayscaleMode = _chkGray.Checked; if (_grayscaleMode) _chkRgb.Checked = false; _cmbCmap.Enabled = !_grayscaleMode && !_rgbMode; RefreshDisplay(); };
@@ -387,22 +441,30 @@ namespace SpecimenFX17.Imaging
             _btnClear.Click += (_, _) => ClearAll();
 
             Sep(p); Sec(p, "INFO DE BANDA");
-            _lblBandInfo = new Label { Width = 245, Height = 110, ForeColor = Color.FromArgb(160, 160, 190), Font = new Font("Consolas", 7.5f), Text = "—", Margin = new Padding(8, 0, 8, 8) }; p.Controls.Add(_lblBandInfo);
+            _lblBandInfo = new Label { AutoSize = true, ForeColor = Color.FromArgb(160, 160, 190), Font = new Font("Consolas", 8f), Text = "—", Margin = new Padding(8, 0, 8, 8) }; p.Controls.Add(_lblBandInfo);
         }
 
-        private Button Btn(FlowLayoutPanel p, string t, Color bg) { var b = new Button { Text = t, Width = 245, Height = 35, AutoSize = true, FlatStyle = FlatStyle.Flat, BackColor = bg, ForeColor = Color.White, Cursor = Cursors.Hand, Margin = new Padding(8, 4, 8, 4) }; b.FlatAppearance.BorderColor = Color.FromArgb(Math.Min(255, bg.R + 35), Math.Min(255, bg.G + 35), Math.Min(255, bg.B + 35)); p.Controls.Add(b); return b; }
-        private NumericUpDown Num(FlowLayoutPanel p, string lblText, decimal v, decimal mn, decimal mx, decimal inc, int dec) { Lbl(p, lblText); var n = new NumericUpDown { Width = 245, Minimum = mn, Maximum = mx, Value = v, Increment = inc, DecimalPlaces = dec, BackColor = Color.FromArgb(36, 36, 52), ForeColor = Color.White, Margin = new Padding(8, 0, 8, 8) }; p.Controls.Add(n); return n; }
-        private void Lbl(FlowLayoutPanel p, string t) { p.Controls.Add(new Label { Text = t, Width = 245, Height = 16, ForeColor = Color.FromArgb(140, 140, 170), Font = new Font("Segoe UI", 8f), Margin = new Padding(8, 4, 8, 0) }); }
-        private void Sec(FlowLayoutPanel p, string t) { p.Controls.Add(new Label { Text = t, Width = 245, Height = 18, ForeColor = Color.FromArgb(100, 160, 220), Font = new Font("Segoe UI", 7.5f, FontStyle.Bold), TextAlign = ContentAlignment.MiddleLeft, Margin = new Padding(8, 12, 8, 4) }); }
-        private CheckBox Chk(FlowLayoutPanel p, string t, bool v) { var c = new CheckBox { Text = t, Width = 245, Checked = v, ForeColor = Color.FromArgb(180, 180, 210), BackColor = Color.Transparent, Margin = new Padding(8, 2, 8, 2) }; p.Controls.Add(c); return c; }
-        private void Sep(FlowLayoutPanel p) { p.Controls.Add(new Label { Width = 245, Height = 1, BackColor = Color.FromArgb(55, 55, 75), Margin = new Padding(8, 8, 8, 8) }); }
+        private Button Btn(FlowLayoutPanel p, string t, Color bg)
+        {
+            var b = new Button { Text = t, AutoSize = true, Padding = new Padding(10, 8, 10, 8), FlatStyle = FlatStyle.Flat, BackColor = bg, ForeColor = Color.White, Cursor = Cursors.Hand, Margin = new Padding(8, 4, 8, 4) };
+            b.FlatAppearance.BorderColor = Color.FromArgb(Math.Min(255, bg.R + 35), Math.Min(255, bg.G + 35), Math.Min(255, bg.B + 35)); p.Controls.Add(b); return b;
+        }
+        private NumericUpDown Num(FlowLayoutPanel p, string lblText, decimal v, decimal mn, decimal mx, decimal inc, int dec)
+        {
+            Lbl(p, lblText); var n = new NumericUpDown { Minimum = mn, Maximum = mx, Value = v, Increment = inc, DecimalPlaces = dec, BackColor = Color.FromArgb(45, 45, 48), ForeColor = Color.White, Margin = new Padding(8, 0, 8, 8) };
+            p.Controls.Add(n); return n;
+        }
+        private void Lbl(FlowLayoutPanel p, string t) { p.Controls.Add(new Label { Text = t, AutoSize = true, ForeColor = Color.FromArgb(140, 140, 170), Font = new Font("Segoe UI", 8.5f), Margin = new Padding(8, 4, 8, 0) }); }
+        private void Sec(FlowLayoutPanel p, string t) { p.Controls.Add(new Label { Text = t, AutoSize = true, ForeColor = Color.FromArgb(100, 160, 220), Font = new Font("Segoe UI", 8f, FontStyle.Bold), TextAlign = ContentAlignment.MiddleLeft, Margin = new Padding(8, 12, 8, 4) }); }
+        private CheckBox Chk(FlowLayoutPanel p, string t, bool v) { var c = new CheckBox { Text = t, AutoSize = true, Checked = v, ForeColor = Color.FromArgb(180, 180, 210), BackColor = Color.Transparent, Margin = new Padding(8, 2, 8, 2) }; p.Controls.Add(c); return c; }
+        private void Sep(FlowLayoutPanel p) { p.Controls.Add(new Label { AutoSize = false, Height = 2, BackColor = Color.FromArgb(55, 55, 75), Margin = new Padding(8, 8, 8, 8) }); }
 
         private void BtnClose_Click(object? s, EventArgs e)
         {
             foreach (var f in _childForms.ToList()) f.Close();
             _childForms.Clear();
 
-            _originalCube = null; _baseCube = null; _cube = null; _loadedFileName = ""; this.Text = "SpecimenFX17 — Visor BLI Hiperespectral";
+            _originalCube = null; _baseCube = null; _cube = null; _loadedFileName = ""; this.Text = "Specimen — Workspace Hiperespectral";
             _selections.Clear(); _hoverImgPt = null;
             _currentBitmap?.Dispose(); _currentBitmap = null; _pictureBox.Image = null;
             _specPlot.Image?.Dispose(); _specPlot.Image = null;
@@ -453,7 +515,7 @@ namespace SpecimenFX17.Imaging
                     else if (currentStep == 1) { g.DrawString("4. Resumen Quimiométrico (PCA) - Continuación", fSub, Brushes.Black, margin, y); y += 25; var rect = new RectangleF(margin, y, width, args.PageBounds.Height - y - 50); g.DrawString(_txtAnalysisReport.Text, fMono, Brushes.DarkBlue, rect); args.HasMorePages = false; }
                 }; pd.Print(); MessageBox.Show("Informe PDF generado exitosamente.", "Éxito", MessageBoxButtons.OK, MessageBoxIcon.Information);
             }
-            catch (Exception ex) { MessageBox.Show($"No se pudo generar el PDF. Verifica que tienes la característica 'Microsoft Print to PDF' habilitada en Windows.\n\nError: {ex.Message}", "Error de Impresión", MessageBoxButtons.OK, MessageBoxIcon.Error); }
+            catch (Exception ex) { MessageBox.Show($"No se pudo generar el PDF.\nError: {ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error); }
             finally { _slbl.Text = "Listo."; _pb.Visible = false; }
         }
 
@@ -476,13 +538,25 @@ namespace SpecimenFX17.Imaging
 
         private async void BtnBatch_Click(object? s, EventArgs e)
         {
-            using var dlgFolder = new FolderBrowserDialog { Description = "Selecciona la carpeta que contiene tus archivos .hdr" }; if (dlgFolder.ShowDialog() != DialogResult.OK) return;
+            using var dlgFolder = new FolderBrowserDialog { Description = "Selecciona la carpeta con archivos .hdr" }; if (dlgFolder.ShowDialog() != DialogResult.OK) return;
             using var dlgSave = new SaveFileDialog { Filter = "Archivo CSV (*.csv)|*.csv", FileName = "Resultados_Lote.csv", Title = "Guardar Excel de resultados" }; if (dlgSave.ShowDialog() != DialogResult.OK) return;
             var options = new BatchOptions { ApplySNV = true, ApplyMSC = false, ConvertToAbsorbance = true };
-            _pb.Visible = true; _slbl.Text = "Procesando imágenes por lotes... Por favor, espera."; var progress = new Progress<int>(v => { _pb.Value = v; _slbl.Text = $"Procesando lote... {v}% completado"; });
-            try { await BatchProcessor.ProcessFolderAsync(dlgFolder.SelectedPath, dlgSave.FileName, options, progress); MessageBox.Show("¡Procesamiento por lotes completado!\nSe ha guardado el archivo CSV.", "Éxito", MessageBoxButtons.OK, MessageBoxIcon.Information); }
-            catch (Exception ex) { MessageBox.Show($"Ocurrió un error procesando el lote:\n{ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error); }
-            finally { _pb.Visible = false; _slbl.Text = "Procesamiento por lotes finalizado."; }
+
+            _cts?.Cancel(); _cts = new CancellationTokenSource(); var token = _cts.Token;
+
+            _pb.Visible = true; _pb.Style = ProgressBarStyle.Continuous;
+            _btnCancelTask.Visible = true; _btnCancelTask.Enabled = true; _btnCancelTask.Text = "🛑 Cancelar lote";
+            _slbl.Text = "Procesando imágenes por lotes...";
+
+            var progress = new Progress<int>(v => { _pb.Value = v; _slbl.Text = $"Procesando lote... {v}% completado"; });
+            try
+            {
+                await BatchProcessor.ProcessFolderAsync(dlgFolder.SelectedPath, dlgSave.FileName, options, progress);
+                MessageBox.Show("Procesamiento completado.", "Éxito", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            }
+            catch (OperationCanceledException) { MessageBox.Show("Cancelado por el usuario.", "Cancelado"); }
+            catch (Exception ex) { MessageBox.Show($"Error:\n{ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error); }
+            finally { _pb.Visible = false; _btnCancelTask.Visible = false; _slbl.Text = "Procesamiento finalizado."; }
         }
 
         private void PopulateBandsCombo()
@@ -496,37 +570,47 @@ namespace SpecimenFX17.Imaging
             if (currentCube.Bands > origBands) { _cmbBands.Items.Add("Media"); _cmbBands.Items.Add("Mínima"); _cmbBands.Items.Add("Máxima"); _cmbBands.Items.Add("Rango"); int numPca = currentCube.Bands - origBands - 4; for (int i = 0; i < numPca; i++) _cmbBands.Items.Add($"PC {i + 1}"); }
 
             _slider.Maximum = Math.Max(0, currentCube.Bands - 1);
-
-            if (_cmbBands.Items.Count > 0)
-                _cmbBands.SelectedIndex = Clamp(_currentBand, 0, _cmbBands.Items.Count - 1);
+            if (_cmbBands.Items.Count > 0) _cmbBands.SelectedIndex = Clamp(_currentBand, 0, _cmbBands.Items.Count - 1);
         }
 
         private async Task RunAnalysisAsync()
         {
             if (_baseCube == null) return;
-            _slbl.Text = "Calculando análisis de bandas y PCA... (Esto puede tardar)"; _pb.Visible = true; _pb.Style = ProgressBarStyle.Marquee; _chkAnalyze.Enabled = false;
-            await Task.Run(() => {
-                bool[,] mask = new bool[_baseCube.Lines, _baseCube.Samples];
-                if (_selections.Count > 0) { foreach (var sh in _selections) { var m = sh.GetMask(_baseCube.Lines, _baseCube.Samples); for (int l = 0; l < _baseCube.Lines; l++) for (int c = 0; c < _baseCube.Samples; c++) if (m[l, c]) mask[l, c] = true; } }
-                else { int xMin = _baseCube.Samples < 1000 ? 40 : 200, xMax = _baseCube.Samples - (_baseCube.Samples < 1000 ? 60 : 200), yMin = _baseCube.Lines < 600 ? 70 : 300, yMax = _baseCube.Lines - (_baseCube.Lines < 600 ? 40 : 100); for (int l = 0; l < _baseCube.Lines; l++) for (int s = 0; s < _baseCube.Samples; s++) mask[l, s] = (l >= yMin && l <= yMax && s >= xMin && s <= xMax); }
-                _cube = _baseCube.GenerateAnalyzedCube(10, mask);
-            });
-            _pb.Visible = false; _pb.Style = ProgressBarStyle.Continuous; _chkAnalyze.Enabled = true; _slbl.Text = "Análisis completado. Bandas sintéticas añadidas al menú.";
-            if (_cube != null) _txtAnalysisReport.Text = _cube.AnalysisReport;
-            PopulateBandsCombo(); _slider.Maximum = _cube!.Bands - 1; if (_currentBand >= _cube.Bands) _currentBand = _cube.Bands - 1; _slider.Value = _currentBand; _cmbBands.SelectedIndex = _currentBand; RefreshDisplay();
+
+            _cts?.Cancel(); _cts = new CancellationTokenSource(); var token = _cts.Token;
+
+            _slbl.Text = "Calculando PCA... (Esto puede tardar)";
+            _pb.Visible = true; _pb.Style = ProgressBarStyle.Marquee; _chkAnalyze.Enabled = false;
+            _btnCancelTask.Visible = true; _btnCancelTask.Enabled = true; _btnCancelTask.Text = "🛑 Cancelar análisis";
+
+            try
+            {
+                await Task.Run(() => {
+                    bool[,] mask = new bool[_baseCube.Lines, _baseCube.Samples];
+                    if (_selections.Count > 0) { foreach (var sh in _selections) { var m = sh.GetMask(_baseCube.Lines, _baseCube.Samples); for (int l = 0; l < _baseCube.Lines; l++) for (int c = 0; c < _baseCube.Samples; c++) if (m[l, c]) mask[l, c] = true; } }
+                    else { int xMin = _baseCube.Samples < 1000 ? 40 : 200, xMax = _baseCube.Samples - (_baseCube.Samples < 1000 ? 60 : 200), yMin = _baseCube.Lines < 600 ? 70 : 300, yMax = _baseCube.Lines - (_baseCube.Lines < 600 ? 40 : 100); for (int l = 0; l < _baseCube.Lines; l++) for (int s = 0; s < _baseCube.Samples; s++) mask[l, s] = (l >= yMin && l <= yMax && s >= xMin && s <= xMax); }
+                    _cube = _baseCube.GenerateAnalyzedCube(10, mask, token);
+                }, token);
+
+                _slbl.Text = "Análisis completado.";
+                if (_cube != null) _txtAnalysisReport.Text = _cube.AnalysisReport;
+                PopulateBandsCombo(); _slider.Maximum = _cube!.Bands - 1; if (_currentBand >= _cube.Bands) _currentBand = _cube.Bands - 1; _slider.Value = _currentBand; _cmbBands.SelectedIndex = _currentBand; RefreshDisplay();
+            }
+            catch (OperationCanceledException) { _slbl.Text = "Análisis PCA cancelado por el usuario."; _chkAnalyze.Checked = false; }
+            finally { _pb.Visible = false; _pb.Style = ProgressBarStyle.Continuous; _chkAnalyze.Enabled = true; _btnCancelTask.Visible = false; }
         }
 
         private async void ChkAnalyze_CheckedChanged(object? s, EventArgs e)
         {
             if (_baseCube == null) return;
-            if (_chkAnalyze.Checked) await RunAnalysisAsync(); else { _cube = _baseCube; _slbl.Text = "Análisis desactivado. Restaurado cubo original."; _txtAnalysisReport.Text = ""; PopulateBandsCombo(); _slider.Maximum = _cube!.Bands - 1; if (_currentBand >= _cube.Bands) _currentBand = _cube.Bands - 1; _slider.Value = _currentBand; _cmbBands.SelectedIndex = _currentBand; RefreshDisplay(); }
+            if (_chkAnalyze.Checked) await RunAnalysisAsync(); else { _cube = _baseCube; _slbl.Text = "Restaurado cubo original."; _txtAnalysisReport.Text = ""; PopulateBandsCombo(); _slider.Maximum = _cube!.Bands - 1; if (_currentBand >= _cube.Bands) _currentBand = _cube.Bands - 1; _slider.Value = _currentBand; _cmbBands.SelectedIndex = _currentBand; RefreshDisplay(); }
         }
 
         private void SetTool(SelectionTool mode, string tip)
         {
             if (_polyActive) { _polyActive = false; _polyImg.Clear(); _polyScr.Clear(); _pictureBox.Invalidate(); }
             _tool = mode; _lblTip.Text = tip;
-            for (int i = 0; i < _toolBtns.Length; i++) { var (m, _) = ((SelectionTool, string))_toolBtns[i].Tag!; _toolBtns[i].BackColor = m == mode ? Color.FromArgb(50, 110, 170) : Color.FromArgb(32, 32, 48); }
+            for (int i = 0; i < _toolBtns.Length; i++) { var (m, _) = ((SelectionTool, string))_toolBtns[i].Tag!; _toolBtns[i].BackColor = m == mode ? Color.FromArgb(0, 122, 204) : Color.FromArgb(45, 45, 48); }
             _pictureBox.Cursor = mode switch { SelectionTool.Polygon => Cursors.UpArrow, SelectionTool.Freehand => Cursors.UpArrow, SelectionTool.AutoDetect => Cursors.Hand, _ => Cursors.Cross };
         }
 
@@ -542,7 +626,12 @@ namespace SpecimenFX17.Imaging
         private async Task RebuildWorkingCube()
         {
             if (_originalCube == null) return;
-            _slbl.Text = "Reconstruyendo pipeline desde el original..."; _pb.Visible = true; _pb.Style = ProgressBarStyle.Marquee;
+
+            _cts?.Cancel(); _cts = new CancellationTokenSource(); var token = _cts.Token;
+
+            _slbl.Text = "Reconstruyendo pipeline desde el original...";
+            _pb.Visible = true; _pb.Style = ProgressBarStyle.Marquee;
+            _btnCancelTask.Visible = true; _btnCancelTask.Enabled = true; _btnCancelTask.Text = "🛑 Cancelar proceso";
 
             Invoke(() => { foreach (var f in _childForms.ToList()) f.Close(); });
 
@@ -553,28 +642,28 @@ namespace SpecimenFX17.Imaging
                     _baseCube = _originalCube.Clone();
                     if (_stepNormalize && _whiteCube != null && _darkCube != null)
                     {
-                        try { _baseCube.Calibrate(_whiteCube, _darkCube); }
-                        catch (ArgumentException ex)
-                        {
-                            Invoke(() => MessageBox.Show($"Conflicto de dimensiones en Calibración:\n{ex.Message}\n\nSe abortará el paso de calibración, pero el pipeline continuará.", "Aviso de Calibración", MessageBoxButtons.OK, MessageBoxIcon.Warning));
-                            _stepNormalize = false;
-                            _stepAbsorbance = false;
-                        }
+                        try { _baseCube.Calibrate(_whiteCube, _darkCube, token); }
+                        catch (ArgumentException ex) { Invoke(() => MessageBox.Show($"Conflicto:\n{ex.Message}", "Aviso", MessageBoxButtons.OK, MessageBoxIcon.Warning)); _stepNormalize = false; _stepAbsorbance = false; }
                     }
-                    if (_stepRotation != 0f) _baseCube.ApplySpatialRotation(_stepRotation);
-                    if (_stepAbsorbance && _baseCube.IsCalibrated) _baseCube.ConvertToAbsorbance();
-                    if (_stepScatter == ScatterCorrection.SNV) _baseCube.ApplySNV();
-                    else if (_stepScatter == ScatterCorrection.MSC) _baseCube.ApplyMSC();
-                    if (_stepSG) _baseCube.ApplySavitzkyGolay(_sgWindow, _sgPoly, _sgDeriv);
-                    if (_stepMedian) _baseCube.ApplySpatialMedianFilter(3);
-                });
+                    if (_stepRotation != 0f) _baseCube.ApplySpatialRotation(_stepRotation, token);
+                    if (_stepAbsorbance && _baseCube.IsCalibrated) _baseCube.ConvertToAbsorbance(token);
+                    if (_stepScatter == ScatterCorrection.SNV) _baseCube.ApplySNV(token);
+                    else if (_stepScatter == ScatterCorrection.MSC) _baseCube.ApplyMSC(token);
+                    if (_stepSG) _baseCube.ApplySavitzkyGolay(_sgWindow, _sgPoly, _sgDeriv, token);
+                    if (_stepMedian) _baseCube.ApplySpatialMedianFilter(3, token);
+                }, token);
 
                 UpdatePipelineLabel();
                 if (_chkAnalyze.Checked) await RunAnalysisAsync(); else { _cube = _baseCube; RefreshDisplay(); }
-                ClearSpectrumPlot(); _slbl.Text = "Pipeline aplicado correctamente.";
+                ClearSpectrumPlot(); _slbl.Text = "Pipeline aplicado.";
             }
-            catch (Exception ex) { MessageBox.Show(ex.Message, "Error en pipeline"); _slbl.Text = "Error al reconstruir pipeline."; }
-            finally { _pb.Visible = false; _pb.Style = ProgressBarStyle.Continuous; }
+            catch (OperationCanceledException)
+            {
+                _slbl.Text = "Operación cancelada. Restaurando imagen original...";
+                _cube = _originalCube.Clone(); _baseCube = _cube; ResetPipelineUI(); RefreshDisplay();
+            }
+            catch (Exception ex) { MessageBox.Show(ex.Message, "Error"); _slbl.Text = "Error al reconstruir pipeline."; }
+            finally { _pb.Visible = false; _pb.Style = ProgressBarStyle.Continuous; _btnCancelTask.Visible = false; }
         }
 
         private void UpdatePipelineLabel()
@@ -776,7 +865,7 @@ namespace SpecimenFX17.Imaging
             }
             catch (Exception ex)
             {
-                MessageBox.Show($"Ocurrió un error en el algoritmo Auto-ROI:\n{ex.Message}", "Error de Selección", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                MessageBox.Show($"Ocurrió un error en el algoritmo Auto-ROI:\n{ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
             finally
             {
@@ -784,27 +873,44 @@ namespace SpecimenFX17.Imaging
             }
         }
 
-        private async void BtnLoad_Click(object? s, EventArgs e)
+        // --- MÉTODO CENTRALIZADO PARA CARGAR CUBOS ---
+        private async void LoadCubeFromFile(string filePath)
         {
-            using var dlg = new OpenFileDialog { Title = "Abrir imagen hiperespectral ENVI", Filter = "ENVI Header (*.hdr)|*.hdr|Todos|*.*" }; if (dlg.ShowDialog() != DialogResult.OK) return;
-            _btnLoad.Enabled = false; _pb.Visible = true; _pb.Value = 0; _slbl.Text = "Cargando cubo..."; var prog = new Progress<int>(v => { _pb.Value = v; _slbl.Text = $"Cargando… {v} %"; });
+            if (_estaCargando) return;
+            _estaCargando = true;
+
             try
             {
-                _baseCube = await Task.Run(() => HyperspectralCube.Load(dlg.FileName, prog));
+                _btnLoad.Enabled = false; _pb.Visible = true; _pb.Value = 0; _slbl.Text = "Cargando cubo...";
+                var prog = new Progress<int>(v => { _pb.Value = v; _slbl.Text = $"Cargando… {v} %"; });
+
+                _baseCube = await Task.Run(() => HyperspectralCube.Load(filePath, prog));
                 _originalCube = _baseCube.Clone(); _cube = _baseCube; _selections.Clear(); _chkAnalyze.Checked = false;
 
                 _currentBand = 0;
-
                 PopulateBandsCombo();
                 _slider.Minimum = 0; _slider.Maximum = Math.Max(0, _cube.Bands - 1); _slider.Value = 0;
 
-                _loadedFileName = Path.GetFileName(dlg.FileName); this.Text = $"SpecimenFX17 — Visor BLI Hiperespectral - {_loadedFileName}";
+                _loadedFileName = Path.GetFileName(filePath);
+
+                string currentCam = _cmbCamera.SelectedItem.ToString();
+                this.Text = $"Specimen — Workspace [{_loadedFileName}] ({currentCam})";
+
                 CheckCalibrationReady();
                 _btnExport.Enabled = _btnExpAll.Enabled = _btnExpMeanSpec.Enabled = _btnExpGraph.Enabled = _btnReport.Enabled = _btnClose.Enabled = true;
                 RefreshDisplay(); ClearSpectrumPlot(); _slbl.Text = $"✔ {_cube.Header}";
             }
-            catch (Exception ex) { MessageBox.Show(ex.Message, "Error"); _slbl.Text = "Error"; }
-            finally { _pb.Visible = false; _btnLoad.Enabled = true; }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"No se pudo leer el archivo.\n\nDetalle: {ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                _slbl.Text = "Error";
+            }
+            finally
+            {
+                _pb.Visible = false;
+                _btnLoad.Enabled = true;
+                _estaCargando = false;
+            }
         }
 
         private bool[,]? GetCurrentMask()
@@ -961,6 +1067,14 @@ namespace SpecimenFX17.Imaging
             Bitmap? newBitmap;
             bool[,] mask = GetCurrentMask()!;
 
+            string resText = "";
+            if (currentCube.Header.Wavelengths != null && currentCube.Header.Wavelengths.Count > 1)
+            {
+                double rangoNm = currentCube.Header.Wavelengths.Last() - currentCube.Header.Wavelengths.First();
+                double resolucion = rangoNm / currentCube.Bands;
+                resText = $"\nRes. Espectral: ~{resolucion:F2} nm/px";
+            }
+
             if (mask != null && !isPcaBand)
             {
                 if (_rgbMode)
@@ -968,13 +1082,13 @@ namespace SpecimenFX17.Imaging
                     int bR = GetClosestBand(640), bG = GetClosestBand(550), bB = GetClosestBand(460);
                     var (minR, maxR) = GetMaskedStats(bR, mask); var (minG, maxG) = GetMaskedStats(bG, mask); var (minB, maxB) = GetMaskedStats(bB, mask);
                     newBitmap = RenderMaskedRGB(bR, bG, bB, mask, minR, maxR, minG, maxG, minB, maxB);
-                    _lblBandInfo.Text = $"Modo RGB (ROI Aislado)\nR: {WlAt(bR):F1} nm\nG: {WlAt(bG):F1} nm\nB: {WlAt(bB):F1} nm\nPx: {currentCube.Samples}x{currentCube.Lines}";
+                    _lblBandInfo.Text = $"Modo RGB (ROI Aislado)\nR: {WlAt(bR):F1} nm\nG: {WlAt(bG):F1} nm\nB: {WlAt(bB):F1} nm\nPx: {currentCube.Samples}x{currentCube.Lines}{resText}";
                 }
                 else
                 {
                     var (mn, mx) = GetMaskedStats(_currentBand, mask);
                     newBitmap = RenderMaskedBand(_currentBand, mask, mn, mx);
-                    _lblBandInfo.Text = $"{bandName} (ROI Aislado)\nMín (ROI): {mn:G5}\nMáx (ROI): {mx:G5}\nPx: {currentCube.Samples}x{currentCube.Lines}";
+                    _lblBandInfo.Text = $"{bandName} (ROI Aislado)\nMín (ROI): {mn:G5}\nMáx (ROI): {mx:G5}\nPx: {currentCube.Samples}x{currentCube.Lines}{resText}";
                 }
             }
             else
@@ -984,13 +1098,13 @@ namespace SpecimenFX17.Imaging
                 {
                     int bR = GetClosestBand(640), bG = GetClosestBand(550), bB = GetClosestBand(460);
                     newBitmap = BliRenderer.RenderRGB(currentCube, bR, bG, bB, opts);
-                    _lblBandInfo.Text = $"Modo RGB\nR: {WlAt(bR):F1} nm\nG: {WlAt(bG):F1} nm\nB: {WlAt(bB):F1} nm\nPx: {currentCube.Samples}x{currentCube.Lines}";
+                    _lblBandInfo.Text = $"Modo RGB\nR: {WlAt(bR):F1} nm\nG: {WlAt(bG):F1} nm\nB: {WlAt(bB):F1} nm\nPx: {currentCube.Samples}x{currentCube.Lines}{resText}";
                 }
                 else
                 {
                     newBitmap = BliRenderer.RenderBand(currentCube, _currentBand, opts);
                     var (mn, mx) = currentCube.GetBandStats(_currentBand);
-                    _lblBandInfo.Text = $"{bandName}\nMín Global: {mn:G5}\nMáx Global: {mx:G5}\nPx: {currentCube.Samples}x{currentCube.Lines}";
+                    _lblBandInfo.Text = $"{bandName}\nMín Global: {mn:G5}\nMáx Global: {mx:G5}\nPx: {currentCube.Samples}x{currentCube.Lines}{resText}";
                 }
             }
 
@@ -1078,31 +1192,37 @@ namespace SpecimenFX17.Imaging
             var currentCube = _cube;
             if (currentCube == null) return;
             using var dlg = new FolderBrowserDialog(); if (dlg.ShowDialog() != DialogResult.OK) return;
-            _btnExpAll.Enabled = false;
-            await Task.Run(() => {
-                for (int b = 0; b < currentCube.Bands; b++)
-                {
-                    var o = new BliRenderOptions { Wavelength = WlAt(b), Colormap = _grayscaleMode ? BliColormap.Grayscale : BliColormap.Rainbow };
-                    using var bmp = BliRenderer.RenderBand(currentCube, b, o);
-                    bmp.Save(Path.Combine(dlg.SelectedPath, $"b_{b + 1:D3}.png"), ImageFormat.Png);
-                    if (b % 15 == 0) GC.Collect();
-                }
-            });
-            _btnExpAll.Enabled = true;
-        }
 
-        // --- NUEVOS MÉTODOS DE EXPORTACIÓN ---
+            _cts?.Cancel(); _cts = new CancellationTokenSource(); var token = _cts.Token;
+
+            _btnExpAll.Enabled = false;
+            _pb.Visible = true; _pb.Value = 0; _pb.Style = ProgressBarStyle.Continuous;
+            _btnCancelTask.Visible = true; _btnCancelTask.Enabled = true; _btnCancelTask.Text = "🛑 Cancelar exp.";
+            _slbl.Text = "Exportando bandas...";
+
+            try
+            {
+                await Task.Run(() => {
+                    for (int b = 0; b < currentCube.Bands; b++)
+                    {
+                        token.ThrowIfCancellationRequested();
+                        var o = new BliRenderOptions { Wavelength = WlAt(b), Colormap = _grayscaleMode ? BliColormap.Grayscale : BliColormap.Rainbow };
+                        using var bmp = BliRenderer.RenderBand(currentCube, b, o);
+                        bmp.Save(Path.Combine(dlg.SelectedPath, $"b_{b + 1:D3}.png"), System.Drawing.Imaging.ImageFormat.Png);
+                        Invoke(() => _pb.Value = (b + 1) * 100 / currentCube.Bands);
+                        if (b % 15 == 0) GC.Collect();
+                    }
+                }, token);
+                _slbl.Text = "Exportación completada.";
+            }
+            catch (OperationCanceledException) { _slbl.Text = "Exportación cancelada."; }
+            finally { _btnExpAll.Enabled = true; _pb.Visible = false; _btnCancelTask.Visible = false; }
+        }
 
         private void BtnExpMeanSpec_Click(object? s, EventArgs e)
         {
             if (_cube == null) return;
-
-            using var dlg = new SaveFileDialog
-            {
-                Filter = "Archivo CSV (*.csv)|*.csv",
-                FileName = $"EspectroMedio_{Path.GetFileNameWithoutExtension(_loadedFileName)}.csv",
-                Title = "Guardar Espectro Medio Global"
-            };
+            using var dlg = new SaveFileDialog { Filter = "Archivo CSV (*.csv)|*.csv", FileName = $"EspectroMedio_{Path.GetFileNameWithoutExtension(_loadedFileName)}.csv", Title = "Guardar Espectro Medio Global" };
 
             if (dlg.ShowDialog() == DialogResult.OK)
             {
@@ -1119,7 +1239,7 @@ namespace SpecimenFX17.Imaging
                 }
 
                 File.WriteAllText(dlg.FileName, sb.ToString(), System.Text.Encoding.UTF8);
-                MessageBox.Show("El espectro medio de la vista actual se ha exportado correctamente a CSV.", "Exportación exitosa", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                MessageBox.Show("El espectro medio se ha exportado correctamente a CSV.", "Éxito", MessageBoxButtons.OK, MessageBoxIcon.Information);
             }
         }
 
@@ -1127,21 +1247,16 @@ namespace SpecimenFX17.Imaging
         {
             if (_specPlot.Image == null)
             {
-                MessageBox.Show("No hay ninguna gráfica generada en este momento. Selecciona algún punto en la imagen, carga una ROI o pasa el ratón sobre la muestra primero.", "Aviso", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                MessageBox.Show("Selecciona algún punto en la imagen, carga una ROI o pasa el ratón sobre la muestra primero.", "Aviso", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 return;
             }
 
-            using var dlg = new SaveFileDialog
-            {
-                Filter = "Imagen PNG (*.png)|*.png",
-                FileName = $"GraficaEspectral_{Path.GetFileNameWithoutExtension(_loadedFileName)}.png",
-                Title = "Guardar Gráfica de Firmas Espectrales"
-            };
+            using var dlg = new SaveFileDialog { Filter = "Imagen PNG (*.png)|*.png", FileName = $"GraficaEspectral_{Path.GetFileNameWithoutExtension(_loadedFileName)}.png" };
 
             if (dlg.ShowDialog() == DialogResult.OK)
             {
                 _specPlot.Image.Save(dlg.FileName, ImageFormat.Png);
-                MessageBox.Show("La gráfica inferior ha sido exportada con éxito.", "Exportación exitosa", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                MessageBox.Show("Gráfica inferior exportada con éxito.", "Éxito", MessageBoxButtons.OK, MessageBoxIcon.Information);
             }
         }
 
