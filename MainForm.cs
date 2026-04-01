@@ -10,7 +10,7 @@ using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Forms;
-using WeifenLuo.WinFormsUI.Docking; // NUEVO: Librería de paneles
+using WeifenLuo.WinFormsUI.Docking;
 
 namespace SpecimenFX17.Imaging
 {
@@ -23,7 +23,7 @@ namespace SpecimenFX17.Imaging
         private HyperspectralCube? _darkCube;
         private string _loadedFileName = "";
 
-        private readonly List<DockContent> _childForms = new(); // AHORA SON DOCKCONTENT
+        private readonly List<DockContent> _childForms = new();
 
         private int _currentBand = 0;
         private bool _grayscaleMode = false;
@@ -33,6 +33,12 @@ namespace SpecimenFX17.Imaging
 
         private readonly List<SelectionShape> _selections = new();
         private Point? _hoverImgPt = null;
+
+        // --- SISTEMA DESHACER / REHACER ---
+        private readonly Stack<List<SelectionShape>> _undoStack = new();
+        private readonly Stack<List<SelectionShape>> _redoStack = new();
+        private Button _btnUndo = null!;
+        private Button _btnRedo = null!;
 
         private static readonly Color[] SelColors =
         {
@@ -111,7 +117,6 @@ namespace SpecimenFX17.Imaging
 
         private bool _estaCargando = false;
 
-        // --- SISTEMA DE PANELES ---
         private DockPanel _dockPanel = null!;
         private DockContent _imageDocument = null!;
         private DockContent _toolWindow = null!;
@@ -123,29 +128,78 @@ namespace SpecimenFX17.Imaging
         {
             Text = "Specimen — Workspace Hiperespectral";
             Size = new Size(1600, 950); MinimumSize = new Size(1000, 700);
-            BackColor = Color.FromArgb(45, 45, 48); // Color de fondo base estilo Visual Studio
+            BackColor = Color.FromArgb(45, 45, 48);
             ForeColor = Color.White;
             Font = new Font("Segoe UI", 9f);
             try { this.Icon = new Icon("favicon.ico"); } catch { }
 
-            IsMdiContainer = true; // Convierte el Form en un contenedor MDI
-
+            IsMdiContainer = true;
             BuildUI();
+        }
+
+        // --- MÉTODOS DE DESHACER Y REHACER ---
+        private void SaveStateForUndo()
+        {
+            _undoStack.Push(_selections.ToList()); // Guarda una copia superficial de la lista actual
+            _redoStack.Clear(); // Rompe la línea temporal de rehacer (como en Word o Photoshop)
+            UpdateUndoRedoUI();
+        }
+
+        private void PerformUndo()
+        {
+            if (_undoStack.Count == 0) return;
+            _redoStack.Push(_selections.ToList());
+            _selections.Clear();
+            _selections.AddRange(_undoStack.Pop());
+
+            _polyActive = false; _polyImg.Clear(); _polyScr.Clear(); _freeImg.Clear(); _freeScr.Clear();
+            _btnClear.Enabled = _selections.Count > 0;
+            ClearSpectrumPlot();
+            RefreshDisplay();
+            UpdateUndoRedoUI();
+        }
+
+        private void PerformRedo()
+        {
+            if (_redoStack.Count == 0) return;
+            _undoStack.Push(_selections.ToList());
+            _selections.Clear();
+            _selections.AddRange(_redoStack.Pop());
+
+            _btnClear.Enabled = _selections.Count > 0;
+            ClearSpectrumPlot();
+            RefreshDisplay();
+            UpdateUndoRedoUI();
+        }
+
+        private void UpdateUndoRedoUI()
+        {
+            if (_btnUndo != null) _btnUndo.Enabled = _undoStack.Count > 0;
+            if (_btnRedo != null) _btnRedo.Enabled = _redoStack.Count > 0;
+        }
+        // ------------------------------------
+
+        // Capturar los atajos de teclado Ctrl+Z y Ctrl+Y
+        protected override bool ProcessCmdKey(ref Message msg, Keys key)
+        {
+            if (key == (Keys.Control | Keys.Z)) { PerformUndo(); return true; }
+            if (key == (Keys.Control | Keys.Y) || key == (Keys.Control | Keys.Shift | Keys.Z)) { PerformRedo(); return true; }
+            if (key == Keys.Escape && _polyActive) { _polyActive = false; _polyImg.Clear(); _polyScr.Clear(); _pictureBox.Invalidate(); _slbl.Text = "Polígono cancelado"; return true; }
+            if (key == Keys.Return && _polyActive && _polyImg.Count >= 3) { CommitPolygon(); return true; }
+            return base.ProcessCmdKey(ref msg, key);
         }
 
         private void BuildUI()
         {
-            // 1. Crear el DockPanel principal
             _dockPanel = new DockPanel
             {
                 Dock = DockStyle.Fill,
-                Theme = new VS2015DarkTheme(), // Tema oscuro profesional
+                Theme = new VS2015DarkTheme(),
                 DocumentStyle = DocumentStyle.DockingWindow,
                 ShowDocumentIcon = true
             };
             Controls.Add(_dockPanel);
 
-            // 2. Crear la barra de estado
             _ss = new StatusStrip { BackColor = Color.FromArgb(0, 122, 204), ForeColor = Color.White, SizingGrip = false };
             _slbl = new ToolStripStatusLabel("Arrastra y suelta un archivo .hdr en la pantalla para empezar")
             { Spring = true, TextAlign = ContentAlignment.MiddleLeft };
@@ -155,7 +209,6 @@ namespace SpecimenFX17.Imaging
             _ss.Items.Add(_slbl); _ss.Items.Add(new ToolStripControlHost(_pb)); _ss.Items.Add(_btnCancelTask);
             Controls.Add(_ss);
 
-            // 3. Construir el Panel Derecho (Herramientas)
             var rp = new FlowLayoutPanel
             {
                 Dock = DockStyle.Fill,
@@ -167,7 +220,6 @@ namespace SpecimenFX17.Imaging
             };
             BuildRightPanel(rp);
 
-            // 4. Construir el Panel Central (Imagen)
             var cp = new Panel { Dock = DockStyle.Fill, BackColor = Color.FromArgb(20, 20, 20) };
             var slPan = new Panel { Dock = DockStyle.Top, Height = 46, BackColor = Color.FromArgb(37, 37, 38) };
             var cmbContainer = new Panel { Dock = DockStyle.Left, Width = 260, Padding = new Padding(8, 10, 8, 10) };
@@ -192,7 +244,6 @@ namespace SpecimenFX17.Imaging
             _pictureBox.MouseMove += Pic_Move; _pictureBox.MouseDown += Pic_Down; _pictureBox.MouseUp += Pic_Up;
             _pictureBox.Paint += Pic_Paint; _pictureBox.MouseDoubleClick += Pic_DblClick; _pictureBox.MouseLeave += Pic_Leave;
 
-            // --- DRAG AND DROP LÓGICA ---
             _pictureBox.AllowDrop = true;
             _pictureBox.DragEnter += HandleDragEnter;
             _pictureBox.DragDrop += HandleDragDrop;
@@ -202,24 +253,22 @@ namespace SpecimenFX17.Imaging
 
             cp.Controls.Add(_pictureBox); cp.Controls.Add(div); cp.Controls.Add(spCon); cp.Controls.Add(slPan);
 
-            // 5. Acoplar los paneles al sistema DockPanel
-            _imageDocument = new DockContent { Text = "📸 Vista Principal", CloseButtonVisible = false, BackColor = Color.Black };
+            _imageDocument = new DockContent { Text = "📸 Vista Principal", CloseButtonVisible = false, BackColor = Color.Black, HideOnClose = true };
             _imageDocument.Controls.Add(cp);
+            _imageDocument.FormClosing += (s, e) => { if (e.CloseReason == CloseReason.UserClosing) e.Cancel = true; };
 
-            _toolWindow = new DockContent { Text = "⚙️ Herramientas", CloseButtonVisible = false, BackColor = Color.FromArgb(30, 30, 30) };
+            _toolWindow = new DockContent { Text = "⚙️ Herramientas", CloseButtonVisible = false, BackColor = Color.FromArgb(30, 30, 30), HideOnClose = true };
             _toolWindow.Controls.Add(rp);
+            _toolWindow.FormClosing += (s, e) => { if (e.CloseReason == CloseReason.UserClosing) e.Cancel = true; };
 
             rp.Layout += (s, e) => { if (rp.ClientSize.Width == 0) return; int targetWidth = rp.ClientSize.Width - rp.Padding.Left - rp.Padding.Right; foreach (Control c in rp.Controls) c.Width = targetWidth - c.Margin.Left - c.Margin.Right; };
 
-            // Mostramos los paneles en el Dock
             _toolWindow.Show(_dockPanel, DockState.DockRight);
             _imageDocument.Show(_dockPanel, DockState.Document);
 
-            // Ajustamos el tamaño inicial de la barra de herramientas a ~350px
             _dockPanel.DockRightPortion = 360d / this.Width;
         }
 
-        // --- MANEJADORES DE ARRASTRAR Y SOLTAR ---
         private void HandleDragEnter(object? sender, DragEventArgs e)
         {
             if (e.Data != null && e.Data.GetDataPresent(DataFormats.FileDrop))
@@ -240,12 +289,11 @@ namespace SpecimenFX17.Imaging
             }
         }
 
-        // Modificamos el OpenChildForm para que ancle como pestaña
         private void OpenChildForm(DockContent f)
         {
             f.FormClosed += (s, e) => _childForms.Remove(f);
             _childForms.Add(f);
-            f.Show(_dockPanel, DockState.Document); // Lo abre como una pestaña al lado de la Vista Principal
+            f.Show(_dockPanel, DockState.Document);
         }
 
         private void BuildRightPanel(FlowLayoutPanel p)
@@ -334,7 +382,20 @@ namespace SpecimenFX17.Imaging
             nudSgWin.ValueChanged += async (_, _) => { if (_stepSG) { _sgWindow = (int)nudSgWin.Value; await RebuildWorkingCube(); } }; nudSgPol.ValueChanged += async (_, _) => { if (_stepSG) { _sgPoly = (int)nudSgPol.Value; await RebuildWorkingCube(); } }; nudSgDer.ValueChanged += async (_, _) => { if (_stepSG) { _sgDeriv = (int)nudSgDer.Value; await RebuildWorkingCube(); } };
 
             Sep(p); Sec(p, "HERRAMIENTA DE SELECCIÓN");
-            _lblTip = new Label { AutoSize = true, ForeColor = Color.FromArgb(120, 200, 120), Font = new Font("Segoe UI", 8f, FontStyle.Italic), Text = "Arrastra para seleccionar un rectángulo", Margin = new Padding(8, 0, 8, 8) }; p.Controls.Add(_lblTip);
+            _lblTip = new Label { AutoSize = true, ForeColor = Color.FromArgb(120, 200, 120), Font = new Font("Segoe UI", 8f, FontStyle.Italic), Text = "Arrastra para seleccionar un rectángulo", Margin = new Padding(8, 0, 8, 8) };
+            p.Controls.Add(_lblTip);
+
+            // --- BOTONES DE DESHACER Y REHACER ---
+            var pnlUndo = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.LeftToRight, Margin = new Padding(8, 0, 8, 8) };
+            _btnUndo = new Button { Text = "↩ Deshacer", AutoSize = true, Padding = new Padding(8, 4, 8, 4), BackColor = Color.FromArgb(50, 50, 60), ForeColor = Color.White, FlatStyle = FlatStyle.Flat, Enabled = false, Cursor = Cursors.Hand };
+            _btnRedo = new Button { Text = "↪ Rehacer", AutoSize = true, Padding = new Padding(8, 4, 8, 4), BackColor = Color.FromArgb(50, 50, 60), ForeColor = Color.White, FlatStyle = FlatStyle.Flat, Enabled = false, Cursor = Cursors.Hand };
+            _btnUndo.FlatAppearance.BorderColor = Color.FromArgb(70, 70, 90);
+            _btnRedo.FlatAppearance.BorderColor = Color.FromArgb(70, 70, 90);
+            _btnUndo.Click += (_, _) => PerformUndo();
+            _btnRedo.Click += (_, _) => PerformRedo();
+            pnlUndo.Controls.Add(_btnUndo); pnlUndo.Controls.Add(_btnRedo);
+            p.Controls.Add(pnlUndo);
+            // -------------------------------------
 
             var grid = new TableLayoutPanel { AutoSize = true, ColumnCount = 2, RowCount = 3, BackColor = Color.Transparent, Margin = new Padding(8, 0, 8, 8) };
             grid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50f)); grid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50f));
@@ -384,6 +445,7 @@ namespace SpecimenFX17.Imaging
                 using var ofd = new OpenFileDialog { Filter = "Sesión JSON (*.json)|*.json" };
                 if (ofd.ShowDialog() == DialogResult.OK)
                 {
+                    SaveStateForUndo(); // Guarda antes de machacar con el JSON
                     var loaded = SessionManager.LoadSession(ofd.FileName, _cube.Samples, _cube.Lines);
                     _selections.Clear(); _selections.AddRange(loaded); _btnClear.Enabled = true; RefreshDisplay();
                     if (_stepRotation != 0f) MessageBox.Show("Nota: La imagen actual está rotada. Si el JSON original no lo estaba, las ROIs estarán desalineadas.", "Advertencia Geométrica", MessageBoxButtons.OK, MessageBoxIcon.Warning);
@@ -469,6 +531,8 @@ namespace SpecimenFX17.Imaging
             _currentBitmap?.Dispose(); _currentBitmap = null; _pictureBox.Image = null;
             _specPlot.Image?.Dispose(); _specPlot.Image = null;
 
+            _undoStack.Clear(); _redoStack.Clear(); UpdateUndoRedoUI();
+
             _cmbBands.Items.Clear(); _slider.Minimum = 0; _slider.Maximum = 0; _slider.Value = 0; _currentBand = 0;
 
             _txtAnalysisReport.Text = ""; _lblBandInfo.Text = "—"; _lblCoords.Text = "";
@@ -519,21 +583,43 @@ namespace SpecimenFX17.Imaging
             finally { _slbl.Text = "Listo."; _pb.Visible = false; }
         }
 
+        // --- MORFOLOGÍA SEGURA PARA DESHACER ---
         private void ApplyMorphologyToMasks(string operation)
         {
+            if (_selections.Count == 0) return;
+            SaveStateForUndo();
             bool changed = false;
-            foreach (var sh in _selections.ToList())
+
+            for (int i = 0; i < _selections.Count; i++)
             {
-                if (sh.GetType().Name == "MaskShape")
+                if (_selections[i].GetType().Name == "MaskShape")
                 {
-                    var maskShape = (dynamic)sh;
+                    // Clonamos el array bidimensional para no fastidiar la copia de deshacer
+                    var oldMask = _selections[i].GetMask(_cube!.Lines, _cube.Samples);
+                    var newMask = (bool[,])oldMask.Clone();
+
+                    // Creamos una nueva forma limpia desde cero
+                    var newShape = Activator.CreateInstance(Type.GetType("SpecimenFX17.Imaging.MaskShape")!, new object[] { newMask, _selections[i].Color }) as SelectionShape;
+                    if (newShape == null) continue;
+
+                    newShape.Variety = _selections[i].Variety;
+                    newShape.Date = _selections[i].Date;
+                    newShape.MeasuredBrix = _selections[i].MeasuredBrix;
+                    newShape.Notes = _selections[i].Notes;
+
+                    // Aplicamos el algoritmo destructivo a la nueva forma
+                    var maskShape = (dynamic)newShape;
                     if (operation == "dilate") maskShape.Dilate(1);
                     else if (operation == "erode") maskShape.Erode(1);
                     else if (operation == "fill") maskShape.FillHoles();
+
+                    _selections[i] = newShape; // Reemplazamos en la lista!
                     changed = true;
                 }
             }
+
             if (changed) RefreshDisplay();
+            else _undoStack.Pop(); // Cancelamos el deshacer si no había máscaras que modificar
         }
 
         private async void BtnBatch_Click(object? s, EventArgs e)
@@ -614,13 +700,6 @@ namespace SpecimenFX17.Imaging
             _pictureBox.Cursor = mode switch { SelectionTool.Polygon => Cursors.UpArrow, SelectionTool.Freehand => Cursors.UpArrow, SelectionTool.AutoDetect => Cursors.Hand, _ => Cursors.Cross };
         }
 
-        protected override bool ProcessCmdKey(ref Message msg, Keys key)
-        {
-            if (key == Keys.Escape && _polyActive) { _polyActive = false; _polyImg.Clear(); _polyScr.Clear(); _pictureBox.Invalidate(); _slbl.Text = "Polígono cancelado"; return true; }
-            if (key == Keys.Return && _polyActive && _polyImg.Count >= 3) { CommitPolygon(); return true; }
-            return base.ProcessCmdKey(ref msg, key);
-        }
-
         private void CheckCalibrationReady() => _btnCalibrate.Enabled = _originalCube != null && _whiteCube != null && _darkCube != null;
 
         private async Task RebuildWorkingCube()
@@ -633,7 +712,7 @@ namespace SpecimenFX17.Imaging
             _pb.Visible = true; _pb.Style = ProgressBarStyle.Marquee;
             _btnCancelTask.Visible = true; _btnCancelTask.Enabled = true; _btnCancelTask.Text = "🛑 Cancelar proceso";
 
-            Invoke(() => { foreach (var f in _childForms.ToList()) f.Close(); });
+            Invoke(() => { foreach (var f in _childForms.ToList()) ((Form)f).Close(); });
 
             try
             {
@@ -731,7 +810,21 @@ namespace SpecimenFX17.Imaging
             if (currentCube == null) return;
             var pt = MapToImage(e.Location);
 
-            if (e.Button == MouseButtons.Right && pt != null) { for (int i = _selections.Count - 1; i >= 0; i--) { if (_selections[i].Contains(pt.Value)) { using var dlg = new MetadataDialog(_selections[i]); if (dlg.ShowDialog() == DialogResult.OK) RefreshDisplay(); return; } } return; }
+            if (e.Button == MouseButtons.Right && pt != null)
+            {
+                for (int i = _selections.Count - 1; i >= 0; i--)
+                {
+                    if (_selections[i].Contains(pt.Value))
+                    {
+                        SaveStateForUndo();
+                        using var dlg = new MetadataDialog(_selections[i]);
+                        if (dlg.ShowDialog() == DialogResult.OK) RefreshDisplay();
+                        else _undoStack.Pop();
+                        return;
+                    }
+                }
+                return;
+            }
             if (e.Button != MouseButtons.Left) return;
 
             switch (_tool)
@@ -801,10 +894,27 @@ namespace SpecimenFX17.Imaging
         }
 
         private Color NextColor() => SelColors[_selections.Count % SelColors.Length];
-        private void AddShape(SelectionShape? sh) { if (sh == null) return; if (_selections.Count >= SelColors.Length) _selections.RemoveAt(0); _selections.Add(sh); _btnClear.Enabled = true; RefreshDisplay(); }
-        private void CommitPolygon() { if (_polyImg.Count >= 3) AddShape(Activator.CreateInstance(Type.GetType("SpecimenFX17.Imaging.PolygonShape")!, new object[] { _polyImg, NextColor() }) as SelectionShape); _polyActive = false; _polyImg.Clear(); _polyScr.Clear(); _pictureBox.Invalidate(); }
-        private void ClearAll() { _selections.Clear(); _polyActive = false; _polyImg.Clear(); _polyScr.Clear(); _freeImg.Clear(); _freeScr.Clear(); _btnClear.Enabled = false; ClearSpectrumPlot(); RefreshDisplay(); _pictureBox.Invalidate(); }
 
+        // --- AÑADIR FORMA SEGURA CON DESHACER ---
+        private void AddShape(SelectionShape? sh)
+        {
+            if (sh == null) return;
+            SaveStateForUndo(); // ¡Instantánea guardada!
+            if (_selections.Count >= SelColors.Length) _selections.RemoveAt(0);
+            _selections.Add(sh);
+            _btnClear.Enabled = true; RefreshDisplay();
+        }
+
+        private void CommitPolygon() { if (_polyImg.Count >= 3) AddShape(Activator.CreateInstance(Type.GetType("SpecimenFX17.Imaging.PolygonShape")!, new object[] { _polyImg, NextColor() }) as SelectionShape); _polyActive = false; _polyImg.Clear(); _polyScr.Clear(); _pictureBox.Invalidate(); }
+
+        private void ClearAll()
+        {
+            if (_selections.Count == 0 && !_polyActive && _freeImg.Count == 0) return;
+            SaveStateForUndo(); // ¡Protección contra borrado accidental!
+            _selections.Clear(); _polyActive = false; _polyImg.Clear(); _polyScr.Clear(); _freeImg.Clear(); _freeScr.Clear(); _btnClear.Enabled = false; ClearSpectrumPlot(); RefreshDisplay(); _pictureBox.Invalidate();
+        }
+
+        // --- AUTO ROI SEGURO PARA DESHACER ---
         private async void RunAutoRoi(int startX, int startY, bool addMode = false, bool subMode = false)
         {
             var currentCube = _cube;
@@ -814,11 +924,12 @@ namespace SpecimenFX17.Imaging
             _slbl.Text = "🪄 Analizando firma espectral (SAM)..."; _pb.Visible = true; _pb.Style = ProgressBarStyle.Marquee; _pictureBox.Enabled = false;
             float tolPercent = (float)_nudAutoTol.Value / 100f, maxAngleRads = tolPercent * 1.5f, minCos = (float)Math.Cos(maxAngleRads);
             Color col = targetMask != null ? targetMask.Color : NextColor(); bool[,] mask = null!;
+            int w = currentCube.Samples, h = currentCube.Lines;
 
             try
             {
                 await Task.Run(() => {
-                    int w = currentCube.Samples, h = currentCube.Lines; mask = new bool[h, w];
+                    mask = new bool[h, w];
                     int numBands = 16, step = Math.Max(1, currentCube.Bands / numBands);
                     var bandsToUse = new List<int>(); for (int b = 0; b < currentCube.Bands; b += step) bandsToUse.Add(b);
                     float[] refSpec = new float[bandsToUse.Count]; float normRef = 0f;
@@ -856,8 +967,29 @@ namespace SpecimenFX17.Imaging
                 {
                     if (targetMask != null)
                     {
-                        if (addMode) targetMask.AddMask(mask);
-                        else if (subMode) targetMask.RemoveMask(mask);
+                        SaveStateForUndo();
+                        var oldMask = targetMask.GetMask(h, w);
+                        var newMask = (bool[,])oldMask.Clone(); // Clonamos
+
+                        for (int y = 0; y < h; y++)
+                            for (int x = 0; x < w; x++)
+                            {
+                                if (mask[y, x])
+                                {
+                                    if (addMode) newMask[y, x] = true;
+                                    else if (subMode) newMask[y, x] = false;
+                                }
+                            }
+
+                        var newShape = Activator.CreateInstance(Type.GetType("SpecimenFX17.Imaging.MaskShape")!, new object[] { newMask, targetMask.Color }) as SelectionShape;
+                        newShape.Variety = targetMask.Variety;
+                        newShape.Date = targetMask.Date;
+                        newShape.MeasuredBrix = targetMask.MeasuredBrix;
+                        newShape.Notes = targetMask.Notes;
+
+                        int idx = _selections.IndexOf(targetMask);
+                        if (idx >= 0) _selections[idx] = newShape; // Reemplazamos
+
                         RefreshDisplay();
                     }
                     else AddShape(Activator.CreateInstance(Type.GetType("SpecimenFX17.Imaging.MaskShape")!, new object[] { mask, col }) as SelectionShape);
@@ -873,7 +1005,6 @@ namespace SpecimenFX17.Imaging
             }
         }
 
-        // --- MÉTODO CENTRALIZADO PARA CARGAR CUBOS ---
         private async void LoadCubeFromFile(string filePath)
         {
             if (_estaCargando) return;
@@ -886,6 +1017,9 @@ namespace SpecimenFX17.Imaging
 
                 _baseCube = await Task.Run(() => HyperspectralCube.Load(filePath, prog));
                 _originalCube = _baseCube.Clone(); _cube = _baseCube; _selections.Clear(); _chkAnalyze.Checked = false;
+
+                // Limpiamos los historiales al cargar nueva imagen
+                _undoStack.Clear(); _redoStack.Clear(); UpdateUndoRedoUI();
 
                 _currentBand = 0;
                 PopulateBandsCombo();
@@ -1222,24 +1356,63 @@ namespace SpecimenFX17.Imaging
         private void BtnExpMeanSpec_Click(object? s, EventArgs e)
         {
             if (_cube == null) return;
-            using var dlg = new SaveFileDialog { Filter = "Archivo CSV (*.csv)|*.csv", FileName = $"EspectroMedio_{Path.GetFileNameWithoutExtension(_loadedFileName)}.csv", Title = "Guardar Espectro Medio Global" };
+
+            // Verificamos si hay ROIs dibujados
+            if (_selections.Count == 0)
+            {
+                MessageBox.Show("No has seleccionado ningún ROI. Dibuja al menos una región (rectángulo, polígono, etc.) en la imagen para exportar su espectro medio.", "Aviso", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+
+            using var dlg = new SaveFileDialog
+            {
+                Filter = "Archivo CSV (*.csv)|*.csv",
+                FileName = $"Espectros_ROIs_{Path.GetFileNameWithoutExtension(_loadedFileName)}.csv",
+                Title = "Guardar Espectros de ROIs"
+            };
 
             if (dlg.ShowDialog() == DialogResult.OK)
             {
                 var wls = _cube.Header.Wavelengths;
-                float[] meanSpec = _cube.GetGlobalMeanSpectrum();
+                int numBands = _cube.Bands;
+
+                // Extraer los espectros y nombres de cada ROI
+                var roiSpectra = new List<float[]>();
+                var roiNames = new List<string>();
+
+                foreach (var sh in _selections)
+                {
+                    // sh.GetSpectrum() calcula la media matemática de los píxeles dentro de esa forma
+                    roiSpectra.Add(sh.GetSpectrum(_cube).ToArray());
+                    roiNames.Add(sh.ShortLabel ?? "ROI");
+                }
+
                 var sb = new System.Text.StringBuilder();
 
-                sb.AppendLine("Banda,Longitud_Onda_nm,Valor_Medio");
+                // 1. Construir la cabecera dinámica (ej: Banda, Longitud_Onda_nm, ROI_1, ROI_2...)
+                string header = "Banda,Longitud_Onda_nm";
+                for (int i = 0; i < roiNames.Count; i++)
+                {
+                    header += $",{roiNames[i].Replace(",", "")}"; // Evitamos comas en los nombres para no romper el CSV
+                }
+                sb.AppendLine(header);
 
-                for (int i = 0; i < _cube.Bands; i++)
+                // 2. Rellenar los datos fila por fila
+                for (int i = 0; i < numBands; i++)
                 {
                     double wl = (wls != null && wls.Count > i) ? wls[i] : i;
-                    sb.AppendLine($"{i + 1},{wl.ToString("F2", System.Globalization.CultureInfo.InvariantCulture)},{meanSpec[i].ToString("G5", System.Globalization.CultureInfo.InvariantCulture)}");
+                    string line = $"{i + 1},{wl.ToString("F2", System.Globalization.CultureInfo.InvariantCulture)}";
+
+                    foreach (var spec in roiSpectra)
+                    {
+                        float val = (i < spec.Length) ? spec[i] : 0f;
+                        line += $",{val.ToString("G5", System.Globalization.CultureInfo.InvariantCulture)}";
+                    }
+                    sb.AppendLine(line);
                 }
 
                 File.WriteAllText(dlg.FileName, sb.ToString(), System.Text.Encoding.UTF8);
-                MessageBox.Show("El espectro medio se ha exportado correctamente a CSV.", "Éxito", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                MessageBox.Show("Los espectros medios de tus ROIs se han exportado correctamente a CSV.", "Exportación exitosa", MessageBoxButtons.OK, MessageBoxIcon.Information);
             }
         }
 
