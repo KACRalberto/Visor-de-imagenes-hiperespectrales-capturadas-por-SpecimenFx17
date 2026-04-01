@@ -124,7 +124,6 @@ namespace SpecimenFX17.Imaging
 
         private void BuildUI()
         {
-            // FIX 4K TOTAL: Sustituimos el Panel por un FlowLayoutPanel para que todo se apile sin usar X/Y
             var pnlLeft = new FlowLayoutPanel
             {
                 Dock = DockStyle.Left,
@@ -255,11 +254,26 @@ namespace SpecimenFX17.Imaging
                 BackColor = Color.FromArgb(40, 90, 140),
                 FlatStyle = FlatStyle.Flat,
                 Cursor = Cursors.Hand,
-                Margin = new Padding(0, 5, 0, 15)
+                Margin = new Padding(0, 5, 0, 10)
             };
             btnExportImg.FlatAppearance.BorderColor = Color.FromArgb(80, 130, 180);
             btnExportImg.Click += BtnExportImg_Click;
             pnlLeft.Controls.Add(btnExportImg);
+
+            // Botón actualizado para GLB nativo
+            var btnExportGlb = new Button
+            {
+                Text = "🧊 Exportar Modelo 3D (GLB)",
+                AutoSize = true,
+                Padding = new Padding(15, 8, 15, 8),
+                BackColor = Color.FromArgb(110, 40, 110),
+                FlatStyle = FlatStyle.Flat,
+                Cursor = Cursors.Hand,
+                Margin = new Padding(0, 5, 0, 15)
+            };
+            btnExportGlb.FlatAppearance.BorderColor = Color.FromArgb(150, 80, 150);
+            btnExportGlb.Click += BtnExportGlb_Click;
+            pnlLeft.Controls.Add(btnExportGlb);
 
 
             // --- SECCIÓN CONTROLES CÁMARA ---
@@ -414,6 +428,139 @@ namespace SpecimenFX17.Imaging
 
             bmp.Save(sfd.FileName, ImageFormat.Png);
             MessageBox.Show("Imagen 3D exportada correctamente.", "Éxito", MessageBoxButtons.OK, MessageBoxIcon.Information);
+        }
+
+        // --- EXPORTACIÓN GLB DIRECTA MEDIANTE SHARPGLTF ---
+        private void BtnExportGlb_Click(object? sender, EventArgs e)
+        {
+            lock (_renderLock)
+            {
+                if (_texFront == null || _texBack == null || _texTop == null || _texBottom == null || _texLeft == null || _texRight == null)
+                {
+                    MessageBox.Show("Las texturas aún no se han generado. Espera un momento.", "Atención", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    return;
+                }
+            }
+
+            using var sfd = new SaveFileDialog { Filter = "Modelo 3D Binario (*.glb)|*.glb", FileName = "CuboHiperespectral.glb", Title = "Exportar Modelo 3D (GLB)" };
+            if (sfd.ShowDialog() != DialogResult.OK) return;
+
+            try
+            {
+                // Extraer los bytes en memoria directamente desde los Bitmaps en GDI+
+                byte[] GetImageBytes(Bitmap bmp)
+                {
+                    using var ms = new MemoryStream();
+                    bmp.Save(ms, ImageFormat.Png);
+                    return ms.ToArray();
+                }
+
+                // Generador de materiales (Rugosidad 1 y Metálico 0 para evitar que el cubo parezca plástico brillante)
+                SharpGLTF.Materials.MaterialBuilder CreateMaterial(string name, Bitmap bmp)
+                {
+                    var mat = new SharpGLTF.Materials.MaterialBuilder(name)
+                        .WithMetallicRoughness(0f, 1f);
+
+                    mat.UseChannel(SharpGLTF.Materials.KnownChannel.BaseColor)
+                        .UseTexture()
+                        .WithPrimaryImage(new SharpGLTF.Memory.MemoryImage(GetImageBytes(bmp)));
+
+                    return mat;
+                }
+
+                var matF = CreateMaterial("Front", _texFront!);
+                var matB = CreateMaterial("Back", _texBack!);
+                var matT = CreateMaterial("Top", _texTop!);
+                var matBo = CreateMaterial("Bottom", _texBottom!);
+                var matR = CreateMaterial("Right", _texRight!);
+                var matL = CreateMaterial("Left", _texLeft!);
+
+                // Inicializar Malla usando los constructores nativos de SharpGLTF
+                var mesh = new SharpGLTF.Geometry.MeshBuilder<
+                    SharpGLTF.Geometry.VertexTypes.VertexPositionNormal,
+                    SharpGLTF.Geometry.VertexTypes.VertexTexture1,
+                    SharpGLTF.Geometry.VertexTypes.VertexEmpty>("CuboHiperespectral");
+
+                void AddFace(SharpGLTF.Materials.MaterialBuilder material,
+                    System.Numerics.Vector3 bl, System.Numerics.Vector3 br, System.Numerics.Vector3 tr, System.Numerics.Vector3 tl,
+                    System.Numerics.Vector3 n)
+                {
+                    var prim = mesh.UsePrimitive(material);
+
+                    var vBL = new SharpGLTF.Geometry.VertexBuilder<SharpGLTF.Geometry.VertexTypes.VertexPositionNormal, SharpGLTF.Geometry.VertexTypes.VertexTexture1, SharpGLTF.Geometry.VertexTypes.VertexEmpty>(
+                        new SharpGLTF.Geometry.VertexTypes.VertexPositionNormal(bl, n),
+                        new SharpGLTF.Geometry.VertexTypes.VertexTexture1(new System.Numerics.Vector2(0, 1)));
+
+                    var vBR = new SharpGLTF.Geometry.VertexBuilder<SharpGLTF.Geometry.VertexTypes.VertexPositionNormal, SharpGLTF.Geometry.VertexTypes.VertexTexture1, SharpGLTF.Geometry.VertexTypes.VertexEmpty>(
+                        new SharpGLTF.Geometry.VertexTypes.VertexPositionNormal(br, n),
+                        new SharpGLTF.Geometry.VertexTypes.VertexTexture1(new System.Numerics.Vector2(1, 1)));
+
+                    var vTR = new SharpGLTF.Geometry.VertexBuilder<SharpGLTF.Geometry.VertexTypes.VertexPositionNormal, SharpGLTF.Geometry.VertexTypes.VertexTexture1, SharpGLTF.Geometry.VertexTypes.VertexEmpty>(
+                        new SharpGLTF.Geometry.VertexTypes.VertexPositionNormal(tr, n),
+                        new SharpGLTF.Geometry.VertexTypes.VertexTexture1(new System.Numerics.Vector2(1, 0)));
+
+                    var vTL = new SharpGLTF.Geometry.VertexBuilder<SharpGLTF.Geometry.VertexTypes.VertexPositionNormal, SharpGLTF.Geometry.VertexTypes.VertexTexture1, SharpGLTF.Geometry.VertexTypes.VertexEmpty>(
+                        new SharpGLTF.Geometry.VertexTypes.VertexPositionNormal(tl, n),
+                        new SharpGLTF.Geometry.VertexTypes.VertexTexture1(new System.Numerics.Vector2(0, 0)));
+
+                    prim.AddTriangle(vBL, vBR, vTR);
+                    prim.AddTriangle(vBL, vTR, vTL);
+                }
+
+                // Calcular dimensiones del cubo
+                float W = _trkXMax.Value - _trkXMin.Value + 1;
+                float H = _trkYMax.Value - _trkYMin.Value + 1;
+                float D = _trkZMax.Value - _trkZMin.Value + 1;
+                float s = 0.01f; // Factor de escala para adaptarlo a motores 3D modernos
+
+                float hw = (W / 2f) * s;
+                float hh = (H / 2f) * s;
+                float hd = (D / 2f) * s;
+
+                // Construcción de caras (Normales y Coordenadas UV Mapeadas)
+                AddFace(matF,
+                    new System.Numerics.Vector3(-hw, -hh, hd), new System.Numerics.Vector3(hw, -hh, hd),
+                    new System.Numerics.Vector3(hw, hh, hd), new System.Numerics.Vector3(-hw, hh, hd),
+                    new System.Numerics.Vector3(0, 0, 1));
+
+                AddFace(matB,
+                    new System.Numerics.Vector3(hw, -hh, -hd), new System.Numerics.Vector3(-hw, -hh, -hd),
+                    new System.Numerics.Vector3(-hw, hh, -hd), new System.Numerics.Vector3(hw, hh, -hd),
+                    new System.Numerics.Vector3(0, 0, -1));
+
+                AddFace(matT,
+                    new System.Numerics.Vector3(-hw, hh, hd), new System.Numerics.Vector3(hw, hh, hd),
+                    new System.Numerics.Vector3(hw, hh, -hd), new System.Numerics.Vector3(-hw, hh, -hd),
+                    new System.Numerics.Vector3(0, 1, 0));
+
+                AddFace(matBo,
+                    new System.Numerics.Vector3(-hw, -hh, -hd), new System.Numerics.Vector3(hw, -hh, -hd),
+                    new System.Numerics.Vector3(hw, -hh, hd), new System.Numerics.Vector3(-hw, -hh, hd),
+                    new System.Numerics.Vector3(0, -1, 0));
+
+                AddFace(matR,
+                    new System.Numerics.Vector3(hw, -hh, hd), new System.Numerics.Vector3(hw, -hh, -hd),
+                    new System.Numerics.Vector3(hw, hh, -hd), new System.Numerics.Vector3(hw, hh, hd),
+                    new System.Numerics.Vector3(1, 0, 0));
+
+                AddFace(matL,
+                    new System.Numerics.Vector3(-hw, -hh, -hd), new System.Numerics.Vector3(-hw, -hh, hd),
+                    new System.Numerics.Vector3(-hw, hh, hd), new System.Numerics.Vector3(-hw, hh, -hd),
+                    new System.Numerics.Vector3(-1, 0, 0));
+
+                // Empaquetar en escena y exportar
+                var scene = new SharpGLTF.Scenes.SceneBuilder();
+                scene.AddRigidMesh(mesh, System.Numerics.Matrix4x4.Identity);
+
+                var model = scene.ToGltf2();
+                model.SaveGLB(sfd.FileName);
+
+                MessageBox.Show("¡Modelo 3D (GLB) exportado correctamente!\n\nSe ha empaquetado en un solo archivo binario listo para usar.", "Éxito", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Ocurrió un error al procesar el archivo GLB:\n\n{ex.Message}", "Error GLB", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
         }
 
         private async void UpdateBitmapsAsync()

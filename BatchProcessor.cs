@@ -49,7 +49,7 @@ namespace SpecimenFX17.Imaging
         }
 
         /// <summary>
-        /// Procesa todos los archivos .hdr de una carpeta, aplica filtros quimiométricos 
+        /// Procesa todos los archivos .hdr, .raw y .bil de una carpeta, aplica filtros quimiométricos 
         /// y extrae el espectro medio a un único archivo CSV resumen.
         /// Omite automáticamente archivos de referencia (dark/white) y archivos sin binario.
         /// </summary>
@@ -57,14 +57,41 @@ namespace SpecimenFX17.Imaging
         {
             await Task.Run(() =>
             {
-                var allHdrFiles = Directory.GetFiles(inputFolder, "*.hdr");
-                if (allHdrFiles.Length == 0)
-                    throw new Exception("No se encontraron archivos .hdr en la carpeta especificada.");
+                // Buscar archivos con extensiones soportadas
+                var validExtensions = new[] { ".hdr", ".raw", ".bil" };
+                var allFiles = Directory.GetFiles(inputFolder, "*.*")
+                    .Where(f => validExtensions.Contains(Path.GetExtension(f).ToLowerInvariant()))
+                    .ToList();
+
+                if (allFiles.Count == 0)
+                    throw new Exception("No se encontraron archivos .hdr, .raw o .bil en la carpeta especificada.");
+
+                // Usamos un HashSet para agrupar las muestras únicas por su archivo .hdr
+                // Esto evita procesar la muestra 2 veces si el usuario tiene "muestra.hdr" y "muestra.raw" en la carpeta
+                var uniqueHdrFiles = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+                foreach (var file in allFiles)
+                {
+                    string dir = Path.GetDirectoryName(file) ?? "";
+                    string baseName = Path.GetFileNameWithoutExtension(file);
+                    string hdrPath = Path.Combine(dir, baseName + ".hdr");
+
+                    // Validar que el archivo .hdr exista, ya que es mandatorio para leer formato ENVI
+                    if (File.Exists(hdrPath))
+                    {
+                        uniqueHdrFiles.Add(hdrPath);
+                    }
+                }
+
+                var allHdrFilesArray = uniqueHdrFiles.ToArray();
+
+                if (allHdrFilesArray.Length == 0)
+                    throw new Exception("No se encontraron archivos de cabecera (.hdr) asociados a los archivos de datos.");
 
                 // Filtrar: solo muestras con archivo binario presente
-                var skippedRef = allHdrFiles.Where(IsReferenceFile).ToList();
-                var skippedNoBin = allHdrFiles.Where(f => !IsReferenceFile(f) && !HasBinaryData(f)).ToList();
-                var hdrFiles = allHdrFiles.Where(f => !IsReferenceFile(f) && HasBinaryData(f)).ToArray();
+                var skippedRef = allHdrFilesArray.Where(IsReferenceFile).ToList();
+                var skippedNoBin = allHdrFilesArray.Where(f => !IsReferenceFile(f) && !HasBinaryData(f)).ToList();
+                var hdrFiles = allHdrFilesArray.Where(f => !IsReferenceFile(f) && HasBinaryData(f)).ToArray();
 
                 if (hdrFiles.Length == 0)
                     throw new Exception(
