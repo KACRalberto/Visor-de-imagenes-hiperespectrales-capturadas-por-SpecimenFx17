@@ -1108,12 +1108,12 @@ namespace SpecimenFX17.Imaging
             int w = currentCube.Samples, h = currentCube.Lines;
             var bmp = new Bitmap(w, h, PixelFormat.Format24bppRgb);
             var bData = bmp.LockBits(new Rectangle(0, 0, w, h), ImageLockMode.WriteOnly, PixelFormat.Format24bppRgb);
+            BliColormap cmap = _grayscaleMode ? BliColormap.Grayscale : (BliColormap)_cmbCmap.SelectedIndex;
 
             try
             {
                 int stride = bData.Stride;
                 float range = max - min; if (range < 1e-10f) range = 1f;
-                BliColormap cmap = _grayscaleMode ? BliColormap.Grayscale : (BliColormap)_cmbCmap.SelectedIndex;
 
                 var (gMin, gMax) = currentCube.GetBandStats(band); float gRng = gMax - gMin; if (gRng < 1e-10f) gRng = 1f;
 
@@ -1143,6 +1143,28 @@ namespace SpecimenFX17.Imaging
             {
                 bmp.UnlockBits(bData);
             }
+
+            // DIBUJAR LA BARRA DE ESCALA DE COLORES SI ESTÁ ACTIVA
+            if (_chkCbar.Checked)
+            {
+                using var g = Graphics.FromImage(bmp);
+                g.SmoothingMode = SmoothingMode.AntiAlias;
+                int barH = Math.Min(120, bmp.Height - 30), barW = 14;
+                int bx = bmp.Width - barW - 8, by = 15;
+
+                for (int i = 0; i < barH; i++)
+                {
+                    float t = 1f - (float)i / barH;
+                    var (r, gc, b) = GetColor(t, cmap);
+                    using var pen = new Pen(Color.FromArgb(r, gc, b));
+                    g.DrawLine(pen, bx, by + i, bx + barW, by + i);
+                }
+                g.DrawRectangle(Pens.White, bx, by, barW, barH);
+                using var font = new Font("Arial", 7f);
+                g.DrawString(max.ToString("G4"), font, Brushes.White, bx - 2, by - 1);
+                g.DrawString(min.ToString("G4"), font, Brushes.White, bx - 2, by + barH + 1);
+            }
+
             return bmp;
         }
 
