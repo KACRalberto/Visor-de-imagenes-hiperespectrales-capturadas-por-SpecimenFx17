@@ -34,6 +34,9 @@
 	  <PackageReference Include="OpenCvSharp4.Windows" Version="4.13.0.20260302" />
 	  <PackageReference Include="SharpGLTF.Core" Version="1.0.6" />
 	  <PackageReference Include="SharpGLTF.Toolkit" Version="1.0.6" />
+	  <PackageReference Include="MathNet.Numerics.Data.Matlab" Version="5.0.0" />
+	  <PackageReference Include="MathNet.Numerics" Version="5.0.0" />
+	  <PackageReference Include="OpenCvSharp4.Extensions" Version="4.10.0.20241108" />
 	</ItemGroup>
 
 </Project>

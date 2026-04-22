@@ -383,9 +383,12 @@ namespace SpecimenFX17.Imaging
 
             // --- INTEGRACIÓN ULTRAVISOR ---
             Sep(p); Sec(p, "ULTRAVISOR — AUTOMATIZACIÓN");
-            var btnAutoSegment = Btn(p, "🪄 Segmentación Automática", Color.FromArgb(0, 80, 80));
+            var btnAutoSegment = Btn(p, "🔪 Segmentación Automática", Color.FromArgb(0, 80, 80));
             btnAutoSegment.Click += BtnAutoSegment_Click;
             // ------------------------------
+            var btnAnalyzeFolder = Btn(p, "🖼️ Analizar carpeta (Galería)", Color.FromArgb(40, 80, 110));
+            btnAnalyzeFolder.Click += BtnAnalyzeFolder_Click;
+
 
             Sep(p); Sec(p, "HERRAMIENTA DE SELECCIÓN");
             _lblTip = new Label { AutoSize = true, ForeColor = Color.FromArgb(120, 200, 120), Font = new Font("Segoe UI", 8f, FontStyle.Italic), Text = "Arrastra para seleccionar un rectángulo", Margin = new Padding(8, 0, 8, 8) };
@@ -631,19 +634,25 @@ namespace SpecimenFX17.Imaging
         // --- BOTÓN BATCH MODIFICADO PARA INCLUIR AUTO-SEGMENTACIÓN ULTRAVISOR ---
         private async void BtnBatch_Click(object? s, EventArgs e)
         {
-            using var dlgFolder = new FolderBrowserDialog { Description = "Selecciona la carpeta con archivos .hdr" }; if (dlgFolder.ShowDialog() != DialogResult.OK) return;
-            using var dlgSave = new SaveFileDialog { Filter = "Archivo CSV (*.csv)|*.csv", FileName = "Resultados_Lote.csv", Title = "Guardar Excel de resultados" }; if (dlgSave.ShowDialog() != DialogResult.OK) return;
+            // 1. Pedir carpeta de origen
+            using var fbd = new FolderBrowserDialog { Description = "Selecciona la carpeta con archivos crudos (.hdr)" };
+            if (fbd.ShowDialog() != DialogResult.OK) return;
+
+            // 2. Pedir carpeta de destino (ya no pedimos un archivo CSV, pedimos una carpeta porque ahora genera múltiples formatos)
+            using var sfd = new FolderBrowserDialog { Description = "Selecciona la carpeta de destino para las exportaciones" };
+            if (sfd.ShowDialog() != DialogResult.OK) return;
 
             var result = MessageBox.Show(
-                "¿Deseas activar la AUTO-SEGMENTACIÓN ULTRAVISOR?\n\n" +
-                "SÍ: Extraerá cada objeto por separado y guardará sus máscaras lógicas en una subcarpeta (estilo Segmentator).\n" +
-                "NO: Extraerá solo el espectro global de cada imagen.",
+                "¿Deseas activar la AUTO-SEGMENTACIÓN en este lote?\n\n" +
+                "SÍ: Extraerá cada objeto por separado y guardará sus máscaras (.mat, ENVI, .npy).\n" +
+                "NO: Extraerá solo el espectro global de cada imagen completa.",
                 "Modo de Procesamiento Masivo",
                 MessageBoxButtons.YesNoCancel, MessageBoxIcon.Question);
 
             if (result == DialogResult.Cancel) return;
 
-            var options = new BatchOptions
+            // 3. Crear las opciones del Batch
+            var batchOpts = new BatchOptions
             {
                 ApplyNormalize = _stepNormalize,
                 ConvertToAbsorbance = _stepAbsorbance,
@@ -656,7 +665,8 @@ namespace SpecimenFX17.Imaging
                 ApplyMedianFilter = _stepMedian,
                 AutoSegment = (result == DialogResult.Yes),
                 SegmentationBand = _currentBand,
-                SaveNpyMasks = (result == DialogResult.Yes) // <-- CORRECCIÓN APLICADA AQUÍ
+                SaveNpyMasks = (result == DialogResult.Yes),
+                CustomParams = new SegmentationParams() // Usa parámetros por defecto ya que no pasa por la UI interactiva
             };
 
             _cts?.Cancel(); _cts = new CancellationTokenSource(); var token = _cts.Token;
@@ -666,10 +676,12 @@ namespace SpecimenFX17.Imaging
             _slbl.Text = "Procesando imágenes por lotes...";
 
             var progress = new Progress<int>(v => { _pb.Value = v; _slbl.Text = $"Procesando lote... {v}% completado"; });
+
             try
             {
-                await BatchProcessor.ProcessFolderAsync(dlgFolder.SelectedPath, dlgSave.FileName, options, progress, token);
-                MessageBox.Show("Procesamiento completado.\nSi elegiste segmentar, las máscaras .npy se han guardado en la carpeta 'Segmented_Masks_NPY'.", "Éxito", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                // 4. Llamada correcta con las variables que SÍ existen en este contexto
+                await BatchProcessor.ProcessFolderAsync(fbd.SelectedPath, sfd.SelectedPath, batchOpts, progress, token);
+                MessageBox.Show("Procesamiento completado.\nSe han generado las exportaciones en la carpeta de destino.", "Éxito", MessageBoxButtons.OK, MessageBoxIcon.Information);
             }
             catch (OperationCanceledException) { MessageBox.Show("Cancelado por el usuario.", "Cancelado"); }
             catch (Exception ex) { MessageBox.Show($"Error:\n{ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error); }
@@ -685,44 +697,115 @@ namespace SpecimenFX17.Imaging
                 return;
             }
 
-            _slbl.Text = "🪄 Iniciando segmentación automática ULTRAVISOR...";
-            _pb.Visible = true; _pb.Style = ProgressBarStyle.Marquee;
-            _btnCancelTask.Visible = true; _btnCancelTask.Enabled = true;
+            // 1. Mostrar la UI Interactiva (UltraVisor)
+            using var dlg = new InteractiveSegmentationForm(_cube, _currentBand);
+            if (dlg.ShowDialog() != DialogResult.OK) return;
 
-            _cts?.Cancel();
-            _cts = new CancellationTokenSource();
-            var progress = new Progress<int>(v => { _pb.Value = v; });
+            // 2. Preguntar si es imagen única o carpeta (Batch)
+            var result = MessageBox.Show(
+                "Ajustes confirmados.\n\n¿Deseas aplicar esta segmentación a TODAS las imágenes de una carpeta?\n(Se exportará en .mat, .npy, .csv y formato original ENVI)\n\nSí = Procesar Carpeta (Batch)\nNo = Solo imagen actual",
+                "Modo de Procesamiento",
+                MessageBoxButtons.YesNoCancel, MessageBoxIcon.Question);
 
-            try
+            if (result == DialogResult.Cancel) return;
+
+            if (result == DialogResult.No)
             {
-                var newRois = await AutoSegmenter.SegmentCubeAsync(_cube, _currentBand, progress, _cts.Token);
+                // --- LÓGICA DE IMAGEN ÚNICA ---
+                _slbl.Text = "Segmentando imagen actual...";
+                _pb.Visible = true; _pb.Style = ProgressBarStyle.Marquee;
 
-                if (newRois.Count > 0)
+                try
                 {
-                    SaveStateForUndo();
-                    _selections.AddRange(newRois);
-                    _btnClear.Enabled = true;
-                    RefreshDisplay();
-                    _slbl.Text = $"✔ ULTRAVISOR: Detectados {newRois.Count} objetos automáticamente.";
+                    var rois = await AutoSegmenter.SegmentCubeAsync(_cube, _currentBand, dlg.Params, null, default);
+
+                    if (rois.Count > 0)
+                    {
+                        SaveStateForUndo();
+                        _selections.AddRange(rois);
+                        _btnClear.Enabled = true;
+                        RefreshDisplay();
+                        _slbl.Text = $"✔ ULTRAVISOR: Detectados {rois.Count} objetos.";
+                    }
+                    else
+                    {
+                        _slbl.Text = "⚠ No se detectaron objetos con los parámetros actuales.";
+                    }
                 }
-                else
+                catch (Exception ex)
                 {
-                    _slbl.Text = "⚠ No se detectaron objetos con los parámetros actuales.";
+                    MessageBox.Show($"Error en segmentación: {ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                }
+                finally
+                {
+                    _pb.Visible = false; _pb.Style = ProgressBarStyle.Continuous;
                 }
             }
-            catch (OperationCanceledException)
+            else if (result == DialogResult.Yes)
             {
-                _slbl.Text = "Segmentación cancelada.";
-            }
-            catch (Exception ex)
-            {
-                MessageBox.Show($"Error en segmentación: {ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
-                _slbl.Text = "Error en segmentación.";
-            }
-            finally
-            {
-                _pb.Visible = false; _pb.Style = ProgressBarStyle.Continuous;
-                _btnCancelTask.Visible = false;
+                // --- LÓGICA BATCH (MÚLTIPLES IMÁGENES) ---
+                using var fbd = new FolderBrowserDialog { Description = "Selecciona la carpeta de origen con las imágenes crudas (HDR/BIL)" };
+                if (fbd.ShowDialog() != DialogResult.OK) return;
+
+                using var sfd = new FolderBrowserDialog { Description = "Selecciona la carpeta de destino para guardar las exportaciones" };
+                if (sfd.ShowDialog() != DialogResult.OK) return;
+
+                // Las variables nacen aquí, dentro del bloque 'Yes'
+                var batchOpts = new BatchOptions
+                {
+                    AutoSegment = true,
+                    SegmentationBand = _currentBand,
+                    CustomParams = dlg.Params,
+                    ApplyNormalize = _stepNormalize,
+                    ConvertToAbsorbance = _stepAbsorbance,
+                    ApplySNV = _stepScatter == ScatterCorrection.SNV,
+                    ApplyMSC = _stepScatter == ScatterCorrection.MSC,
+                    ApplySavitzkyGolay = _stepSG,
+                    SgWindow = _sgWindow,
+                    SgPoly = _sgPoly,
+                    SgDeriv = _sgDeriv,
+                    ApplyMedianFilter = _stepMedian
+                };
+
+                string originalPipelineText = _lblPipeline.Text;
+                _cts?.Cancel();
+                _cts = new CancellationTokenSource();
+                var token = _cts.Token;
+
+                var progress = new Progress<int>(percent =>
+                {
+                    _lblPipeline.Text = $"{originalPipelineText} | ⏳ EXPORTANDO: {percent}%";
+                    _pb.Value = percent;
+                    _pb.Visible = true;
+                    _slbl.Text = $"Batch: {percent}% completado";
+                });
+
+                // Este try/catch debe ir justo debajo de las variables, aún dentro del 'Yes'
+                try
+                {
+                    _btnCancelTask.Visible = true;
+                    _btnCancelTask.Enabled = true;
+                    _btnCancelTask.Text = "🛑 Cancelar Batch";
+
+                    await BatchProcessor.ProcessFolderAsync(fbd.SelectedPath, sfd.SelectedPath, batchOpts, progress, token);
+
+                    MessageBox.Show("Batch completado con éxito.\nSe han generado subcarpetas con los formatos .mat, ENVI, .npy y el CSV de espectros.", "Finalizado", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                }
+                catch (OperationCanceledException)
+                {
+                    MessageBox.Show("Proceso cancelado por el usuario.", "Cancelado");
+                }
+                catch (Exception ex)
+                {
+                    MessageBox.Show("Error en el proceso batch:\n" + ex.Message, "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                }
+                finally
+                {
+                    _lblPipeline.Text = originalPipelineText;
+                    _pb.Visible = false;
+                    _btnCancelTask.Visible = false;
+                    _slbl.Text = "Listo.";
+                }
             }
         }
 
@@ -838,7 +921,16 @@ namespace SpecimenFX17.Imaging
             if (_stepMedian) steps.Add("Med");
             _lblPipeline.Text = "Pipeline: " + string.Join("→", steps);
         }
-
+        private void BtnAnalyzeFolder_Click(object? sender, EventArgs e)
+        {
+            using var fbd = new FolderBrowserDialog { Description = "Selecciona la carpeta con las imágenes autosegmentadas (.hdr/.bil)" };
+            if (fbd.ShowDialog() == DialogResult.OK)
+            {
+                // Abrimos la nueva ventana de Collage como una pestaña de SPECIMEN
+                var galleryForm = new BatchReviewForm(fbd.SelectedPath);
+                OpenChildForm(galleryForm);
+            }
+        }
         private static void UpdateToggleButton(Button btn, bool active, Color baseColor)
         {
             btn.BackColor = active ? Color.FromArgb(Math.Min(255, baseColor.R + 60), Math.Min(255, baseColor.G + 60), Math.Min(255, baseColor.B + 60)) : baseColor;

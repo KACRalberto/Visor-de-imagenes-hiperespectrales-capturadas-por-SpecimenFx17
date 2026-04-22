@@ -5,6 +5,8 @@ using System.Linq;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
+using MathNet.Numerics.Data.Matlab;
+using MathNet.Numerics.LinearAlgebra;
 
 namespace SpecimenFX17.Imaging
 {
@@ -23,7 +25,10 @@ namespace SpecimenFX17.Imaging
         // --- OPCIONES ULTRAVISOR ---
         public bool AutoSegment { get; set; } = true;
         public int SegmentationBand { get; set; } = 65;
-        public bool SaveNpyMasks { get; set; } = true; // Guarda las máscaras en formato .npy (NumPy)
+        public bool SaveNpyMasks { get; set; } = true;
+
+        // Parámetros personalizados que vienen de la ventana interactiva
+        public SegmentationParams? CustomParams { get; set; }
     }
 
     public static class BatchProcessor
@@ -47,33 +52,27 @@ namespace SpecimenFX17.Imaging
         }
 
         /// <summary>
-        /// Genera un archivo binario .npy (NumPy Array) compatible con Python, 
-        /// conteniendo la matriz booleana (True = Objeto, False = Fondo).
+        /// Genera un archivo binario .npy (NumPy Array) compatible con Python.
         /// </summary>
         private static void SaveAsNpy(string filePath, bool[,] mask, int lines, int samples)
         {
             using var fs = new FileStream(filePath, FileMode.Create, FileAccess.Write);
             using var bw = new BinaryWriter(fs);
 
-            // 1. Cabecera Mágica de NumPy
             bw.Write((byte)0x93);
             bw.Write("NUMPY".ToCharArray());
-            bw.Write((byte)0x01); // Version Major
-            bw.Write((byte)0x00); // Version Minor
+            bw.Write((byte)0x01);
+            bw.Write((byte)0x00);
 
-            // 2. Diccionario de metadatos del array
-            // '|b1' significa boolean (1 byte). lines = filas (Y), samples = columnas (X)
             string dict = $"{{'descr': '|b1', 'fortran_order': False, 'shape': ({lines}, {samples}), }}";
 
-            // 3. Relleno (padding) para que la cabecera total sea múltiplo de 64 bytes
-            int unpaddedLength = 6 + 2 + 2 + dict.Length + 1; // Magic + Version + HeaderLen + Dict + '\n'
+            int unpaddedLength = 6 + 2 + 2 + dict.Length + 1;
             int padding = 64 - (unpaddedLength % 64);
             dict = dict.PadRight(dict.Length + padding, ' ') + "\n";
 
             bw.Write((ushort)dict.Length);
             bw.Write(Encoding.ASCII.GetBytes(dict));
 
-            // 4. Volcado de datos binarios (1 byte por píxel: 0 o 1)
             for (int y = 0; y < lines; y++)
             {
                 for (int x = 0; x < samples; x++)
@@ -83,7 +82,91 @@ namespace SpecimenFX17.Imaging
             }
         }
 
-        public static async Task ProcessFolderAsync(string inputFolder, string outputCsvPath, BatchOptions options, IProgress<int>? progress, CancellationToken ct = default)
+        /// <summary>
+        /// Guarda un cubo 3D filtrado como un archivo ENVI estándar (.hdr + .bil)
+        /// </summary>
+        private static void SaveAsEnvi(string filePath, float[,,] data, List<double> wavelengths)
+        {
+            int lines = data.GetLength(0);
+            int bands = data.GetLength(1);
+            int samples = data.GetLength(2);
+
+            string hdrPath = Path.ChangeExtension(filePath, ".hdr");
+            string bilPath = Path.ChangeExtension(filePath, ".bil");
+
+            // 1. Escribir Cabecera ENVI
+            using (StreamWriter sw = new StreamWriter(hdrPath))
+            {
+                sw.WriteLine("ENVI");
+                sw.WriteLine("description = { Cubo segmentado automaticamente por SPECIMEN/UltraVisor }");
+                sw.WriteLine($"samples = {samples}");
+                sw.WriteLine($"lines = {lines}");
+                sw.WriteLine($"bands = {bands}");
+                sw.WriteLine("header offset = 0");
+                sw.WriteLine("file type = ENVI Standard");
+                sw.WriteLine("data type = 4"); // 4 = Float32
+                sw.WriteLine("interleave = bil");
+                sw.WriteLine("sensor type = Unknown");
+                sw.WriteLine("byte order = 0");
+                sw.WriteLine("wavelength = {");
+                sw.WriteLine(string.Join(", ", wavelengths.Select(w => w.ToString("F2", System.Globalization.CultureInfo.InvariantCulture))));
+                sw.WriteLine("}");
+            }
+
+            // 2. Escribir Datos Binarios (Orden BIL)
+            using (FileStream fs = new FileStream(bilPath, FileMode.Create))
+            using (BinaryWriter bw = new BinaryWriter(fs))
+            {
+                for (int l = 0; l < lines; l++)
+                {
+                    for (int b = 0; b < bands; b++)
+                    {
+                        for (int s = 0; s < samples; s++)
+                        {
+                            bw.Write(data[l, b, s]);
+                        }
+                    }
+                }
+            }
+        }
+
+        /// <summary>
+        /// Crea una matriz 3D donde los píxeles fuera de las ROIs se ponen a 0 (fondo negro).
+        /// </summary>
+        private static float[,,] ApplyMaskToCube(HyperspectralCube cube, List<SelectionShape> rois)
+        {
+            int lines = cube.Lines;
+            int samples = cube.Samples;
+            int bands = cube.Bands;
+
+            float[,,] segmentedData = new float[lines, bands, samples];
+            bool[,] combinedMask = new bool[lines, samples];
+
+            foreach (var roi in rois)
+            {
+                var m = roi.GetMask(lines, samples);
+                for (int y = 0; y < lines; y++)
+                    for (int x = 0; x < samples; x++)
+                        if (m[y, x]) combinedMask[y, x] = true;
+            }
+
+            for (int y = 0; y < lines; y++)
+            {
+                for (int b = 0; b < bands; b++)
+                {
+                    for (int x = 0; x < samples; x++)
+                    {
+                        if (combinedMask[y, x])
+                            segmentedData[y, b, x] = cube[b, y, x];
+                        else
+                            segmentedData[y, b, x] = 0f;
+                    }
+                }
+            }
+            return segmentedData;
+        }
+
+        public static async Task ProcessFolderAsync(string inputFolder, string outputFolder, BatchOptions options, IProgress<int>? progress, CancellationToken ct = default)
         {
             await Task.Run(async () =>
             {
@@ -93,7 +176,7 @@ namespace SpecimenFX17.Imaging
                     .ToList();
 
                 if (allFiles.Count == 0)
-                    throw new Exception("No se encontraron archivos .hdr, .raw o .bil en la carpeta.");
+                    throw new Exception("No se encontraron archivos procesables en la carpeta.");
 
                 var uniqueHdrFiles = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
                 foreach (var file in allFiles)
@@ -104,22 +187,26 @@ namespace SpecimenFX17.Imaging
                     if (File.Exists(hdrPath)) uniqueHdrFiles.Add(hdrPath);
                 }
 
-                var allHdrFilesArray = uniqueHdrFiles.ToArray();
-                if (allHdrFilesArray.Length == 0)
-                    throw new Exception("No se encontraron cabeceras (.hdr).");
-
-                var skippedRef = allHdrFilesArray.Where(IsReferenceFile).ToList();
-                var skippedNoBin = allHdrFilesArray.Where(f => !IsReferenceFile(f) && !HasBinaryData(f)).ToList();
-                var hdrFiles = allHdrFilesArray.Where(f => !IsReferenceFile(f) && HasBinaryData(f)).ToArray();
+                var hdrFiles = uniqueHdrFiles.Where(f => !IsReferenceFile(f) && HasBinaryData(f)).ToArray();
 
                 if (hdrFiles.Length == 0)
-                    throw new Exception($"No hay muestras procesables. Omitidos ref: {skippedRef.Count}, Sin binario: {skippedNoBin.Count}");
+                    throw new Exception("No hay muestras procesables válidas.");
+
+                // Configuración de Subcarpetas de Salida
+                string csvPath = Path.Combine(outputFolder, "Resultados_Espectros.csv");
+                string maskDir = Path.Combine(outputFolder, "Segmented_Masks_NPY");
+                string matDir = Path.Combine(outputFolder, "Matlab_Export");
+                string enviDir = Path.Combine(outputFolder, "ENVI_Segmented");
+
+                if (options.AutoSegment)
+                {
+                    if (options.SaveNpyMasks) Directory.CreateDirectory(maskDir);
+                    Directory.CreateDirectory(matDir);
+                    Directory.CreateDirectory(enviDir);
+                }
 
                 var csvBuilder = new StringBuilder();
                 bool headerWritten = false;
-
-                string? outputDir = Path.GetDirectoryName(outputCsvPath);
-                string maskDir = Path.Combine(outputDir ?? inputFolder, "Segmented_Masks_NPY");
 
                 for (int i = 0; i < hdrFiles.Length; i++)
                 {
@@ -131,6 +218,7 @@ namespace SpecimenFX17.Imaging
                     {
                         using var cube = HyperspectralCube.Load(hdrPath);
 
+                        // Aplicamos el Pipeline Quimiométrico configurado
                         if (options.ConvertToAbsorbance && cube.IsCalibrated) cube.ConvertToAbsorbance(ct);
                         if (options.ApplySNV) cube.ApplySNV(ct);
                         else if (options.ApplyMSC) cube.ApplyMSC(ct);
@@ -148,7 +236,8 @@ namespace SpecimenFX17.Imaging
 
                         if (options.AutoSegment)
                         {
-                            var rois = await AutoSegmenter.SegmentCubeAsync(cube, options.SegmentationBand, null, ct);
+                            // Llamada al segmentador interactivo (pasando ct al final)
+                            var rois = await AutoSegmenter.SegmentCubeAsync(cube, options.SegmentationBand, options.CustomParams, null, ct);
 
                             if (rois.Count == 0)
                             {
@@ -156,30 +245,42 @@ namespace SpecimenFX17.Imaging
                             }
                             else
                             {
-                                // --- GUARDADO EXACTO AL SCRIPT DE PYTHON (MÁSCARA LÓGICA EN .NPY) ---
+                                // 1. MÁSCARA LÓGICA NPY (Python)
                                 if (options.SaveNpyMasks)
                                 {
-                                    if (!Directory.Exists(maskDir)) Directory.CreateDirectory(maskDir);
-
-                                    // Combinamos todas las instancias en una sola máscara lógica general (> 0)
                                     bool[,] combinedMask = new bool[cube.Lines, cube.Samples];
                                     foreach (var roi in rois)
                                     {
                                         var m = roi.GetMask(cube.Lines, cube.Samples);
                                         for (int y = 0; y < cube.Lines; y++)
-                                        {
                                             for (int x = 0; x < cube.Samples; x++)
-                                            {
                                                 if (m[y, x]) combinedMask[y, x] = true;
-                                            }
-                                        }
                                     }
-
                                     string npyPath = Path.Combine(maskDir, $"{baseName}_mask.npy");
                                     SaveAsNpy(npyPath, combinedMask, cube.Lines, cube.Samples);
                                 }
 
-                                // --- EXTRACCIÓN DE ESPECTROS AL CSV ---
+                                // 2. EXPORTACIÓN A MATLAB (.mat)
+                                string matFilePath = Path.Combine(matDir, $"{baseName}.mat");
+                                var wvMatrix = Matrix<double>.Build.DenseOfRowArrays(cube.Header.Wavelengths.ToArray());
+                                var matlabDict = new List<MatlabMatrix> { MatlabWriter.Pack(wvMatrix, "wvgood") };
+
+                                int roiIdx = 1;
+                                foreach (var roi in rois)
+                                {
+                                    float[] spec = roi.GetSpectrum(cube);
+                                    var specMat = Matrix<double>.Build.DenseOfRowArrays(spec.Select(f => (double)f).ToArray());
+                                    matlabDict.Add(MatlabWriter.Pack(specMat, $"ROI_{roiIdx}_Spec"));
+                                    roiIdx++;
+                                }
+                                MatlabWriter.Store(matFilePath, matlabDict);
+
+                                // 3. EXPORTACIÓN A ENVI (.hdr / .bil)
+                                float[,,] segmentedCube = ApplyMaskToCube(cube, rois);
+                                string enviFilePath = Path.Combine(enviDir, $"{baseName}_segmented");
+                                SaveAsEnvi(enviFilePath, segmentedCube, cube.Header.Wavelengths);
+
+                                // 4. EXTRACCIÓN DE ESPECTROS AL CSV
                                 foreach (var roi in rois)
                                 {
                                     float[] objectSpectrum = roi.GetSpectrum(cube);
@@ -200,10 +301,11 @@ namespace SpecimenFX17.Imaging
                         csvBuilder.AppendLine($"{baseName},ERROR: {ex.Message}");
                     }
 
+                    // Reportamos el porcentaje de avance
                     progress?.Report((int)(((float)(i + 1) / hdrFiles.Length) * 100));
                 }
 
-                File.WriteAllText(outputCsvPath, csvBuilder.ToString(), Encoding.UTF8);
+                File.WriteAllText(csvPath, csvBuilder.ToString(), Encoding.UTF8);
 
             }, ct);
         }
