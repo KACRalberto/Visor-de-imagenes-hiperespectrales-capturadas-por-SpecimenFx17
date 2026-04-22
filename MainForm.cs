@@ -381,6 +381,12 @@ namespace SpecimenFX17.Imaging
             _btnSg.Click += async (s, e) => { if (_originalCube == null) return; _stepSG = !_stepSG; if (_stepSG) { _sgWindow = (int)nudSgWin.Value; _sgPoly = (int)nudSgPol.Value; _sgDeriv = (int)nudSgDer.Value; } UpdateToggleButton(_btnSg, _stepSG, Color.FromArgb(90, 70, 50)); _btnSg.Text = $"〰️  Savitzky-Golay (activo: {(_stepSG ? "SÍ" : "NO")})"; await RebuildWorkingCube(); };
             nudSgWin.ValueChanged += async (_, _) => { if (_stepSG) { _sgWindow = (int)nudSgWin.Value; await RebuildWorkingCube(); } }; nudSgPol.ValueChanged += async (_, _) => { if (_stepSG) { _sgPoly = (int)nudSgPol.Value; await RebuildWorkingCube(); } }; nudSgDer.ValueChanged += async (_, _) => { if (_stepSG) { _sgDeriv = (int)nudSgDer.Value; await RebuildWorkingCube(); } };
 
+            // --- INTEGRACIÓN ULTRAVISOR ---
+            Sep(p); Sec(p, "ULTRAVISOR — AUTOMATIZACIÓN");
+            var btnAutoSegment = Btn(p, "🪄 Segmentación Automática", Color.FromArgb(0, 80, 80));
+            btnAutoSegment.Click += BtnAutoSegment_Click;
+            // ------------------------------
+
             Sep(p); Sec(p, "HERRAMIENTA DE SELECCIÓN");
             _lblTip = new Label { AutoSize = true, ForeColor = Color.FromArgb(120, 200, 120), Font = new Font("Segoe UI", 8f, FontStyle.Italic), Text = "Arrastra para seleccionar un rectángulo", Margin = new Padding(8, 0, 8, 8) };
             p.Controls.Add(_lblTip);
@@ -622,11 +628,36 @@ namespace SpecimenFX17.Imaging
             else _undoStack.Pop(); // Cancelamos el deshacer si no había máscaras que modificar
         }
 
+        // --- BOTÓN BATCH MODIFICADO PARA INCLUIR AUTO-SEGMENTACIÓN ULTRAVISOR ---
         private async void BtnBatch_Click(object? s, EventArgs e)
         {
             using var dlgFolder = new FolderBrowserDialog { Description = "Selecciona la carpeta con archivos .hdr" }; if (dlgFolder.ShowDialog() != DialogResult.OK) return;
             using var dlgSave = new SaveFileDialog { Filter = "Archivo CSV (*.csv)|*.csv", FileName = "Resultados_Lote.csv", Title = "Guardar Excel de resultados" }; if (dlgSave.ShowDialog() != DialogResult.OK) return;
-            var options = new BatchOptions { ApplySNV = true, ApplyMSC = false, ConvertToAbsorbance = true };
+
+            var result = MessageBox.Show(
+                "¿Deseas activar la AUTO-SEGMENTACIÓN ULTRAVISOR?\n\n" +
+                "SÍ: Extraerá cada objeto por separado y guardará sus máscaras lógicas en una subcarpeta (estilo Segmentator).\n" +
+                "NO: Extraerá solo el espectro global de cada imagen.",
+                "Modo de Procesamiento Masivo",
+                MessageBoxButtons.YesNoCancel, MessageBoxIcon.Question);
+
+            if (result == DialogResult.Cancel) return;
+
+            var options = new BatchOptions
+            {
+                ApplyNormalize = _stepNormalize,
+                ConvertToAbsorbance = _stepAbsorbance,
+                ApplySNV = _stepScatter == ScatterCorrection.SNV,
+                ApplyMSC = _stepScatter == ScatterCorrection.MSC,
+                ApplySavitzkyGolay = _stepSG,
+                SgWindow = _sgWindow,
+                SgPoly = _sgPoly,
+                SgDeriv = _sgDeriv,
+                ApplyMedianFilter = _stepMedian,
+                AutoSegment = (result == DialogResult.Yes),
+                SegmentationBand = _currentBand,
+                SaveNpyMasks = (result == DialogResult.Yes) // <-- CORRECCIÓN APLICADA AQUÍ
+            };
 
             _cts?.Cancel(); _cts = new CancellationTokenSource(); var token = _cts.Token;
 
@@ -637,12 +668,62 @@ namespace SpecimenFX17.Imaging
             var progress = new Progress<int>(v => { _pb.Value = v; _slbl.Text = $"Procesando lote... {v}% completado"; });
             try
             {
-                await BatchProcessor.ProcessFolderAsync(dlgFolder.SelectedPath, dlgSave.FileName, options, progress);
-                MessageBox.Show("Procesamiento completado.", "Éxito", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                await BatchProcessor.ProcessFolderAsync(dlgFolder.SelectedPath, dlgSave.FileName, options, progress, token);
+                MessageBox.Show("Procesamiento completado.\nSi elegiste segmentar, las máscaras .npy se han guardado en la carpeta 'Segmented_Masks_NPY'.", "Éxito", MessageBoxButtons.OK, MessageBoxIcon.Information);
             }
             catch (OperationCanceledException) { MessageBox.Show("Cancelado por el usuario.", "Cancelado"); }
             catch (Exception ex) { MessageBox.Show($"Error:\n{ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error); }
             finally { _pb.Visible = false; _btnCancelTask.Visible = false; _slbl.Text = "Procesamiento finalizado."; }
+        }
+
+        // --- MÉTODO DEL BOTÓN INDIVIDUAL DE ULTRAVISOR ---
+        private async void BtnAutoSegment_Click(object? sender, EventArgs e)
+        {
+            if (_cube == null)
+            {
+                MessageBox.Show("Carga un cubo hiperespectral antes de iniciar la segmentación.", "Atención", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+
+            _slbl.Text = "🪄 Iniciando segmentación automática ULTRAVISOR...";
+            _pb.Visible = true; _pb.Style = ProgressBarStyle.Marquee;
+            _btnCancelTask.Visible = true; _btnCancelTask.Enabled = true;
+
+            _cts?.Cancel();
+            _cts = new CancellationTokenSource();
+            var progress = new Progress<int>(v => { _pb.Value = v; });
+
+            try
+            {
+                var newRois = await AutoSegmenter.SegmentCubeAsync(_cube, _currentBand, progress, _cts.Token);
+
+                if (newRois.Count > 0)
+                {
+                    SaveStateForUndo();
+                    _selections.AddRange(newRois);
+                    _btnClear.Enabled = true;
+                    RefreshDisplay();
+                    _slbl.Text = $"✔ ULTRAVISOR: Detectados {newRois.Count} objetos automáticamente.";
+                }
+                else
+                {
+                    _slbl.Text = "⚠ No se detectaron objetos con los parámetros actuales.";
+                }
+            }
+            catch (OperationCanceledException)
+            {
+                _slbl.Text = "Segmentación cancelada.";
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Error en segmentación: {ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                _slbl.Text = "Error en segmentación.";
+            }
+            finally
+            {
+                _pb.Visible = false; _pb.Style = ProgressBarStyle.Continuous;
+                _btnCancelTask.Visible = false;
+            }
         }
 
         private void PopulateBandsCombo()

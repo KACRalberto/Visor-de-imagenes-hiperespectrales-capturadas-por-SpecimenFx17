@@ -31,6 +31,7 @@
 	<ItemGroup>
 	  <PackageReference Include="DockPanelSuite" Version="3.1.1" />
 	  <PackageReference Include="DockPanelSuite.ThemeVS2015" Version="3.1.1" />
+	  <PackageReference Include="OpenCvSharp4.Windows" Version="4.13.0.20260302" />
 	  <PackageReference Include="SharpGLTF.Core" Version="1.0.6" />
 	  <PackageReference Include="SharpGLTF.Toolkit" Version="1.0.6" />
 	</ItemGroup>
