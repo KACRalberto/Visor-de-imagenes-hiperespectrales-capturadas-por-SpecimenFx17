@@ -31,6 +31,11 @@ namespace SpecimenFX17.Imaging
         private Bitmap? _currentBitmap;
         private GraphicalInfoForm? _graphicalInfoForm;
 
+        private float _zoomFactor = 1.0f;
+        private PointF _panOffset = new PointF(0, 0);
+        private bool _isPanning = false;
+        private Point _lastMousePos;
+
         private readonly List<SelectionShape> _selections = new();
         private Point? _hoverImgPt = null;
 
@@ -267,6 +272,34 @@ namespace SpecimenFX17.Imaging
             _imageDocument.Show(_dockPanel, DockState.Document);
 
             _dockPanel.DockRightPortion = 360d / this.Width;
+            _pictureBox.MouseWheel += (s, e) => {
+                float oldZoom = _zoomFactor;
+                if (e.Delta > 0) _zoomFactor *= 1.1f;
+                else _zoomFactor /= 1.1f;
+
+                _zoomFactor = Math.Clamp(_zoomFactor, 1.0f, 10.0f);
+                _pictureBox.Invalidate();
+            };
+
+            _pictureBox.MouseDown += (s, e) => {
+                if (e.Button == MouseButtons.Middle)
+                {
+                    _isPanning = true;
+                    _lastMousePos = e.Location;
+                }
+            };
+
+            _pictureBox.MouseMove += (s, e) => {
+                if (_isPanning)
+                {
+                    _panOffset.X += (e.X - _lastMousePos.X);
+                    _panOffset.Y += (e.Y - _lastMousePos.Y);
+                    _lastMousePos = e.Location;
+                    _pictureBox.Invalidate();
+                }
+            };
+
+            _pictureBox.MouseUp += (s, e) => { if (e.Button == MouseButtons.Middle) _isPanning = false; };
         }
 
         private void HandleDragEnter(object? sender, DragEventArgs e)
@@ -321,6 +354,14 @@ namespace SpecimenFX17.Imaging
             _btnClose = Btn(p, "❌  Cerrar Imagen", Color.FromArgb(140, 50, 50));
             _btnClose.Click += BtnClose_Click;
             _btnClose.Enabled = false;
+
+            var btnResetView = Btn(p, "🏠 Vista Original", Color.FromArgb(60, 60, 60));
+            btnResetView.Click += (s, e) => {
+                _zoomFactor = 1.0f;
+                _panOffset = new PointF(0, 0);
+                _pictureBox.Invalidate();
+                _slbl.Text = "Vista reseteada.";
+            };
 
             var btnReset = Btn(p, "🔄  Restaurar Original", Color.FromArgb(120, 50, 50));
             btnReset.Click += (s, e) => {
@@ -926,8 +967,37 @@ namespace SpecimenFX17.Imaging
             using var fbd = new FolderBrowserDialog { Description = "Selecciona la carpeta con las imágenes autosegmentadas (.hdr/.bil)" };
             if (fbd.ShowDialog() == DialogResult.OK)
             {
-                // Abrimos la nueva ventana de Collage como una pestaña de SPECIMEN
                 var galleryForm = new BatchReviewForm(fbd.SelectedPath);
+
+                // Nos suscribimos al evento del Collage
+                galleryForm.OnCollageCreated += (s, collageCube) =>
+                {
+                    // Cerramos la imagen anterior si la hubiera
+                    _originalCube = null; _baseCube = null; _cube = null;
+                    _selections.Clear();
+                    _undoStack.Clear(); _redoStack.Clear(); UpdateUndoRedoUI();
+
+                    // Asignamos el nuevo cubo gigante a la vista principal
+                    _baseCube = collageCube;
+                    _originalCube = _baseCube.Clone();
+                    _cube = _baseCube;
+
+                    _loadedFileName = "Collage_Multimuestra";
+                    string currentCam = _cmbCamera.SelectedItem.ToString();
+                    this.Text = $"Specimen — Workspace [{_loadedFileName}] ({currentCam})";
+
+                    _currentBand = 0;
+                    PopulateBandsCombo();
+                    _slider.Minimum = 0; _slider.Maximum = Math.Max(0, _cube.Bands - 1); _slider.Value = 0;
+
+                    CheckCalibrationReady();
+                    _btnExport.Enabled = _btnExpAll.Enabled = _btnExpMeanSpec.Enabled = _btnExpGraph.Enabled = _btnReport.Enabled = _btnClose.Enabled = true;
+
+                    RefreshDisplay();
+                    ClearSpectrumPlot();
+                    _slbl.Text = $"✔ Collage Cargado: {_cube.Samples}px de ancho x {_cube.Lines}px de alto.";
+                };
+
                 OpenChildForm(galleryForm);
             }
         }
@@ -952,29 +1022,20 @@ namespace SpecimenFX17.Imaging
 
         private void Pic_Move(object? s, MouseEventArgs e)
         {
-            var currentCube = _cube;
-            if (currentCube == null) return;
-            var pt = MapToImage(e.Location); _hoverImgPt = pt;
-
-            if (pt != null)
+            if (_isPanning)
             {
-                int x = pt.Value.X, y = pt.Value.Y;
-                if (x >= 0 && x < currentCube.Samples && y >= 0 && y < currentCube.Lines)
-                {
-                    float v = currentCube[_currentBand, y, x]; string bandStr = _cmbBands.Items.Count > _currentBand ? _cmbBands.Items[_currentBand].ToString()! : "N/A";
-                    _lblCoords.Text = $"  X:{x}  Y:{y}  │  {bandStr}  │  val={v:G5}";
-                    if (_graphicalInfoForm != null && !_graphicalInfoForm.IsDisposed) _graphicalInfoForm.UpdateData(_currentBand, new Point(x, y));
-                }
-                else _lblCoords.Text = "";
+                _panOffset.X += (e.X - _lastMousePos.X);
+                _panOffset.Y += (e.Y - _lastMousePos.Y);
+                _lastMousePos = e.Location;
+                _pictureBox.Invalidate(); // CRÍTICO: Forzar redibujado
+                return;
             }
 
-            switch (_tool)
-            {
-                case SelectionTool.Rectangle: case SelectionTool.Circle: if (_isDragging) { _dragCurScr = e.Location; _pictureBox.Invalidate(); } break;
-                case SelectionTool.Polygon: _polyMouse = e.Location; if (_polyActive) _pictureBox.Invalidate(); break;
-                case SelectionTool.Freehand: if (_isDragging && pt != null) { var last = _freeScr.Count > 0 ? _freeScr[^1] : e.Location; if (Math.Abs(e.X - last.X) + Math.Abs(e.Y - last.Y) > 2) { _freeImg.Add(pt.Value); _freeScr.Add(e.Location); _pictureBox.Invalidate(); } } break;
-            }
-            RedrawSpectrumPlot();
+            var pt = MapToImage(e.Location);
+            _hoverImgPt = pt;
+
+            // Actualizar etiquetas de coordenadas...
+            if (pt.HasValue) _pictureBox.Invalidate();
         }
 
         private void Pic_Up(object? s, MouseEventArgs e)
@@ -1014,7 +1075,37 @@ namespace SpecimenFX17.Imaging
 
         private void Pic_Paint(object? s, PaintEventArgs e)
         {
-            var g = e.Graphics; g.SmoothingMode = SmoothingMode.AntiAlias; var col = SelColors[_selections.Count % SelColors.Length];
+            if (_currentBitmap == null) return;
+
+            var g = e.Graphics;
+
+            // 1. Borramos la imagen por defecto que intenta pintar Windows Forms
+            g.Clear(Color.Black);
+
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            g.InterpolationMode = InterpolationMode.NearestNeighbor; // Nitidez al hacer zoom
+
+            // 2. Calculamos los márgenes (bandas negras) igual que haría Windows
+            float ratioX = (float)_pictureBox.Width / _currentBitmap.Width;
+            float ratioY = (float)_pictureBox.Height / _currentBitmap.Height;
+            float baseScale = Math.Min(ratioX, ratioY);
+
+            float itemWidth = _currentBitmap.Width * baseScale;
+            float itemHeight = _currentBitmap.Height * baseScale;
+            float offsetX = (_pictureBox.Width - itemWidth) / 2f;
+            float offsetY = (_pictureBox.Height - itemHeight) / 2f;
+
+            // 3. Aplicamos el Pan y Zoom SOLO a la imagen
+            var state = g.Save(); // Guardamos el estado sin escalar
+            g.TranslateTransform(offsetX + _panOffset.X, offsetY + _panOffset.Y);
+            g.ScaleTransform(baseScale * _zoomFactor, baseScale * _zoomFactor);
+
+            // Dibujamos la imagen (que ya tiene los ROIs fijos dibujados desde RefreshDisplay)
+            g.DrawImage(_currentBitmap, 0, 0);
+            g.Restore(state); // Restauramos el lienzo a la normalidad
+
+            // 4. Dibujamos las herramientas en ESPACIO DE PANTALLA NORMAL (así no se rompen)
+            var col = SelColors[_selections.Count % SelColors.Length];
 
             switch (_tool)
             {
@@ -1632,10 +1723,27 @@ namespace SpecimenFX17.Imaging
 
         private Point? MapToImage(Point sc)
         {
-            if (_currentBitmap == null) return null;
-            float scale = Math.Max((float)_currentBitmap.Width / _pictureBox.Width, (float)_currentBitmap.Height / _pictureBox.Height);
-            float ox = (_pictureBox.Width - _currentBitmap.Width / scale) / 2f, oy = (_pictureBox.Height - _currentBitmap.Height / scale) / 2f;
-            return new Point((int)((sc.X - ox) * scale), (int)((sc.Y - oy) * scale));
+            if (_currentBitmap == null || _cube == null) return null;
+
+            // 1. Misma matemática de márgenes
+            float ratioX = (float)_pictureBox.Width / _currentBitmap.Width;
+            float ratioY = (float)_pictureBox.Height / _currentBitmap.Height;
+            float baseScale = Math.Min(ratioX, ratioY);
+
+            float itemWidth = _currentBitmap.Width * baseScale;
+            float itemHeight = _currentBitmap.Height * baseScale;
+            float offsetX = (_pictureBox.Width - itemWidth) / 2f;
+            float offsetY = (_pictureBox.Height - itemHeight) / 2f;
+
+            // 2. Inversión Matemática del Clic: (Pantalla - Márgenes - Desplazamiento) / (Escala * Zoom)
+            float imgX = (sc.X - offsetX - _panOffset.X) / (baseScale * _zoomFactor);
+            float imgY = (sc.Y - offsetY - _panOffset.Y) / (baseScale * _zoomFactor);
+
+            // 3. Control de límites
+            if (imgX < 0 || imgX >= _cube.Samples || imgY < 0 || imgY >= _cube.Lines)
+                return null;
+
+            return new Point((int)imgX, (int)imgY);
         }
     }
 }
