@@ -9,27 +9,51 @@ namespace SpecimenFX17.Imaging
 {
     public static class AutoSegmenter
     {
-        /// <summary>
-        /// FUNCIÓN COMPARTIDA: Genera la máscara binaria base.
-        /// Al usar esta función en la Interfaz y en el Batch, garantizamos que lo que ves es lo que se guarda.
-        /// </summary>
+        // Genera un color aleatorio con buena saturación/brillo
+        private static System.Drawing.Color GetRandomColor()
+        {
+            var rnd = new Random();
+            return System.Drawing.Color.FromArgb(rnd.Next(100, 256), rnd.Next(100, 256), rnd.Next(100, 256));
+        }
+
+        // FUNCIÓN CENTRAL COMPARTIDA ENTRE LA UI Y EL BATCH
         public static Mat GetRawMask(Mat gray8U, SegmentationParams p)
         {
             Mat binary = new Mat();
 
-            // Si el fondo es blanco y el objeto oscuro, necesitamos invertir el umbral
-            if (p.InvertThreshold)
-                Cv2.Threshold(gray8U, binary, p.Threshold, 255, ThresholdTypes.BinaryInv);
-            else
-                Cv2.Threshold(gray8U, binary, p.Threshold, 255, ThresholdTypes.Binary);
+            // Aseguramos que BlockSize sea siempre impar y mínimo 3
+            int blockSize = Math.Max(3, p.BlockSize | 1);
 
+            // UMBRAL ADAPTATIVO: Inmune a cambios de brillo global
+            Cv2.AdaptiveThreshold(
+                gray8U,
+                binary,
+                255,
+                AdaptiveThresholdTypes.GaussianC,
+                p.InvertThreshold ? ThresholdTypes.BinaryInv : ThresholdTypes.Binary,
+                blockSize,
+                p.ConstantC
+            );
+
+            // Morfología (Limpieza)
             Mat kernel = Cv2.GetStructuringElement(MorphShapes.Ellipse, new OpenCvSharp.Size(5, 5));
+            if (p.OpenIters > 0) Cv2.MorphologyEx(binary, binary, MorphTypes.Open, kernel, iterations: p.OpenIters);
+            if (p.CloseIters > 0) Cv2.MorphologyEx(binary, binary, MorphTypes.Close, kernel, iterations: p.CloseIters);
 
-            if (p.OpenIters > 0)
-                Cv2.MorphologyEx(binary, binary, MorphTypes.Open, kernel, iterations: p.OpenIters);
-
-            if (p.CloseIters > 0)
-                Cv2.MorphologyEx(binary, binary, MorphTypes.Close, kernel, iterations: p.CloseIters);
+            // BORRADO MANUAL (FloodFill)
+            if (p.PointsToRemove != null && p.PointsToRemove.Count > 0)
+            {
+                foreach (var pt in p.PointsToRemove)
+                {
+                    if (pt.X >= 0 && pt.X < binary.Cols && pt.Y >= 0 && pt.Y < binary.Rows)
+                    {
+                        if (binary.At<byte>(pt.Y, pt.X) > 0)
+                        {
+                            Cv2.FloodFill(binary, new OpenCvSharp.Point(pt.X, pt.Y), new Scalar(0));
+                        }
+                    }
+                }
+            }
 
             return binary;
         }
@@ -63,31 +87,27 @@ namespace SpecimenFX17.Imaging
                     }
                 }
 
-                float range = max - min;
-                if (range <= 0) range = 1f;
-
+                float range = max - min <= 0 ? 1f : max - min;
                 var indexer = gray8U.GetGenericIndexer<byte>();
+
                 for (int y = 0; y < h; y++)
                 {
                     for (int x = 0; x < w; x++)
                     {
                         float v = cube[targetBand, y, x];
-                        if (float.IsNaN(v) || float.IsInfinity(v))
-                            indexer[y, x] = 0;
-                        else
-                            indexer[y, x] = (byte)(Math.Clamp((v - min) / range, 0f, 1f) * 255);
+                        indexer[y, x] = float.IsNaN(v) || float.IsInfinity(v) ? (byte)0 : (byte)(Math.Clamp((v - min) / range, 0f, 1f) * 255);
                     }
                 }
 
                 progress?.Report(40);
                 ct.ThrowIfCancellationRequested();
 
-                // 2. OBTENER LA MÁSCARA EXACTA QUE VE EL USUARIO EN LA PREVIEW
+                // 2. Extraer la máscara limpia
                 using Mat binary = GetRawMask(gray8U, p);
 
                 progress?.Report(70);
 
-                // 3. Separar en objetos (Connected Components)
+                // 3. Etiquetado de Componentes Conectados (Detectar múltiples objetos)
                 using Mat labels = new Mat();
                 using Mat stats = new Mat();
                 using Mat centroids = new Mat();
@@ -95,12 +115,11 @@ namespace SpecimenFX17.Imaging
                 int numLabels = Cv2.ConnectedComponentsWithStats(binary, labels, stats, centroids);
 
                 List<SelectionShape> rois = new List<SelectionShape>();
-                Random rnd = new Random();
                 int objectCount = 1;
 
                 var labelIndexer = labels.GetGenericIndexer<int>();
 
-                // Iterar sobre los objetos encontrados (Empezamos en 1, el 0 es el fondo)
+                // Iterar sobre los objetos encontrados (Empezamos en 1 porque 0 es fondo)
                 for (int i = 1; i < numLabels; i++)
                 {
                     int area = stats.At<int>(i, (int)ConnectedComponentsTypes.Area);
@@ -118,8 +137,8 @@ namespace SpecimenFX17.Imaging
                             }
                         }
 
-                        System.Drawing.Color c = System.Drawing.Color.FromArgb(rnd.Next(50, 255), rnd.Next(50, 255), rnd.Next(50, 255));
-                        var shape = Activator.CreateInstance(Type.GetType("SpecimenFX17.Imaging.MaskShape")!, new object[] { objMask, c }) as SelectionShape;
+                        // Colores aleatorios para zonas ilimitadas
+                        var shape = Activator.CreateInstance(Type.GetType("SpecimenFX17.Imaging.MaskShape")!, new object[] { objMask, GetRandomColor() }) as SelectionShape;
 
                         if (shape != null)
                         {
