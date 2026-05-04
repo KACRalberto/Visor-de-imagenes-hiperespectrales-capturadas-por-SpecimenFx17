@@ -51,6 +51,9 @@ namespace SpecimenFX17.Imaging
         private float[,]? _resultData;
         private Bitmap? _resultBitmap;
 
+        // Añadido para mantener las estadísticas en memoria para el HUD
+        private ResultStats? _currentStats;
+
         private static readonly (string Name, string Formula)[] Presets =
         {
             ("NDVI",        "(B{800} - B{680}) / (B{800} + B{680})"),
@@ -82,18 +85,17 @@ namespace SpecimenFX17.Imaging
 
         private void BuildUI()
         {
-            // FIX 4K: FlowLayoutPanel dinámico en lugar de absolute X/Y
-            var leftPanel = new FlowLayoutPanel 
-            { 
-                Dock = DockStyle.Left, 
-                AutoSize = true, 
+            var leftPanel = new FlowLayoutPanel
+            {
+                Dock = DockStyle.Left,
+                AutoSize = true,
                 AutoSizeMode = AutoSizeMode.GrowAndShrink,
                 MinimumSize = new Size(280, 0),
-                FlowDirection = FlowDirection.TopDown, 
-                WrapContents = false, 
-                BackColor = Color.FromArgb(22, 22, 34), 
-                Padding = new Padding(10), 
-                AutoScroll = true 
+                FlowDirection = FlowDirection.TopDown,
+                WrapContents = false,
+                BackColor = Color.FromArgb(22, 22, 34),
+                Padding = new Padding(10),
+                AutoScroll = true
             };
             BuildLeftPanel(leftPanel);
 
@@ -108,7 +110,6 @@ namespace SpecimenFX17.Imaging
             };
 
             centerLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f));
-            // FIX 4K: Las filas cambian a AutoSize para adaptarse al contenido escalado
             centerLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
             centerLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
             centerLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
@@ -153,15 +154,15 @@ namespace SpecimenFX17.Imaging
             p.Controls.Add(_nudExclTo);
 
             var btnPnl = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.LeftToRight, Margin = new Padding(0) };
-            
+
             var btnAddExcl = new Button { Text = "+ Añadir", AutoSize = true, Padding = new Padding(15, 5, 15, 5), FlatStyle = FlatStyle.Flat, BackColor = Color.FromArgb(120, 60, 20), ForeColor = Color.FromArgb(255, 200, 150), Cursor = Cursors.Hand, Margin = new Padding(3, 0, 10, 0) };
             btnAddExcl.FlatAppearance.BorderColor = Color.FromArgb(180, 100, 40);
             btnAddExcl.Click += (_, _) => { double f = (double)_nudExclFrom.Value; double t = (double)_nudExclTo.Value; if (f > t) (f, t) = (t, f); _excludedRanges.Add((f, t)); _lstExcluded.Items.Add($"{f:F1} – {t:F1} nm"); RefreshBandList(); UpdateExclInfo(); UpdatePreview(); };
-            
+
             var btnDelExcl = new Button { Text = "✕ Eliminar", AutoSize = true, Padding = new Padding(15, 5, 15, 5), FlatStyle = FlatStyle.Flat, BackColor = Color.FromArgb(65, 30, 30), ForeColor = Color.FromArgb(255, 150, 150), Cursor = Cursors.Hand };
             btnDelExcl.FlatAppearance.BorderColor = Color.FromArgb(120, 50, 50);
             btnDelExcl.Click += (_, _) => { int idx = _lstExcluded.SelectedIndex; if (idx < 0) return; _excludedRanges.RemoveAt(idx); _lstExcluded.Items.RemoveAt(idx); RefreshBandList(); UpdateExclInfo(); UpdatePreview(); };
-            
+
             btnPnl.Controls.Add(btnAddExcl); btnPnl.Controls.Add(btnDelExcl);
             p.Controls.Add(btnPnl);
 
@@ -183,13 +184,13 @@ namespace SpecimenFX17.Imaging
 
         private Label CreateLbl(string text, bool bold = false, Color? color = null)
         {
-            return new Label 
-            { 
-                Text = text, 
-                AutoSize = true, 
-                Margin = new Padding(3, 10, 3, 0), 
-                ForeColor = color ?? Color.FromArgb(130, 130, 175), 
-                Font = new Font("Segoe UI", 8.5f, bold ? FontStyle.Bold : FontStyle.Regular) 
+            return new Label
+            {
+                Text = text,
+                AutoSize = true,
+                Margin = new Padding(3, 10, 3, 0),
+                ForeColor = color ?? Color.FromArgb(130, 130, 175),
+                Font = new Font("Segoe UI", 8.5f, bold ? FontStyle.Bold : FontStyle.Regular)
             };
         }
 
@@ -243,7 +244,6 @@ namespace SpecimenFX17.Imaging
 
         private TableLayoutPanel BuildFormulaPanel()
         {
-            // FIX 4K: Usamos un TableLayoutPanel para alinear la barra de texto y los botones a la derecha
             var fp = new TableLayoutPanel
             {
                 Dock = DockStyle.Fill,
@@ -315,6 +315,18 @@ namespace SpecimenFX17.Imaging
             _cmbColormap = new ComboBox { AutoSize = true, MinimumSize = new Size(160, 0), DropDownStyle = ComboBoxStyle.DropDownList, BackColor = Color.FromArgb(36, 36, 55), ForeColor = Color.White, FlatStyle = FlatStyle.Flat, Margin = new Padding(10, 8, 10, 8) };
             _cmbColormap.Items.AddRange(Enum.GetNames(typeof(BliColormap))); _cmbColormap.SelectedIndex = 0;
 
+            // Actualización instantánea del HUD y la imagen al cambiar la paleta
+            _cmbColormap.SelectedIndexChanged += (_, _) => {
+                if (_resultData != null && _currentStats != null)
+                {
+                    _resultBitmap?.Dispose();
+                    _resultBitmap = RenderFloatArray(_resultData, (BliColormap)_cmbColormap.SelectedIndex, _txtFormula.Text, _currentStats);
+                    _tabImage.Image = _resultBitmap;
+                    _tabImage.Invalidate();
+                    DrawHistogram();
+                }
+            };
+
             _progress = new ProgressBar { AutoSize = true, MinimumSize = new Size(150, 20), Style = ProgressBarStyle.Continuous, Visible = false, Margin = new Padding(10, 10, 10, 10) };
             _lblStatus = new Label { Dock = DockStyle.Fill, AutoSize = true, ForeColor = Color.FromArgb(140, 150, 190), Font = new Font("Consolas", 8f), TextAlign = ContentAlignment.MiddleLeft, Margin = new Padding(5, 10, 5, 5) };
 
@@ -332,6 +344,7 @@ namespace SpecimenFX17.Imaging
 
             var pgImg = new TabPage("🖼  Imagen") { BackColor = Color.FromArgb(10, 10, 18) };
             _tabImage = new PictureBox { Dock = DockStyle.Fill, SizeMode = PictureBoxSizeMode.Zoom, BackColor = Color.FromArgb(10, 10, 18) };
+            _tabImage.Paint += TabImage_Paint; // Conecta el evento Paint para dibujar el HUD
             pgImg.Controls.Add(_tabImage); tc.TabPages.Add(pgImg);
 
             var pgHisto = new TabPage("📊  Histograma") { BackColor = Color.FromArgb(10, 10, 18) };
@@ -441,12 +454,17 @@ namespace SpecimenFX17.Imaging
             if (error != null) { _lblError.Text = $"  ⚠  Error: {error}"; return; }
             _resultData = result!;
             var stats = CalcStats(_resultData);
+            _currentStats = stats; // Guardamos para el HUD
+
             int exclBands = Enumerable.Range(0, _cube.Bands).Count(IsBandExcluded);
             string exclInfo = exclBands > 0 ? $"  │  {exclBands} bandas excluidas" : "";
             string selInfo = hasSelection ? $"  │  Selección: {stats.ValidCount:N0} px" : $"  │  Imagen completa";
             _lblStatus.Text = $"Listo  │  Mín: {stats.Min:G5}  Máx: {stats.Max:G5}  Media: {stats.Mean:G5}  σ: {stats.Std:G4}{selInfo}{exclInfo}";
 
-            _resultBitmap?.Dispose(); _resultBitmap = RenderFloatArray(_resultData, (BliColormap)_cmbColormap.SelectedIndex, formula, stats); _tabImage.Image = _resultBitmap;
+            _resultBitmap?.Dispose(); _resultBitmap = RenderFloatArray(_resultData, (BliColormap)_cmbColormap.SelectedIndex, formula, stats);
+            _tabImage.Image = _resultBitmap;
+            _tabImage.Invalidate(); // Fuerza a pintar el HUD
+
             DrawHistogram();
             _trkRow.Value = Math.Clamp(_cube.Lines / 2, _trkRow.Minimum, _trkRow.Maximum); _trkCol.Value = Math.Clamp(_cube.Samples / 2, _trkCol.Minimum, _trkCol.Maximum);
             _lblRow.Text = $"y = {_trkRow.Value}"; _lblCol.Text = $"x = {_trkCol.Value}";
@@ -454,7 +472,16 @@ namespace SpecimenFX17.Imaging
             FillStats(stats, formula, hasSelection, exclBands); _btnSave.Enabled = true;
         }
 
-        private void BtnSave_Click(object? s, EventArgs e) { if (_resultBitmap == null) return; using var dlg = new SaveFileDialog { Filter = "PNG (*.png)|*.png|TIFF (*.tif)|*.tif", FileName = "resultado_espectral" }; if (dlg.ShowDialog() == DialogResult.OK) { var fmt = dlg.FileName.EndsWith(".tif", StringComparison.OrdinalIgnoreCase) ? ImageFormat.Tiff : ImageFormat.Png; _resultBitmap.Save(dlg.FileName, fmt); } }
+        private void BtnSave_Click(object? s, EventArgs e)
+        {
+            if (_resultBitmap == null) return;
+            using var dlg = new SaveFileDialog { Filter = "PNG (*.png)|*.png|TIFF (*.tif)|*.tif", FileName = "resultado_espectral" };
+            if (dlg.ShowDialog() == DialogResult.OK)
+            {
+                var fmt = dlg.FileName.EndsWith(".tif", StringComparison.OrdinalIgnoreCase) ? ImageFormat.Tiff : ImageFormat.Png;
+                _resultBitmap.Save(dlg.FileName, fmt);
+            }
+        }
 
         private void DrawHistogram()
         {
@@ -546,10 +573,13 @@ namespace SpecimenFX17.Imaging
             var bmp = new Bitmap(samples, lines, PixelFormat.Format24bppRgb); var bData = bmp.LockBits(new Rectangle(0, 0, samples, lines), ImageLockMode.WriteOnly, PixelFormat.Format24bppRgb); int stride = bData.Stride; var pixels = new byte[stride * lines];
             for (int l = 0; l < lines; l++) { int row = l * stride; for (int c2 = 0; c2 < samples; c2++) { float v = data[l, c2], t = float.IsNaN(v) || float.IsInfinity(v) ? 0f : Math.Clamp((v - lo) / range, 0f, 1f); var (r2, g2, b2) = GetColor(t, colormap); int o = row + c2 * 3; pixels[o] = b2; pixels[o + 1] = g2; pixels[o + 2] = r2; } }
             System.Runtime.InteropServices.Marshal.Copy(pixels, 0, bData.Scan0, pixels.Length); bmp.UnlockBits(bData);
-            using var gfx = Graphics.FromImage(bmp); gfx.SmoothingMode = SmoothingMode.AntiAlias; int barH = Math.Min(120, lines - 30), barW = 14, bx = samples - barW - 8, by = 15;
-            for (int i = 0; i < barH; i++) { float t = 1f - (float)i / barH; var (r2, gc2, b2) = GetColor(t, colormap); using var pen = new Pen(Color.FromArgb(r2, gc2, b2)); gfx.DrawLine(pen, bx, by + i, bx + barW, by + i); }
-            using var brd = new Pen(Color.White, 1f); using var sf2 = new Font("Arial", 7f); using var wb = new SolidBrush(Color.White); gfx.DrawRectangle(brd, bx, by, barW, barH); gfx.DrawString(hi.ToString("G4"), sf2, wb, bx - 2, by - 1); gfx.DrawString(lo.ToString("G4"), sf2, wb, bx - 2, by + barH + 1);
+
+            using var gfx = Graphics.FromImage(bmp); gfx.SmoothingMode = SmoothingMode.AntiAlias;
+
+            // Dibuja el texto de la fórmula abajo a la izquierda
+            using var wb = new SolidBrush(Color.White);
             string lbl = formula.Length > 60 ? formula[..57] + "…" : formula; using var ff = new Font("Consolas", 8f, FontStyle.Bold); using var fg = new SolidBrush(Color.FromArgb(160, 0, 0, 0)); var fsz = gfx.MeasureString(lbl, ff); gfx.FillRectangle(fg, 5, lines - fsz.Height - 5, fsz.Width + 4, fsz.Height + 2); gfx.DrawString(lbl, ff, wb, 7, lines - fsz.Height - 4);
+
             return bmp;
         }
 
@@ -595,6 +625,50 @@ namespace SpecimenFX17.Imaging
             pb.MouseMove += (s, e) => { if (!dragging) return; dragCur = e.Location; pb.Invalidate(); };
             pb.MouseUp += (s, e) => { if (!dragging || e.Button != MouseButtons.Left) return; dragging = false; pb.Invalidate(); int dx = Math.Abs(e.X - dragStart.X); int dy = Math.Abs(e.Y - dragStart.Y); if (dx < 6 && dy < 6) return; int plotLeft = padL, plotRight = pb.Width - padR, plotTop = padT, plotBottom = pb.Height - padB, plotW = plotRight - plotLeft, plotH = plotBottom - plotTop; if (plotW < 1 || plotH < 1) return; float nx0 = Math.Clamp((float)(Math.Min(dragStart.X, e.X) - plotLeft) / plotW, 0f, 1f), nx1 = Math.Clamp((float)(Math.Max(dragStart.X, e.X) - plotLeft) / plotW, 0f, 1f), ny1 = Math.Clamp(1f - (float)(Math.Min(dragStart.Y, e.Y) - plotTop) / plotH, 0f, 1f), ny0 = Math.Clamp(1f - (float)(Math.Max(dragStart.Y, e.Y) - plotTop) / plotH, 0f, 1f); if (nx1 - nx0 < 0.01f || ny1 - ny0 < 0.01f) return; setZoom(new ZoomRange(nx0, nx1, ny0, ny1)); redraw(); };
             pb.Paint += (s, e) => { if (!dragging) return; int x1 = Math.Min(dragStart.X, dragCur.X), y1 = Math.Min(dragStart.Y, dragCur.Y), rw = Math.Abs(dragCur.X - dragStart.X), rh = Math.Abs(dragCur.Y - dragStart.Y); if (rw < 3 || rh < 3) return; using var fill = new SolidBrush(Color.FromArgb(40, 80, 200, 255)); e.Graphics.FillRectangle(fill, x1, y1, rw, rh); using var pen = new Pen(Color.FromArgb(200, 80, 200, 255), 1.5f) { DashStyle = DashStyle.Dash }; e.Graphics.DrawRectangle(pen, x1, y1, rw, rh); int c = 7; using var cp = new Pen(Color.FromArgb(220, 120, 220, 255), 2f); e.Graphics.DrawLine(cp, x1, y1, x1 + c, y1); e.Graphics.DrawLine(cp, x1, y1, x1, y1 + c); e.Graphics.DrawLine(cp, x1 + rw, y1, x1 + rw - c, y1); e.Graphics.DrawLine(cp, x1 + rw, y1, x1 + rw, y1 + c); e.Graphics.DrawLine(cp, x1, y1 + rh, x1 + c, y1 + rh); e.Graphics.DrawLine(cp, x1, y1 + rh, x1, y1 + rh - c); e.Graphics.DrawLine(cp, x1 + rw, y1 + rh, x1 + rw - c, y1 + rh); e.Graphics.DrawLine(cp, x1 + rw, y1 + rh, x1 + rw, y1 + rh - c); };
+        }
+
+        // --- DIBUJADO DE LA LEYENDA GIGANTE (HUD) EN LA IMAGEN CALCULADA ---
+        private void TabImage_Paint(object? sender, PaintEventArgs e)
+        {
+            if (_resultBitmap == null || _currentStats == null) return;
+
+            float min = _currentStats.P2;
+            float max = _currentStats.P98;
+            BliColormap cmap = (BliColormap)_cmbColormap.SelectedIndex;
+
+            int barW = 35;
+            int barH = Math.Min(450, _tabImage.Height - 100);
+            if (barH < 50) return; // Oculta la leyenda si la ventana es absurdamente pequeña
+            int bx = _tabImage.Width - barW - 90;
+            int by = (_tabImage.Height - barH) / 2;
+
+            var g = e.Graphics;
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+
+            // Fondo semitransparente oscuro
+            using var bgBrush = new SolidBrush(Color.FromArgb(160, 20, 20, 25));
+            g.FillRectangle(bgBrush, bx - 15, by - 25, barW + 105, barH + 50);
+            g.DrawRectangle(new Pen(Color.FromArgb(100, 80, 80, 90)), bx - 15, by - 25, barW + 105, barH + 50);
+
+            // Gradiente
+            for (int i = 0; i < barH; i++)
+            {
+                float t = 1f - (float)i / barH;
+                var (r, gc, b) = GetColor(t, cmap);
+                using var pen = new Pen(Color.FromArgb(r, gc, b));
+                g.DrawLine(pen, bx, by + i, bx + barW, by + i);
+            }
+
+            g.DrawRectangle(Pens.White, bx, by, barW, barH);
+
+            // Textos Gigantes
+            using var font = new Font("Segoe UI", 11f, FontStyle.Bold);
+            using var brush = new SolidBrush(Color.White);
+            using var format = new StringFormat { Alignment = StringAlignment.Near, LineAlignment = StringAlignment.Center };
+
+            g.DrawString(max.ToString("G4"), font, brush, bx + barW + 10, by, format);
+            g.DrawString(((max + min) / 2f).ToString("G4"), font, brush, bx + barW + 10, by + barH / 2, format);
+            g.DrawString(min.ToString("G4"), font, brush, bx + barW + 10, by + barH, format);
         }
     }
 }

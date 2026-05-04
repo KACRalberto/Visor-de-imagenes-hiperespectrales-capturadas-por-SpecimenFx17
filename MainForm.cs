@@ -389,8 +389,8 @@ namespace SpecimenFX17.Imaging
             nudSgWin.ValueChanged += async (_, _) => { if (_stepSG) { _sgWindow = (int)nudSgWin.Value; await RebuildWorkingCube(); } }; nudSgPol.ValueChanged += async (_, _) => { if (_stepSG) { _sgPoly = (int)nudSgPol.Value; await RebuildWorkingCube(); } }; nudSgDer.ValueChanged += async (_, _) => { if (_stepSG) { _sgDeriv = (int)nudSgDer.Value; await RebuildWorkingCube(); } };
 
             Sep(p); Sec(p, "ULTRAVISOR — AUTOMATIZACIÓN");
-            var btnAutoSegment = Btn(p, "🔪 Segmentación Automática", Color.FromArgb(0, 80, 80));
-            btnAutoSegment.Click += BtnAutoSegment_Click;
+            var btnAutoSegment = Btn(p, "🔪 Segmentación Automática / Batch", Color.FromArgb(0, 80, 80));
+            btnAutoSegment.Click += BtnBatch_Click;
 
             var btnAnalyzeFolder = Btn(p, "🖼️ Analizar carpeta (Galería)", Color.FromArgb(40, 80, 110));
             btnAnalyzeFolder.Click += BtnAnalyzeFolder_Click;
@@ -440,7 +440,6 @@ namespace SpecimenFX17.Imaging
 
             Sep(p); Sec(p, "DATOS Y SESIONES");
             var btnSaveSes = Btn(p, "💾  Guardar Sesión", Color.FromArgb(50, 80, 60)); var btnLoadSes = Btn(p, "📂  Cargar Sesión", Color.FromArgb(60, 60, 80)); var btnDual = Btn(p, "⚖️  Comparador Multifichero", Color.FromArgb(90, 60, 90));
-            var btnBatch = Btn(p, "⚙️  Procesamiento por Lotes", Color.FromArgb(140, 100, 40)); btnBatch.Click += BtnBatch_Click;
 
             btnSaveSes.Click += (_, _) => { if (_cube == null || _selections.Count == 0) { MessageBox.Show("No hay datos para guardar."); return; } using var sfd = new SaveFileDialog { Filter = "Sesión JSON (*.json)|*.json" }; if (sfd.ShowDialog() == DialogResult.OK) SessionManager.SaveSession(sfd.FileName, _selections); };
             btnLoadSes.Click += (_, _) => {
@@ -477,8 +476,8 @@ namespace SpecimenFX17.Imaging
             };
 
             Lbl(p, "Paleta de color:"); _cmbCmap = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, BackColor = Color.FromArgb(45, 45, 48), ForeColor = Color.White, FlatStyle = FlatStyle.Flat, Margin = new Padding(8, 0, 8, 8) }; _cmbCmap.Items.AddRange(Enum.GetNames(typeof(BliColormap))); _cmbCmap.SelectedIndex = 0; _cmbCmap.SelectedIndexChanged += (_, _) => RefreshDisplay(); p.Controls.Add(_cmbCmap);
-            _chkCbar = Chk(p, "Mostrar barra de escala", true); _chkGray = Chk(p, "Modo escala de grises", false); _chkRgb = Chk(p, "Modo RGB (Color real visible)", false);
-            _chkCbar.CheckedChanged += (_, _) => RefreshDisplay();
+            _chkCbar = Chk(p, "Mostrar barra de escala gigante (HUD)", true); _chkGray = Chk(p, "Modo escala de grises", false); _chkRgb = Chk(p, "Modo RGB (Color real visible)", false);
+            _chkCbar.CheckedChanged += (_, _) => _pictureBox.Invalidate(); // Redibujar barra
             _chkGray.CheckedChanged += (_, _) => { _grayscaleMode = _chkGray.Checked; if (_grayscaleMode) _chkRgb.Checked = false; _cmbCmap.Enabled = !_grayscaleMode && !_rgbMode; RefreshDisplay(); };
             _chkRgb.CheckedChanged += (_, _) => { _rgbMode = _chkRgb.Checked; if (_rgbMode) _chkGray.Checked = false; _cmbCmap.Enabled = !_grayscaleMode && !_rgbMode; _slider.Enabled = !_rgbMode; _cmbBands.Enabled = !_rgbMode; RefreshDisplay(); };
 
@@ -584,34 +583,32 @@ namespace SpecimenFX17.Imaging
 
         private async void BtnBatch_Click(object? s, EventArgs e)
         {
-            // AÑADIDO: Si hay un cubo cargado, forzamos a que el usuario ajuste los parámetros primero
-            SegmentationParams batchParams = new SegmentationParams();
-
-            if (_cube != null)
+            if (_cube == null)
             {
-                var msgResult = MessageBox.Show(
-                    "Se ha detectado una imagen abierta.\n\n¿Quieres usarla para ajustar los parámetros de segmentación antes de procesar el lote completo?\n\n(Recomendado para evitar carpetas vacías si el umbral por defecto falla)",
-                    "Ajuste Previo", MessageBoxButtons.YesNo, MessageBoxIcon.Information);
-
-                if (msgResult == DialogResult.Yes)
-                {
-                    using var dlg = new InteractiveSegmentationForm(_cube, _currentBand);
-                    if (dlg.ShowDialog() != DialogResult.OK) return; // Si cancela, salimos
-                    batchParams = dlg.Params; // Guardamos los parámetros que ha elegido el usuario
-                }
+                MessageBox.Show("🛑 CRÍTICO: Para procesar un lote de imágenes, primero debes cargar UNA imagen representativa en el visor principal.\n\nEsto es necesario para que elijas la Banda correcta y ajustes el Umbral visualmente antes de aplicarlo a toda la carpeta.", "Falta imagen de referencia", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
             }
 
-            using var fbd = new FolderBrowserDialog { Description = "Selecciona la carpeta con archivos crudos (.hdr)" };
+            MessageBox.Show("Paso 1: Ajusta la segmentación.\n\nAsegúrate de que los objetos que quieres extraer se marcan en ROJO BRILLANTE. Lo que quede en negro será ignorado en todo el lote.", "Ajuste de Parámetros", MessageBoxButtons.OK, MessageBoxIcon.Information);
+
+            using var dlg = new InteractiveSegmentationForm(_cube, _currentBand);
+            if (dlg.ShowDialog() != DialogResult.OK)
+            {
+                MessageBox.Show("Procesamiento por lotes cancelado.", "Cancelado", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+
+            using var fbd = new FolderBrowserDialog { Description = "Selecciona la carpeta de ORIGEN con archivos crudos (.hdr)" };
             if (fbd.ShowDialog() != DialogResult.OK) return;
 
-            using var sfd = new FolderBrowserDialog { Description = "Selecciona la carpeta de destino para las exportaciones" };
+            using var sfd = new FolderBrowserDialog { Description = "Selecciona la carpeta de DESTINO para las exportaciones" };
             if (sfd.ShowDialog() != DialogResult.OK) return;
 
             var result = MessageBox.Show(
-                "¿Deseas activar la AUTO-SEGMENTACIÓN en este lote?\n\n" +
-                "SÍ: Extraerá cada objeto por separado y guardará sus máscaras (.mat, ENVI, .npy).\n" +
-                "NO: Extraerá solo el espectro global de cada imagen completa.",
-                "Modo de Procesamiento Masivo",
+                "¿Deseas guardar las máscaras y recortar los objetos detectados en disco?\n\n" +
+                "SÍ: Guardará los archivos .mat, ENVI y .npy de cada objeto.\n" +
+                "NO: Solo generará el archivo CSV con los espectros.",
+                "Modo de Exportación",
                 MessageBoxButtons.YesNoCancel, MessageBoxIcon.Question);
 
             if (result == DialogResult.Cancel) return;
@@ -627,12 +624,11 @@ namespace SpecimenFX17.Imaging
                 SgPoly = _sgPoly,
                 SgDeriv = _sgDeriv,
                 ApplyMedianFilter = _stepMedian,
-                AutoSegment = (result == DialogResult.Yes),
+
+                AutoSegment = true,
                 SegmentationBand = _currentBand,
                 SaveNpyMasks = (result == DialogResult.Yes),
-
-                // AÑADIDO: Ahora pasamos los parámetros interactivos o los de por defecto
-                CustomParams = batchParams
+                CustomParams = dlg.Params
             };
 
             _cts?.Cancel(); _cts = new CancellationTokenSource(); var token = _cts.Token;
@@ -651,121 +647,6 @@ namespace SpecimenFX17.Imaging
             catch (OperationCanceledException) { MessageBox.Show("Cancelado por el usuario.", "Cancelado"); }
             catch (Exception ex) { MessageBox.Show($"Error Crítico:\n{ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error); }
             finally { _pb.Visible = false; _btnCancelTask.Visible = false; _slbl.Text = "Procesamiento finalizado."; }
-        }
-
-        private async void BtnAutoSegment_Click(object? sender, EventArgs e)
-        {
-            if (_cube == null)
-            {
-                MessageBox.Show("Carga un cubo hiperespectral antes de iniciar la segmentación.", "Atención", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                return;
-            }
-
-            using var dlg = new InteractiveSegmentationForm(_cube, _currentBand);
-            if (dlg.ShowDialog() != DialogResult.OK) return;
-
-            var result = MessageBox.Show(
-                "Ajustes confirmados.\n\n¿Deseas aplicar esta segmentación a TODAS las imágenes de una carpeta?\n(Se exportará en .mat, .npy, .csv y formato original ENVI)\n\nSí = Procesar Carpeta (Batch)\nNo = Solo imagen actual",
-                "Modo de Procesamiento",
-                MessageBoxButtons.YesNoCancel, MessageBoxIcon.Question);
-
-            if (result == DialogResult.Cancel) return;
-
-            if (result == DialogResult.No)
-            {
-                _slbl.Text = "Segmentando imagen actual...";
-                _pb.Visible = true; _pb.Style = ProgressBarStyle.Marquee;
-
-                try
-                {
-                    var rois = await AutoSegmenter.SegmentCubeAsync(_cube, _currentBand, dlg.Params, null, default);
-
-                    if (rois.Count > 0)
-                    {
-                        SaveStateForUndo();
-                        _selections.AddRange(rois);
-                        _btnClear.Enabled = true;
-                        RefreshDisplay();
-                        _pictureBox.Invalidate();
-                        _slbl.Text = $"✔ ULTRAVISOR: Detectados {rois.Count} objetos.";
-                    }
-                    else
-                    {
-                        _slbl.Text = "⚠ No se detectaron objetos con los parámetros actuales.";
-                    }
-                }
-                catch (Exception ex)
-                {
-                    MessageBox.Show($"Error en segmentación: {ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
-                }
-                finally
-                {
-                    _pb.Visible = false; _pb.Style = ProgressBarStyle.Continuous;
-                }
-            }
-            else if (result == DialogResult.Yes)
-            {
-                using var fbd = new FolderBrowserDialog { Description = "Selecciona la carpeta de origen con las imágenes crudas (HDR/BIL)" };
-                if (fbd.ShowDialog() != DialogResult.OK) return;
-
-                using var sfd = new FolderBrowserDialog { Description = "Selecciona la carpeta de destino para guardar las exportaciones" };
-                if (sfd.ShowDialog() != DialogResult.OK) return;
-
-                var batchOpts = new BatchOptions
-                {
-                    AutoSegment = true,
-                    SegmentationBand = _currentBand,
-                    CustomParams = dlg.Params,
-                    ApplyNormalize = _stepNormalize,
-                    ConvertToAbsorbance = _stepAbsorbance,
-                    ApplySNV = _stepScatter == ScatterCorrection.SNV,
-                    ApplyMSC = _stepScatter == ScatterCorrection.MSC,
-                    ApplySavitzkyGolay = _stepSG,
-                    SgWindow = _sgWindow,
-                    SgPoly = _sgPoly,
-                    SgDeriv = _sgDeriv,
-                    ApplyMedianFilter = _stepMedian
-                };
-
-                string originalPipelineText = _lblPipeline.Text;
-                _cts?.Cancel();
-                _cts = new CancellationTokenSource();
-                var token = _cts.Token;
-
-                var progress = new Progress<int>(percent =>
-                {
-                    _lblPipeline.Text = $"{originalPipelineText} | ⏳ EXPORTANDO: {percent}%";
-                    _pb.Value = percent;
-                    _pb.Visible = true;
-                    _slbl.Text = $"Batch: {percent}% completado";
-                });
-
-                try
-                {
-                    _btnCancelTask.Visible = true;
-                    _btnCancelTask.Enabled = true;
-                    _btnCancelTask.Text = "🛑 Cancelar Batch";
-
-                    await BatchProcessor.ProcessFolderAsync(fbd.SelectedPath, sfd.SelectedPath, batchOpts, progress, token);
-
-                    MessageBox.Show("Batch completado con éxito.\nSe han generado subcarpetas con los formatos .mat, ENVI, .npy y el CSV de espectros.", "Finalizado", MessageBoxButtons.OK, MessageBoxIcon.Information);
-                }
-                catch (OperationCanceledException)
-                {
-                    MessageBox.Show("Proceso cancelado por el usuario.", "Cancelado");
-                }
-                catch (Exception ex)
-                {
-                    MessageBox.Show("Error en el proceso batch:\n" + ex.Message, "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
-                }
-                finally
-                {
-                    _lblPipeline.Text = originalPipelineText;
-                    _pb.Visible = false;
-                    _btnCancelTask.Visible = false;
-                    _slbl.Text = "Listo.";
-                }
-            }
         }
 
         private void BtnAnalyzeFolder_Click(object? sender, EventArgs e)
@@ -1066,25 +947,7 @@ namespace SpecimenFX17.Imaging
                 bmp.UnlockBits(bData);
             }
 
-            if (_chkCbar.Checked)
-            {
-                using var g = Graphics.FromImage(bmp);
-                g.SmoothingMode = SmoothingMode.AntiAlias;
-                int barH = Math.Min(120, bmp.Height - 30), barW = 14;
-                int bx = bmp.Width - barW - 8, by = 15;
-
-                for (int i = 0; i < barH; i++)
-                {
-                    float t = 1f - (float)i / barH;
-                    var (r, gc, b) = GetColor(t, cmap);
-                    using var pen = new Pen(Color.FromArgb(r, gc, b));
-                    g.DrawLine(pen, bx, by + i, bx + barW, by + i);
-                }
-                g.DrawRectangle(Pens.White, bx, by, barW, barH);
-                using var font = new Font("Arial", 7f);
-                g.DrawString(max.ToString("G4"), font, Brushes.White, bx - 2, by - 1);
-                g.DrawString(min.ToString("G4"), font, Brushes.White, bx - 2, by + barH + 1);
-            }
+            // LA LEYENDA ANTIGUA Y PEQUEÑA HA SIDO ELIMINADA DE AQUÍ
 
             return bmp;
         }
@@ -1170,7 +1033,18 @@ namespace SpecimenFX17.Imaging
             }
             else
             {
-                var opts = new BliRenderOptions { Colormap = isPcaBand || _grayscaleMode ? BliColormap.Grayscale : (BliColormap)_cmbCmap.SelectedIndex, Gamma = isPcaBand ? 1.0f : (float)_nudGamma.Value, LowPercentile = isPcaBand ? 0f : (float)_nudLo.Value, HighPercentile = isPcaBand ? 100f : (float)_nudHi.Value, SignalThreshold = isPcaBand ? 0f : (float)_nudThr.Value, DrawColorbar = _chkCbar.Checked && !_rgbMode, Wavelength = WlAt(_currentBand), WavelengthUnit = currentCube.Header.WavelengthUnits };
+                var opts = new BliRenderOptions
+                {
+                    Colormap = isPcaBand || _grayscaleMode ? BliColormap.Grayscale : (BliColormap)_cmbCmap.SelectedIndex,
+                    Gamma = isPcaBand ? 1.0f : (float)_nudGamma.Value,
+                    LowPercentile = isPcaBand ? 0f : (float)_nudLo.Value,
+                    HighPercentile = isPcaBand ? 100f : (float)_nudHi.Value,
+                    SignalThreshold = isPcaBand ? 0f : (float)_nudThr.Value,
+                    DrawColorbar = false, // LEYENDA DESACTIVADA DE LA IMAGEN
+                    Wavelength = WlAt(_currentBand),
+                    WavelengthUnit = currentCube.Header.WavelengthUnits
+                };
+
                 if (_rgbMode)
                 {
                     int bR = GetClosestBand(640), bG = GetClosestBand(550), bB = GetClosestBand(460);
@@ -1369,7 +1243,6 @@ namespace SpecimenFX17.Imaging
             }
         }
 
-        // --- MOTOR DE COORDENADAS REVISADO PARA ZOOM Y PAN ---
         private Point? MapToImage(Point sc)
         {
             if (_currentBitmap == null || _cube == null) return null;
@@ -1395,7 +1268,6 @@ namespace SpecimenFX17.Imaging
             return new Point(imgX, imgY);
         }
 
-        // --- SISTEMA DE DIBUJO SIN STACKOVERFLOW ---
         private void Pic_Paint(object? s, PaintEventArgs e)
         {
             if (_currentBitmap == null) return;
@@ -1478,6 +1350,53 @@ namespace SpecimenFX17.Imaging
                         break;
                     }
             }
+
+            // --- NUEVA LEYENDA DE COLORES GIGANTE (HUD FLOTANTE) ---
+            if (_chkCbar.Checked && !_rgbMode && _cube != null)
+            {
+                int origBands = _baseCube != null ? _baseCube.Header.Bands : _cube.Header.Bands;
+                bool isPcaBand = _currentBand >= origBands + 4;
+                bool[,] mask = GetCurrentMask()!;
+
+                float min, max;
+                if (mask != null && !isPcaBand)
+                {
+                    (min, max) = GetMaskedStats(_currentBand, mask);
+                }
+                else
+                {
+                    (min, max) = _cube.GetBandStats(_currentBand);
+                }
+
+                int barW = 35;
+                int barH = Math.Min(450, _pictureBox.Height - 100);
+                int bx = _pictureBox.Width - barW - 90;
+                int by = (_pictureBox.Height - barH) / 2;
+
+                BliColormap cmap = isPcaBand || _grayscaleMode ? BliColormap.Grayscale : (BliColormap)_cmbCmap.SelectedIndex;
+
+                using var bgBrush = new SolidBrush(Color.FromArgb(160, 20, 20, 25));
+                g.FillRectangle(bgBrush, bx - 15, by - 25, barW + 105, barH + 50);
+                g.DrawRectangle(new Pen(Color.FromArgb(100, 80, 80, 90)), bx - 15, by - 25, barW + 105, barH + 50);
+
+                for (int i = 0; i < barH; i++)
+                {
+                    float t = 1f - (float)i / barH;
+                    var (r, gc, b) = GetColor(t, cmap);
+                    using var pen = new Pen(Color.FromArgb(r, gc, b));
+                    g.DrawLine(pen, bx, by + i, bx + barW, by + i);
+                }
+
+                g.DrawRectangle(Pens.White, bx, by, barW, barH);
+
+                using var font = new Font("Segoe UI", 11f, FontStyle.Bold);
+                using var brush = new SolidBrush(Color.White);
+                using var format = new StringFormat { Alignment = StringAlignment.Near, LineAlignment = StringAlignment.Center };
+
+                g.DrawString(max.ToString("G4"), font, brush, bx + barW + 10, by, format);
+                g.DrawString(((max + min) / 2f).ToString("G4"), font, brush, bx + barW + 10, by + barH / 2, format);
+                g.DrawString(min.ToString("G4"), font, brush, bx + barW + 10, by + barH, format);
+            }
         }
 
         private void Pic_Down(object? s, MouseEventArgs e)
@@ -1499,57 +1418,7 @@ namespace SpecimenFX17.Imaging
                 case SelectionTool.Polygon: if (!_polyActive) { _polyActive = true; _polyImg.Clear(); _polyScr.Clear(); } _polyImg.Add(pt.Value); _polyScr.Add(e.Location); _polyMouse = e.Location; _pictureBox.Invalidate(); break;
             }
         }
-        // --- FUNCIONES AUXILIARES FALTANTES ---
 
-        private double WlAt(int b) => _cube != null && _cube.Header.Wavelengths != null && _cube.Header.Wavelengths.Count > b ? _cube.Header.Wavelengths[b] : b;
-
-        private void Pic_DblClick(object? s, MouseEventArgs e)
-        {
-            if (_tool == SelectionTool.Polygon && _polyActive)
-            {
-                if (_polyImg.Count > 0)
-                {
-                    _polyImg.RemoveAt(_polyImg.Count - 1);
-                    _polyScr.RemoveAt(_polyScr.Count - 1);
-                }
-                CommitPolygon();
-            }
-            else ClearAll();
-        }
-
-        private void Pic_Leave(object? s, EventArgs e)
-        {
-            _hoverImgPt = null;
-            _lblCoords.Text = "";
-            RedrawSpectrumPlot();
-        }
-
-        private void OpenChildForm(DockContent f)
-        {
-            f.FormClosed += (s, e) => _childForms.Remove(f);
-            _childForms.Add(f);
-            f.Show(_dockPanel, DockState.Document);
-        }
-
-        private void HandleDragEnter(object? sender, DragEventArgs e)
-        {
-            if (e.Data != null && e.Data.GetDataPresent(DataFormats.FileDrop))
-            {
-                string[] files = (string[])e.Data.GetData(DataFormats.FileDrop)!;
-                if (files.Any(f => f.EndsWith(".hdr", StringComparison.OrdinalIgnoreCase) || f.EndsWith(".raw", StringComparison.OrdinalIgnoreCase) || f.EndsWith(".bil", StringComparison.OrdinalIgnoreCase)))
-                    e.Effect = DragDropEffects.Copy;
-            }
-        }
-
-        private void HandleDragDrop(object? sender, DragEventArgs e)
-        {
-            if (e.Data != null && e.Data.GetDataPresent(DataFormats.FileDrop))
-            {
-                string[] files = (string[])e.Data.GetData(DataFormats.FileDrop)!;
-                var file = files.FirstOrDefault(f => f.EndsWith(".hdr", StringComparison.OrdinalIgnoreCase) || f.EndsWith(".raw", StringComparison.OrdinalIgnoreCase) || f.EndsWith(".bil", StringComparison.OrdinalIgnoreCase));
-                if (file != null) LoadCubeFromFile(file);
-            }
-        }
         private void Pic_Move(object? s, MouseEventArgs e)
         {
             if (_isPanning)
@@ -1734,6 +1603,56 @@ namespace SpecimenFX17.Imaging
             {
                 MessageBox.Show($"Ocurrió un error en el algoritmo Auto-ROI:\n{ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
                 _pictureBox.Enabled = true; _pb.Visible = false; _pb.Style = ProgressBarStyle.Continuous; _slbl.Text = "Error Auto ROI";
+            }
+        }
+
+        private double WlAt(int b) => _cube != null && _cube.Header.Wavelengths != null && _cube.Header.Wavelengths.Count > b ? _cube.Header.Wavelengths[b] : b;
+
+        private void Pic_DblClick(object? s, MouseEventArgs e)
+        {
+            if (_tool == SelectionTool.Polygon && _polyActive)
+            {
+                if (_polyImg.Count > 0)
+                {
+                    _polyImg.RemoveAt(_polyImg.Count - 1);
+                    _polyScr.RemoveAt(_polyScr.Count - 1);
+                }
+                CommitPolygon();
+            }
+            else ClearAll();
+        }
+
+        private void Pic_Leave(object? s, EventArgs e)
+        {
+            _hoverImgPt = null;
+            _lblCoords.Text = "";
+            RedrawSpectrumPlot();
+        }
+
+        private void OpenChildForm(DockContent f)
+        {
+            f.FormClosed += (s, e) => _childForms.Remove(f);
+            _childForms.Add(f);
+            f.Show(_dockPanel, DockState.Document);
+        }
+
+        private void HandleDragEnter(object? sender, DragEventArgs e)
+        {
+            if (e.Data != null && e.Data.GetDataPresent(DataFormats.FileDrop))
+            {
+                string[] files = (string[])e.Data.GetData(DataFormats.FileDrop)!;
+                if (files.Any(f => f.EndsWith(".hdr", StringComparison.OrdinalIgnoreCase) || f.EndsWith(".raw", StringComparison.OrdinalIgnoreCase) || f.EndsWith(".bil", StringComparison.OrdinalIgnoreCase)))
+                    e.Effect = DragDropEffects.Copy;
+            }
+        }
+
+        private void HandleDragDrop(object? sender, DragEventArgs e)
+        {
+            if (e.Data != null && e.Data.GetDataPresent(DataFormats.FileDrop))
+            {
+                string[] files = (string[])e.Data.GetData(DataFormats.FileDrop)!;
+                var file = files.FirstOrDefault(f => f.EndsWith(".hdr", StringComparison.OrdinalIgnoreCase) || f.EndsWith(".raw", StringComparison.OrdinalIgnoreCase) || f.EndsWith(".bil", StringComparison.OrdinalIgnoreCase));
+                if (file != null) LoadCubeFromFile(file);
             }
         }
     }
