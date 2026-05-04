@@ -395,6 +395,10 @@ namespace SpecimenFX17.Imaging
             var btnAnalyzeFolder = Btn(p, "🖼️ Analizar carpeta (Galería)", Color.FromArgb(40, 80, 110));
             btnAnalyzeFolder.Click += BtnAnalyzeFolder_Click;
 
+            // Debajo del botón de Galería...
+            var btnSequentialBatch = Btn(p, "🧪 Flujo Secuencial (Investigación)", Color.FromArgb(180, 70, 40));
+            btnSequentialBatch.Click += BtnSequentialBatch_Click;
+
             Sep(p); Sec(p, "HERRAMIENTA DE SELECCIÓN");
             _lblTip = new Label { AutoSize = true, ForeColor = Color.FromArgb(120, 200, 120), Font = new Font("Segoe UI", 8f, FontStyle.Italic), Text = "Arrastra para seleccionar un rectángulo", Margin = new Padding(8, 0, 8, 8) };
             p.Controls.Add(_lblTip);
@@ -649,6 +653,35 @@ namespace SpecimenFX17.Imaging
             finally { _pb.Visible = false; _btnCancelTask.Visible = false; _slbl.Text = "Procesamiento finalizado."; }
         }
 
+        private void BtnSequentialBatch_Click(object? sender, EventArgs e)
+        {
+            if (_cube == null)
+            {
+                MessageBox.Show("Carga primero una imagen para ajustar los parámetros de segmentación.");
+                return;
+            }
+
+            // 1. Ajuste previo de parámetros
+            using var dlgSeg = new InteractiveSegmentationForm(_cube, _currentBand);
+            if (dlgSeg.ShowDialog() != DialogResult.OK) return;
+
+            // 2. Selección de carpetas
+            using var fbdIn = new FolderBrowserDialog { Description = "Carpeta con imágenes crudas" };
+            if (fbdIn.ShowDialog() != DialogResult.OK) return;
+
+            using var fbdOut = new FolderBrowserDialog { Description = "Carpeta para guardar la MATRIZ CSV" };
+            if (fbdOut.ShowDialog() != DialogResult.OK) return;
+
+            // 3. Abrir el Asistente
+            var opts = new BatchOptions
+            {
+                SegmentationBand = _currentBand,
+                CustomParams = dlgSeg.Params
+            };
+
+            var assistant = new SequentialBatchForm(fbdIn.SelectedPath, fbdOut.SelectedPath, opts);
+            OpenChildForm(assistant);
+        }
         private void BtnAnalyzeFolder_Click(object? sender, EventArgs e)
         {
             using var fbd = new FolderBrowserDialog { Description = "Selecciona la carpeta con las imágenes autosegmentadas (.hdr/.bil)" };
