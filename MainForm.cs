@@ -467,6 +467,9 @@ namespace SpecimenFX17.Imaging
             var b3d = Btn(p, "🧊  Visor de Hipercubo 3D", Color.FromArgb(40, 110, 130)); b3d.Click += (_, _) => { if (_cube != null) OpenChildForm(new Hypercube3DForm(_cube, _selections.AsReadOnly())); };
             bc.Click += (_, _) => { if (_cube != null) OpenChildForm(new SpectralCalculatorForm(_cube, _selections.AsReadOnly())); }; ba.Click += (_, _) => { if (_cube != null) OpenChildForm(new AdvancedAnalysisForm(_cube, _selections.AsReadOnly())); }; bp.Click += (_, _) => { if (_cube != null) OpenChildForm(new PlsPredictionForm(_cube, _selections.AsReadOnly())); };
 
+            var btnChemo = Btn(p, "🧪 Chemometrics Studio (PCA)", Color.FromArgb(50, 100, 150));
+            btnChemo.Click += (_, _) => { OpenChildForm(new ChemometricsStudioForm()); };
+
             _txtAnalysisReport = new RichTextBox { Height = 100, ForeColor = Color.LightGray, BackColor = Color.FromArgb(20, 20, 28), Font = new Font("Consolas", 8f), ReadOnly = true, Margin = new Padding(8, 4, 8, 8) }; p.Controls.Add(_txtAnalysisReport);
 
             Sep(p); Sec(p, "VISUALIZACIÓN Y VISTA");
