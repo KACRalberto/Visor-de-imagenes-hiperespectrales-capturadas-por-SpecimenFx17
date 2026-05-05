@@ -1,5 +1,8 @@
 ﻿using System;
+using System.Collections.Generic;
 using System.Drawing;
+using System.Drawing.Imaging;
+using System.Runtime.InteropServices;
 using System.Windows.Forms;
 using OpenCvSharp;
 
@@ -7,164 +10,249 @@ namespace SpecimenFX17.Imaging
 {
     public class InteractiveSegmentationForm : Form
     {
-        private HyperspectralCube _cube;
-        private int _band;
-        private PictureBox _picPreview;
-        public SegmentationParams Params { get; } = new SegmentationParams();
+        public SegmentationParams Params { get; private set; } = new();
+        private readonly HyperspectralCube _cube;
+        private readonly int _band;
 
-        private TrackBar _trkBlockSize, _trkConstantC;
-        private TrackBar _trkOpen, _trkClose, _trkArea;
-        private CheckBox _chkInvert;
-        private Label _lblClicks;
+        private PictureBox _picPreview = null!;
+        private TrackBar _trkThreshold = null!;
+        private CheckBox _chkInvert = null!;
+        private TrackBar _trkArea = null!;
+        private TrackBar _trkClose = null!;
+        private TrackBar _trkOpen = null!;
+
+        // Sliders para los códigos de barras
+        private TrackBar _trkTop = null!;
+        private TrackBar _trkBottom = null!;
+
+        private Label _lblThreshold = null!;
+        private Label _lblArea = null!;
+        private Label _lblClose = null!;
+        private Label _lblOpen = null!;
+        private Label _lblTop = null!;
+        private Label _lblBottom = null!;
+
+        private Mat _gray8U = null!;
+        private Bitmap? _previewBmp;
+        private bool _isDrawing = false;
 
         public InteractiveSegmentationForm(HyperspectralCube cube, int band)
         {
             _cube = cube;
             _band = band;
-            Text = "UltraVisor Industrial - Ajuste de Segmentación (Clic Derecho en la imagen para Borrar Sombras/Cinta)";
-            Size = new System.Drawing.Size(1200, 800);
-            BackColor = Color.FromArgb(30, 30, 30);
+
+            Text = "UltraVisor de Segmentación - Ajuste Fino Visual";
+            Size = new System.Drawing.Size(1200, 850);
+            BackColor = Color.FromArgb(30, 30, 35);
             ForeColor = Color.White;
+            StartPosition = FormStartPosition.CenterParent;
 
             BuildUI();
+            InitializeImage();
             UpdatePreview();
+        }
+
+        private void InitializeImage()
+        {
+            Params.StretchMin = float.NaN;
+            Params.StretchMax = float.NaN;
+            _gray8U = AutoSegmenter.NormalizeBandTo8Bit(_cube, _band, Params);
         }
 
         private void BuildUI()
         {
-            var split = new SplitContainer { Dock = DockStyle.Fill, SplitterDistance = 320 };
+            var pnlControls = new Panel { Dock = DockStyle.Right, Width = 380, BackColor = Color.FromArgb(25, 25, 30), Padding = new Padding(15) };
+            var flp = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.TopDown, WrapContents = false, AutoScroll = true };
 
-            var pnlControls = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.TopDown, Padding = new Padding(10) };
+            var lblTitle = new Label { Text = "CONTROLES DE DETECCIÓN", AutoSize = true, Font = new Font("Segoe UI", 12f, FontStyle.Bold), ForeColor = Color.LightSkyBlue, Margin = new Padding(0, 0, 0, 10) };
 
-            _chkInvert = new CheckBox { Text = "Invertir Umbral (Si el fondo es brillante)", AutoSize = true, ForeColor = Color.LightSkyBlue, Margin = new Padding(3, 10, 3, 10) };
+            var lblHelp = new Label
+            {
+                Text = "💡 VARITA: Clic IZQUIERDO mantenido pinta y repara brillos.\n❌ BORRAR: Clic DERECHO en manchas a eliminar.",
+                AutoSize = true,
+                ForeColor = Color.Orange,
+                Font = new Font("Segoe UI", 9f),
+                Margin = new Padding(0, 0, 0, 15)
+            };
+
+            _chkInvert = new CheckBox { Text = "Invertir Umbral (Detectar Oscuros)", AutoSize = true, ForeColor = Color.White, Checked = false, Margin = new Padding(0, 0, 0, 15) };
             _chkInvert.CheckedChanged += (s, e) => { Params.InvertThreshold = _chkInvert.Checked; UpdatePreview(); };
-            pnlControls.Controls.Add(_chkInvert);
 
-            _trkBlockSize = AddSlider(pnlControls, "Filtro Local (Block Size) [Impar]", 3, 101, Params.BlockSize);
-            _trkBlockSize.TickStyle = TickStyle.None;
+            _lblThreshold = new Label { Text = "1. Umbral de corte: 154", AutoSize = true, Margin = new Padding(0, 5, 0, 0) };
+            _trkThreshold = new TrackBar { Minimum = 0, Maximum = 255, Value = 154, Width = 320, TickFrequency = 15 };
+            _trkThreshold.Scroll += (s, e) => { Params.Threshold = _trkThreshold.Value; _lblThreshold.Text = $"1. Umbral de corte: {Params.Threshold}"; UpdatePreview(); };
 
-            _trkConstantC = AddSlider(pnlControls, "Sensibilidad Local (Constante C)", -50, 50, (int)Params.ConstantC);
-            _trkConstantC.TickStyle = TickStyle.None;
+            _lblClose = new Label { Text = "2. Cierre morfológico: 2", AutoSize = true, Margin = new Padding(0, 15, 0, 0) };
+            _trkClose = new TrackBar { Minimum = 0, Maximum = 10, Value = 2, Width = 320, TickFrequency = 1 };
+            _trkClose.Scroll += (s, e) => { Params.CloseIters = _trkClose.Value; _lblClose.Text = $"2. Cierre morfológico: {Params.CloseIters}"; UpdatePreview(); };
 
-            _trkOpen = AddSlider(pnlControls, "Apertura (Limpiar Ruido Exterior)", 0, 15, Params.OpenIters);
-            _trkClose = AddSlider(pnlControls, "Cierre (Rellenar Huecos Internos)", 0, 15, Params.CloseIters);
-            _trkArea = AddSlider(pnlControls, "Área Mínima (Descartar motas)", 10, 15000, Params.MinArea);
-            _trkArea.TickStyle = TickStyle.None;
+            _lblOpen = new Label { Text = "3. Apertura morfológica: 1", AutoSize = true, Margin = new Padding(0, 15, 0, 0) };
+            _trkOpen = new TrackBar { Minimum = 0, Maximum = 10, Value = 1, Width = 320, TickFrequency = 1 };
+            _trkOpen.Scroll += (s, e) => { Params.OpenIters = _trkOpen.Value; _lblOpen.Text = $"3. Apertura morfológica: {Params.OpenIters}"; UpdatePreview(); };
 
-            _lblClicks = new Label { Text = "Borrados manuales: 0", AutoSize = true, ForeColor = Color.LightCoral, Margin = new Padding(3, 15, 3, 5) };
-            var btnClearClicks = new Button { Text = "🔄 Deshacer Borrados (Clics)", BackColor = Color.FromArgb(80, 40, 40), ForeColor = Color.White, Width = 260, Height = 35 };
-            btnClearClicks.Click += (s, e) => { Params.PointsToRemove.Clear(); UpdatePreview(); };
+            // EL SLIDER QUE TE MENTÍA
+            _lblArea = new Label { Text = "4. Tamaño Mínimo (Píxeles): 100", AutoSize = true, Margin = new Padding(0, 15, 0, 0), ForeColor = Color.LightGreen };
+            _trkArea = new TrackBar { Minimum = 10, Maximum = 10000, Value = 100, Width = 320, TickFrequency = 500 };
+            _trkArea.Scroll += (s, e) => { Params.MinArea = _trkArea.Value; _lblArea.Text = $"4. Tamaño Mínimo (Píxeles): {Params.MinArea}"; UpdatePreview(); };
 
-            pnlControls.Controls.Add(_lblClicks);
-            pnlControls.Controls.Add(btnClearClicks);
+            // CORTADORES DE CÓDIGOS DE BARRAS
+            _lblTop = new Label { Text = "5. Ignorar Margen Superior (%): 0", AutoSize = true, Margin = new Padding(0, 15, 0, 0), ForeColor = Color.Yellow };
+            _trkTop = new TrackBar { Minimum = 0, Maximum = 40, Value = 0, Width = 320, TickFrequency = 5 };
+            _trkTop.Scroll += (s, e) => { Params.IgnoreTopPct = _trkTop.Value; _lblTop.Text = $"5. Ignorar Margen Superior (%): {Params.IgnoreTopPct}"; UpdatePreview(); };
 
-            var btnConfirm = new Button { Text = "✅ Validar y Continuar", BackColor = Color.MediumSeaGreen, ForeColor = Color.White, Width = 260, Height = 40, Margin = new Padding(0, 25, 0, 0) };
-            btnConfirm.Click += (s, e) => { this.DialogResult = DialogResult.OK; this.Close(); };
-            pnlControls.Controls.Add(btnConfirm);
+            _lblBottom = new Label { Text = "6. Ignorar Margen Inferior (%): 0", AutoSize = true, Margin = new Padding(0, 5, 0, 0), ForeColor = Color.Yellow };
+            _trkBottom = new TrackBar { Minimum = 0, Maximum = 40, Value = 0, Width = 320, TickFrequency = 5 };
+            _trkBottom.Scroll += (s, e) => { Params.IgnoreBottomPct = _trkBottom.Value; _lblBottom.Text = $"6. Ignorar Margen Inferior (%): {Params.IgnoreBottomPct}"; UpdatePreview(); };
 
-            split.Panel1.Controls.Add(pnlControls);
+            var btnClear = new Button { Text = "Limpiar clics y pinceladas", Width = 320, Height = 40, BackColor = Color.FromArgb(60, 60, 65), FlatStyle = FlatStyle.Flat, Margin = new Padding(0, 20, 0, 0) };
+            btnClear.Click += (s, e) => { Params.PointsToRemove.Clear(); Params.PointsToRepair.Clear(); UpdatePreview(); };
 
-            _picPreview = new PictureBox { Dock = DockStyle.Fill, SizeMode = PictureBoxSizeMode.Zoom, BackColor = Color.Black, Cursor = Cursors.Cross };
+            var btnOk = new Button { Text = "✔ VALIDAR Y APLICAR", Dock = DockStyle.Bottom, Height = 60, BackColor = Color.FromArgb(40, 150, 80), Font = new Font("Segoe UI", 10f, FontStyle.Bold), FlatStyle = FlatStyle.Flat };
+            btnOk.Click += (s, e) => { DialogResult = DialogResult.OK; Close(); };
 
-            // EVENTO DE CLIC DERECHO PARA BORRAR ZONAS INDESEADAS
-            _picPreview.MouseDown += (s, e) =>
-            {
-                if (e.Button == MouseButtons.Right)
-                {
-                    var imgPt = MapToImage(e.Location);
-                    if (imgPt.HasValue)
-                    {
-                        Params.PointsToRemove.Add(imgPt.Value);
-                        UpdatePreview();
-                    }
-                }
-            };
+            flp.Controls.Add(lblTitle);
+            flp.Controls.Add(lblHelp);
+            flp.Controls.Add(_chkInvert);
+            flp.Controls.Add(_lblThreshold);
+            flp.Controls.Add(_trkThreshold);
+            flp.Controls.Add(_lblClose);
+            flp.Controls.Add(_trkClose);
+            flp.Controls.Add(_lblOpen);
+            flp.Controls.Add(_trkOpen);
+            flp.Controls.Add(_lblArea);
+            flp.Controls.Add(_trkArea);
+            flp.Controls.Add(_lblTop);
+            flp.Controls.Add(_trkTop);
+            flp.Controls.Add(_lblBottom);
+            flp.Controls.Add(_trkBottom);
+            flp.Controls.Add(btnClear);
 
-            split.Panel2.Controls.Add(_picPreview);
-            Controls.Add(split);
+            pnlControls.Controls.Add(flp);
+            pnlControls.Controls.Add(btnOk);
+
+            _picPreview = new PictureBox { Dock = DockStyle.Fill, SizeMode = PictureBoxSizeMode.Zoom, BackColor = Color.Black, Cursor = Cursors.Default };
+
+            _picPreview.MouseDown += PicPreview_MouseDown;
+            _picPreview.MouseMove += PicPreview_MouseMove;
+            _picPreview.MouseUp += (s, e) => { _isDrawing = false; };
+
+            Controls.Add(_picPreview);
+            Controls.Add(pnlControls);
+
+            Params.Threshold = _trkThreshold.Value;
+            Params.InvertThreshold = _chkInvert.Checked;
+            Params.CloseIters = _trkClose.Value;
+            Params.OpenIters = _trkOpen.Value;
+            Params.MinArea = _trkArea.Value;
         }
 
-        private TrackBar AddSlider(FlowLayoutPanel pnl, string label, int min, int max, int val)
+        private void PicPreview_MouseDown(object? sender, MouseEventArgs e)
         {
-            pnl.Controls.Add(new Label { Text = label, AutoSize = true, ForeColor = Color.LightGray });
-            var trk = new TrackBar { Minimum = min, Maximum = max, Value = val, Width = 280 };
-            trk.Scroll += (s, e) =>
+            if (_previewBmp == null) return;
+
+            var imgCoords = MapClientToImage(e.X, e.Y);
+            if (!imgCoords.HasValue) return;
+            var pt = imgCoords.Value;
+
+            if (e.Button == MouseButtons.Left)
             {
-                Params.BlockSize = _trkBlockSize.Value | 1; // Fuerza a ser impar
-                Params.ConstantC = _trkConstantC.Value;
-                Params.OpenIters = _trkOpen.Value;
-                Params.CloseIters = _trkClose.Value;
-                Params.MinArea = _trkArea.Value;
+                _isDrawing = true;
+                Params.PointsToRepair.Add(pt);
                 UpdatePreview();
-            };
-            pnl.Controls.Add(trk);
-            return trk;
+            }
+            else if (e.Button == MouseButtons.Right)
+            {
+                Params.PointsToRemove.Add(pt);
+                UpdatePreview();
+            }
         }
 
-        // Mapeo preciso de Pantalla a Imagen Original
-        private System.Drawing.Point? MapToImage(System.Drawing.Point mousePos)
+        private void PicPreview_MouseMove(object? sender, MouseEventArgs e)
         {
-            if (_picPreview.Image == null) return null;
+            if (!_isDrawing || _previewBmp == null) return;
 
-            float picRatio = (float)_picPreview.Width / _picPreview.Height;
-            float imgRatio = (float)_cube.Samples / _cube.Lines;
-
-            float drawWidth = _picPreview.Width;
-            float drawHeight = _picPreview.Height;
-            float offsetX = 0, offsetY = 0;
-
-            if (picRatio > imgRatio)
+            var imgCoords = MapClientToImage(e.X, e.Y);
+            if (imgCoords.HasValue)
             {
-                drawWidth = _picPreview.Height * imgRatio;
-                offsetX = (_picPreview.Width - drawWidth) / 2f;
+                Params.PointsToRepair.Add(imgCoords.Value);
+                UpdatePreview();
             }
-            else
+        }
+
+        private System.Drawing.Point? MapClientToImage(int clientX, int clientY)
+        {
+            if (_previewBmp == null) return null;
+
+            float ratioX = (float)_picPreview.Width / _previewBmp.Width;
+            float ratioY = (float)_picPreview.Height / _previewBmp.Height;
+            float ratio = Math.Min(ratioX, ratioY);
+
+            int offX = (int)((_picPreview.Width - (_previewBmp.Width * ratio)) / 2);
+            int offY = (int)((_picPreview.Height - (_previewBmp.Height * ratio)) / 2);
+
+            int imgX = (int)((clientX - offX) / ratio);
+            int imgY = (int)((clientY - offY) / ratio);
+
+            if (imgX >= 0 && imgX < _cube.Samples && imgY >= 0 && imgY < _cube.Lines)
             {
-                drawHeight = _picPreview.Width / imgRatio;
-                offsetY = (_picPreview.Height - drawHeight) / 2f;
+                return new System.Drawing.Point(imgX, imgY);
             }
-
-            float x = mousePos.X - offsetX;
-            float y = mousePos.Y - offsetY;
-
-            if (x < 0 || x >= drawWidth || y < 0 || y >= drawHeight) return null;
-
-            int imgX = (int)((x / drawWidth) * _cube.Samples);
-            int imgY = (int)((y / drawHeight) * _cube.Lines);
-
-            return new System.Drawing.Point(imgX, imgY);
+            return null;
         }
 
         private void UpdatePreview()
         {
-            _lblClicks.Text = $"Borrados manuales: {Params.PointsToRemove.Count}";
+            if (_gray8U == null) return;
 
-            using Mat gray = new Mat(_cube.Lines, _cube.Samples, MatType.CV_8UC1);
-            var indexer = gray.GetGenericIndexer<byte>();
-            float minV = float.MaxValue, maxV = float.MinValue;
+            using Mat rawMask = AutoSegmenter.GetRawMask(_gray8U, Params);
 
-            for (int y = 0; y < _cube.Lines; y++) for (int x = 0; x < _cube.Samples; x++) { float v = _cube[_band, y, x]; if (!float.IsNaN(v)) { if (v < minV) minV = v; if (v > maxV) maxV = v; } }
-            float range = maxV - minV <= 0 ? 1 : maxV - minV;
+            // --- AHORA LA PREVISUALIZACIÓN ES 100% HONESTA ---
+            // Aplicamos el filtro de Área en tiempo real para que veas lo que va a salir en el lote
+            using Mat filteredMask = Mat.Zeros(rawMask.Size(), MatType.CV_8UC1);
+            using Mat labels = new Mat();
+            using Mat stats = new Mat();
+            using Mat centroids = new Mat();
 
-            for (int y = 0; y < _cube.Lines; y++) for (int x = 0; x < _cube.Samples; x++) indexer[y, x] = float.IsNaN(_cube[_band, y, x]) ? (byte)0 : (byte)(((_cube[_band, y, x] - minV) / range) * 255);
+            int numLabels = Cv2.ConnectedComponentsWithStats(rawMask, labels, stats, centroids);
+            var labelIndexer = labels.GetGenericIndexer<int>();
+            var maskIndexer = filteredMask.GetGenericIndexer<byte>();
 
-            using Mat mask = AutoSegmenter.GetRawMask(gray, Params);
-
-            using Mat rgb = new Mat();
-            Cv2.CvtColor(gray, rgb, ColorConversionCodes.GRAY2BGR);
-            rgb.SetTo(new Scalar(0, 0, 255), mask); // Pinta en rojo los objetos
-
-            // Dibuja X verdes donde el usuario haya borrado
-            foreach (var pt in Params.PointsToRemove)
+            HashSet<int> validLabels = new HashSet<int>();
+            for (int i = 1; i < numLabels; i++)
             {
-                Cv2.DrawMarker(rgb, new OpenCvSharp.Point(pt.X, pt.Y), new Scalar(0, 255, 0), MarkerTypes.Cross, 20, 2);
+                if (stats.At<int>(i, (int)ConnectedComponentsTypes.Area) >= Params.MinArea)
+                {
+                    validLabels.Add(i);
+                }
             }
 
-            using (var ms = rgb.ToMemoryStream(".png"))
+            for (int y = 0; y < rawMask.Rows; y++)
             {
-                _picPreview.Image?.Dispose();
-                _picPreview.Image = new Bitmap(ms);
+                for (int x = 0; x < rawMask.Cols; x++)
+                {
+                    if (validLabels.Contains(labelIndexer[y, x]))
+                    {
+                        maskIndexer[y, x] = 255;
+                    }
+                }
             }
+
+            using Mat colorView = new Mat();
+            Cv2.CvtColor(_gray8U, colorView, ColorConversionCodes.GRAY2BGR);
+
+            colorView.SetTo(new Scalar(0, 0, 255), filteredMask);
+
+            var oldImg = _picPreview.Image;
+            _previewBmp = OpenCvSharp.Extensions.BitmapConverter.ToBitmap(colorView);
+            _picPreview.Image = _previewBmp;
+
+            oldImg?.Dispose();
+        }
+
+        protected override void OnFormClosed(FormClosedEventArgs e)
+        {
+            _gray8U?.Dispose();
+            base.OnFormClosed(e);
         }
     }
 }

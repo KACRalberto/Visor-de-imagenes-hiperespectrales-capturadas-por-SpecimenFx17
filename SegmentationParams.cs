@@ -4,16 +4,21 @@ namespace SpecimenFX17.Imaging
 {
     public class SegmentationParams
     {
-        // Parámetros para Umbral Adaptativo (AdaptiveThreshold)
-        public int BlockSize { get; set; } = 25; // Tamaño de la vecindad local (debe ser impar)
-        public double ConstantC { get; set; } = 10; // Constante restada de la media local
+        public int Threshold { get; set; } = 154;
+        public bool InvertThreshold { get; set; } = true;
 
-        public bool InvertThreshold { get; set; } = false;
-        public int OpenIters { get; set; } = 2;
+        public int OpenIters { get; set; } = 1;
         public int CloseIters { get; set; } = 2;
-        public int MinArea { get; set; } = 100;
+        public int MinArea { get; set; } = 4000;
 
-        // Puntos seleccionados manualmente para borrar (FloodFill)
+        // --- NUEVO: CEGUERA PERIMETRAL (Ignorar etiquetas) ---
+        public int IgnoreTopPct { get; set; } = 0;    // Porcentaje superior a ignorar
+        public int IgnoreBottomPct { get; set; } = 0; // Porcentaje inferior a ignorar
+
+        public List<System.Drawing.Point> PointsToRepair { get; set; } = new();
         public List<System.Drawing.Point> PointsToRemove { get; set; } = new();
+
+        public float StretchMin { get; set; } = float.NaN;
+        public float StretchMax { get; set; } = float.NaN;
     }
 }

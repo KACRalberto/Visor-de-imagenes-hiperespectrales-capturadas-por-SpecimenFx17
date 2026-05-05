@@ -660,29 +660,47 @@ namespace SpecimenFX17.Imaging
         {
             if (_cube == null)
             {
-                MessageBox.Show("Carga primero una imagen para ajustar los parámetros de segmentación.");
+                MessageBox.Show("Carga primero una imagen representativa para ajustar los parámetros.", "Falta imagen", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 return;
             }
 
-            // 1. Ajuste previo de parámetros
             using var dlgSeg = new InteractiveSegmentationForm(_cube, _currentBand);
             if (dlgSeg.ShowDialog() != DialogResult.OK) return;
 
-            // 2. Selección de carpetas
-            using var fbdIn = new FolderBrowserDialog { Description = "Carpeta con imágenes crudas" };
+            using var fbdIn = new FolderBrowserDialog { Description = "Selecciona la carpeta ORIGEN con las imágenes (.hdr)" };
             if (fbdIn.ShowDialog() != DialogResult.OK) return;
 
-            using var fbdOut = new FolderBrowserDialog { Description = "Carpeta para guardar la MATRIZ CSV" };
+            using var fbdOut = new FolderBrowserDialog { Description = "Selecciona la carpeta DESTINO para el CSV" };
             if (fbdOut.ShowDialog() != DialogResult.OK) return;
 
-            // 3. Abrir el Asistente
+            var finalParams = dlgSeg.Params;
+
+            // ✅ MANTENEMOS LOS CLICS DERECHOS. Así si borras el fondo en el UltraVisor, se borra en el lote.
+            // finalParams.PointsToRemove.Clear(); 
+
+            // ❌ BORRAMOS EL PINCEL (Clic Izquierdo). Pintar sobre la imagen piloto deformaría las otras muestras.
+            finalParams.PointsToRepair.Clear();
+
+            // ✅ MANTENEMOS LA LUZ CALCULADA. Así la regla de umbral de la imagen piloto sirve para el resto.
+            // finalParams.StretchMin = float.NaN; 
+            // finalParams.StretchMax = float.NaN;
+
             var opts = new BatchOptions
             {
+                ApplyNormalize = _stepNormalize,
+                ConvertToAbsorbance = _stepAbsorbance,
+                ApplySNV = _stepScatter == ScatterCorrection.SNV,
+                ApplyMSC = _stepScatter == ScatterCorrection.MSC,
+                ApplySavitzkyGolay = _stepSG,
+                SgWindow = _sgWindow,
+                SgPoly = _sgPoly,
+                SgDeriv = _sgDeriv,
+                ApplyMedianFilter = _stepMedian,
                 SegmentationBand = _currentBand,
-                CustomParams = dlgSeg.Params
+                CustomParams = finalParams
             };
 
-            var assistant = new SequentialBatchForm(fbdIn.SelectedPath, fbdOut.SelectedPath, opts);
+            var assistant = new SequentialBatchForm(fbdIn.SelectedPath, fbdOut.SelectedPath, opts, _whiteCube, _darkCube);
             OpenChildForm(assistant);
         }
         private void BtnAnalyzeFolder_Click(object? sender, EventArgs e)

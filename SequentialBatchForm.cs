@@ -20,6 +20,10 @@ namespace SpecimenFX17.Imaging
         private readonly BatchOptions _opts;
         private readonly string _outputPath;
 
+        // Referencias de Calibración
+        private readonly HyperspectralCube? _whiteRef;
+        private readonly HyperspectralCube? _darkRef;
+
         // Controles UI
         private PictureBox _picView = null!;
         private Label _lblInfo = null!;
@@ -28,15 +32,18 @@ namespace SpecimenFX17.Imaging
         private ProgressBar _pbProgress = null!;
         private StringBuilder _csvMatrix = new();
 
-        // Nuevos controles para ordenar
+        // Controles para ordenar
         private ListBox _lstObjects = null!;
         private Button _btnUp = null!;
         private Button _btnDown = null!;
 
-        public SequentialBatchForm(string inputFolder, string outputFolder, BatchOptions opts)
+        // CONSTRUCTOR DE 5 ARGUMENTOS
+        public SequentialBatchForm(string inputFolder, string outputFolder, BatchOptions opts, HyperspectralCube? whiteCube = null, HyperspectralCube? darkCube = null)
         {
             _outputPath = outputFolder;
             _opts = opts;
+            _whiteRef = whiteCube;
+            _darkRef = darkCube;
             _files = Directory.GetFiles(inputFolder, "*.hdr").OrderBy(f => f).ToList();
 
             Text = "Asistente de Segmentación Secuencial";
@@ -75,7 +82,7 @@ namespace SpecimenFX17.Imaging
 
             var lblHint = new Label
             {
-                Text = "💡 INSTRUCCIONES:\n1. Clic DERECHO en la imagen para borrar un objeto falso.\n2. Usa la lista para REORDENAR.\n3. Ajusta la Clase y pulsa SIGUIENTE.",
+                Text = "💡 INSTRUCCIONES:\n1. Clic DERECHO en la imagen para borrar.\n2. Usa la lista para REORDENAR.\n3. Ajusta la Clase y pulsa SIGUIENTE.",
                 AutoSize = true,
                 ForeColor = Color.Gray,
                 Font = new Font("Segoe UI", 9f, FontStyle.Italic),
@@ -85,10 +92,9 @@ namespace SpecimenFX17.Imaging
             var lblClass = new Label { Text = "Etiqueta / Clase de esta imagen:", AutoSize = true, ForeColor = Color.LightGray };
             _txtClass = new TextBox { Width = 290, BackColor = Color.FromArgb(45, 45, 50), ForeColor = Color.White, Font = new Font("Segoe UI", 11f), Margin = new Padding(0, 5, 0, 20) };
 
-            // --- NUEVA SECCIÓN DE REORDENACIÓN ---
             var lblObj = new Label { Text = "Orden de Objetos Detectados:", AutoSize = true, ForeColor = Color.LightSkyBlue, Font = new Font("Segoe UI", 9f, FontStyle.Bold) };
             _lstObjects = new ListBox { Width = 290, Height = 180, BackColor = Color.FromArgb(45, 45, 50), ForeColor = Color.White, Font = new Font("Segoe UI", 11f), Margin = new Padding(0, 5, 0, 5) };
-            _lstObjects.SelectedIndexChanged += (s, e) => _picView.Invalidate(); // Refrescar para iluminar el seleccionado
+            _lstObjects.SelectedIndexChanged += (s, e) => _picView.Invalidate();
 
             var pnlBtns = new Panel { Width = 290, Height = 35, Margin = new Padding(0, 0, 0, 20) };
             _btnUp = new Button { Text = "⬆ Subir", Width = 140, Left = 0, BackColor = Color.FromArgb(60, 60, 65), ForeColor = Color.White, FlatStyle = FlatStyle.Flat, Cursor = Cursors.Hand };
@@ -149,25 +155,38 @@ namespace SpecimenFX17.Imaging
             {
                 _currentCube = await Task.Run(() => {
                     oldCube?.Dispose();
-                    return HyperspectralCube.Load(path);
+                    var cube = HyperspectralCube.Load(path);
+
+                    // CALIBRACIÓN Y FILTROS AL VUELO
+                    if (_opts.ApplyNormalize && _whiteRef != null && _darkRef != null)
+                        cube.Calibrate(_whiteRef, _darkRef, System.Threading.CancellationToken.None);
+
+                    if (_opts.ConvertToAbsorbance && cube.IsCalibrated)
+                        cube.ConvertToAbsorbance(System.Threading.CancellationToken.None);
+
+                    if (_opts.ApplySNV) cube.ApplySNV(System.Threading.CancellationToken.None);
+                    if (_opts.ApplyMSC) cube.ApplyMSC(System.Threading.CancellationToken.None);
+                    if (_opts.ApplySavitzkyGolay) cube.ApplySavitzkyGolay(_opts.SgWindow, _opts.SgPoly, _opts.SgDeriv, System.Threading.CancellationToken.None);
+                    if (_opts.ApplyMedianFilter) cube.ApplySpatialMedianFilter(3, System.Threading.CancellationToken.None);
+
+                    return cube;
                 });
 
                 if (this.IsDisposed) return;
 
-                // Segmentación Automática
+                // Segmentación Automática sobre la imagen procesada
                 _currentRois = await AutoSegmenter.SegmentCubeAsync(_currentCube!, _opts.SegmentationBand, _opts.CustomParams);
 
                 if (this.IsDisposed) return;
 
                 _txtClass.Text = Path.GetFileNameWithoutExtension(path).Split('_')[0];
 
-                // Refrescar lista de objetos
                 SyncObjectList();
                 RefreshView();
             }
             catch (Exception ex)
             {
-                if (!this.IsDisposed) MessageBox.Show($"Error cargando imagen: {ex.Message}");
+                if (!this.IsDisposed) MessageBox.Show($"Error procesando imagen: {ex.Message}");
             }
             finally
             {
@@ -175,7 +194,6 @@ namespace SpecimenFX17.Imaging
             }
         }
 
-        // Sincroniza la lista visual con los ROIs en memoria
         private void SyncObjectList()
         {
             int sel = _lstObjects.SelectedIndex;
@@ -184,41 +202,36 @@ namespace SpecimenFX17.Imaging
             {
                 _lstObjects.Items.Add($"Objeto {i + 1}");
             }
-            // Mantiene la selección si sigue siendo válida
             if (sel >= 0 && sel < _lstObjects.Items.Count)
                 _lstObjects.SelectedIndex = sel;
 
             _picView.Invalidate();
         }
 
-        // Mover Objeto Arriba
         private void BtnUp_Click(object? s, EventArgs e)
         {
             int idx = _lstObjects.SelectedIndex;
-            if (idx <= 0) return; // Si es el primero o no hay selección, no hacer nada
+            if (idx <= 0) return;
 
-            // Intercambiar en memoria
             var temp = _currentRois[idx];
             _currentRois[idx] = _currentRois[idx - 1];
             _currentRois[idx - 1] = temp;
 
             SyncObjectList();
-            _lstObjects.SelectedIndex = idx - 1; // Mantener seleccionado el que movimos
+            _lstObjects.SelectedIndex = idx - 1;
         }
 
-        // Mover Objeto Abajo
         private void BtnDown_Click(object? s, EventArgs e)
         {
             int idx = _lstObjects.SelectedIndex;
-            if (idx < 0 || idx >= _lstObjects.Items.Count - 1) return; // Si es el último, nada
+            if (idx < 0 || idx >= _lstObjects.Items.Count - 1) return;
 
-            // Intercambiar en memoria
             var temp = _currentRois[idx];
             _currentRois[idx] = _currentRois[idx + 1];
             _currentRois[idx + 1] = temp;
 
             SyncObjectList();
-            _lstObjects.SelectedIndex = idx + 1; // Mantener seleccionado el que movimos
+            _lstObjects.SelectedIndex = idx + 1;
         }
 
         private void RefreshView()
@@ -248,7 +261,6 @@ namespace SpecimenFX17.Imaging
 
             foreach (var roi in _currentRois)
             {
-                // Resaltar en blanco brillante y grueso si está seleccionado en la lista
                 bool isSelected = (count - 1 == selectedIndex);
                 using var p = new Pen(isSelected ? Color.White : roi.Color, isSelected ? 4 : 2);
 
@@ -290,7 +302,7 @@ namespace SpecimenFX17.Imaging
                 if (toRemove != null)
                 {
                     _currentRois.Remove(toRemove);
-                    SyncObjectList(); // Actualizar lista tras borrar
+                    SyncObjectList();
                 }
             }
         }
@@ -305,6 +317,7 @@ namespace SpecimenFX17.Imaging
                 for (int i = 0; i < _currentCube.Bands; i++)
                 {
                     double wl = _currentCube.Header.Wavelengths.Count > i ? _currentCube.Header.Wavelengths[i] : i;
+                    // FUERZA PUNTOS DECIMALES PARA QUE EL PCA NO FALLE
                     _csvMatrix.Append($",{wl.ToString("F2", System.Globalization.CultureInfo.InvariantCulture)}");
                 }
                 _csvMatrix.AppendLine();
