@@ -28,6 +28,11 @@ namespace SpecimenFX17.Imaging
         private ProgressBar _pbProgress = null!;
         private StringBuilder _csvMatrix = new();
 
+        // Nuevos controles para ordenar
+        private ListBox _lstObjects = null!;
+        private Button _btnUp = null!;
+        private Button _btnDown = null!;
+
         public SequentialBatchForm(string inputFolder, string outputFolder, BatchOptions opts)
         {
             _outputPath = outputFolder;
@@ -40,36 +45,19 @@ namespace SpecimenFX17.Imaging
             ForeColor = Color.White;
 
             BuildUI();
-            InitializeCsv();
-            LoadNextImage();
-        }
-
-        private void InitializeCsv()
-        {
-            // La cabecera se creará con la primera imagen para saber cuántas bandas hay
         }
 
         private void BuildUI()
         {
+            // Panel Superior
             var pnlTop = new Panel { Dock = DockStyle.Top, Height = 60, BackColor = Color.FromArgb(20, 20, 25), Padding = new Padding(10) };
             _lblInfo = new Label { Text = "Cargando...", AutoSize = true, Font = new Font("Segoe UI", 12f, FontStyle.Bold), ForeColor = Color.LightSkyBlue };
             _pbProgress = new ProgressBar { Dock = DockStyle.Bottom, Height = 5 };
             pnlTop.Controls.Add(_lblInfo);
             pnlTop.Controls.Add(_pbProgress);
 
-            var pnlRight = new Panel { Dock = DockStyle.Right, Width = 300, BackColor = Color.FromArgb(25, 25, 30), Padding = new Padding(15) };
-
-            var lblClass = new Label { Text = "Etiqueta / Clase de esta imagen:", Dock = DockStyle.Top, Height = 25 };
-            _txtClass = new TextBox { Dock = DockStyle.Top, BackColor = Color.FromArgb(45, 45, 50), ForeColor = Color.White, Font = new Font("Segoe UI", 11f) };
-
-            var lblHint = new Label
-            {
-                Text = "\n💡 INSTRUCCIONES:\n\n1. Los objetos detectados tienen un NÚMERO.\n2. CLIC DERECHO sobre un objeto para ELIMINARLO si es un error.\n3. Ajusta la Clase y pulsa SIGUIENTE.",
-                Dock = DockStyle.Top,
-                Height = 200,
-                ForeColor = Color.Gray,
-                Font = new Font("Segoe UI", 9f, FontStyle.Italic)
-            };
+            // Panel Derecho
+            var pnlRight = new Panel { Dock = DockStyle.Right, Width = 320, BackColor = Color.FromArgb(25, 25, 30), Padding = new Padding(15) };
 
             _btnNext = new Button
             {
@@ -83,11 +71,46 @@ namespace SpecimenFX17.Imaging
             };
             _btnNext.Click += (s, e) => ProcessAndNext();
 
-            pnlRight.Controls.Add(lblHint);
-            pnlRight.Controls.Add(_txtClass);
-            pnlRight.Controls.Add(lblClass);
+            var flp = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.TopDown, WrapContents = false };
+
+            var lblHint = new Label
+            {
+                Text = "💡 INSTRUCCIONES:\n1. Clic DERECHO en la imagen para borrar un objeto falso.\n2. Usa la lista para REORDENAR.\n3. Ajusta la Clase y pulsa SIGUIENTE.",
+                AutoSize = true,
+                ForeColor = Color.Gray,
+                Font = new Font("Segoe UI", 9f, FontStyle.Italic),
+                Margin = new Padding(0, 0, 0, 15)
+            };
+
+            var lblClass = new Label { Text = "Etiqueta / Clase de esta imagen:", AutoSize = true, ForeColor = Color.LightGray };
+            _txtClass = new TextBox { Width = 290, BackColor = Color.FromArgb(45, 45, 50), ForeColor = Color.White, Font = new Font("Segoe UI", 11f), Margin = new Padding(0, 5, 0, 20) };
+
+            // --- NUEVA SECCIÓN DE REORDENACIÓN ---
+            var lblObj = new Label { Text = "Orden de Objetos Detectados:", AutoSize = true, ForeColor = Color.LightSkyBlue, Font = new Font("Segoe UI", 9f, FontStyle.Bold) };
+            _lstObjects = new ListBox { Width = 290, Height = 180, BackColor = Color.FromArgb(45, 45, 50), ForeColor = Color.White, Font = new Font("Segoe UI", 11f), Margin = new Padding(0, 5, 0, 5) };
+            _lstObjects.SelectedIndexChanged += (s, e) => _picView.Invalidate(); // Refrescar para iluminar el seleccionado
+
+            var pnlBtns = new Panel { Width = 290, Height = 35, Margin = new Padding(0, 0, 0, 20) };
+            _btnUp = new Button { Text = "⬆ Subir", Width = 140, Left = 0, BackColor = Color.FromArgb(60, 60, 65), ForeColor = Color.White, FlatStyle = FlatStyle.Flat, Cursor = Cursors.Hand };
+            _btnDown = new Button { Text = "⬇ Bajar", Width = 140, Left = 150, BackColor = Color.FromArgb(60, 60, 65), ForeColor = Color.White, FlatStyle = FlatStyle.Flat, Cursor = Cursors.Hand };
+
+            _btnUp.Click += BtnUp_Click;
+            _btnDown.Click += BtnDown_Click;
+
+            pnlBtns.Controls.Add(_btnUp);
+            pnlBtns.Controls.Add(_btnDown);
+
+            flp.Controls.Add(lblHint);
+            flp.Controls.Add(lblClass);
+            flp.Controls.Add(_txtClass);
+            flp.Controls.Add(lblObj);
+            flp.Controls.Add(_lstObjects);
+            flp.Controls.Add(pnlBtns);
+
+            pnlRight.Controls.Add(flp);
             pnlRight.Controls.Add(_btnNext);
 
+            // Visor Principal
             _picView = new PictureBox { Dock = DockStyle.Fill, SizeMode = PictureBoxSizeMode.Zoom, BackColor = Color.Black, Cursor = Cursors.Hand };
             _picView.MouseDown += PicView_MouseDown;
             _picView.Paint += PicView_Paint;
@@ -95,6 +118,8 @@ namespace SpecimenFX17.Imaging
             Controls.Add(_picView);
             Controls.Add(pnlRight);
             Controls.Add(pnlTop);
+
+            LoadNextImage();
         }
 
         private async void LoadNextImage()
@@ -107,43 +132,99 @@ namespace SpecimenFX17.Imaging
             }
 
             string path = _files[_currentIndex];
+
+            if (this.IsDisposed) return;
+
             _lblInfo.Text = $"Procesando {_currentIndex + 1} de {_files.Count}: {Path.GetFileName(path)}";
             _pbProgress.Value = (_currentIndex * 100) / _files.Count;
             _btnNext.Enabled = false;
 
+            _picView.Image?.Dispose();
+            _picView.Image = null;
+            _picView.Invalidate();
+
+            var oldCube = _currentCube;
+
             try
             {
-                await Task.Run(() => {
-                    _currentCube?.Dispose();
-                    _currentCube = HyperspectralCube.Load(path);
-
-                    // Aplicar calibración si está en las opciones (aquí deberías pasar las refs de MainForm si quieres)
-                    // _currentCube.Calibrate(...);
+                _currentCube = await Task.Run(() => {
+                    oldCube?.Dispose();
+                    return HyperspectralCube.Load(path);
                 });
+
+                if (this.IsDisposed) return;
 
                 // Segmentación Automática
                 _currentRois = await AutoSegmenter.SegmentCubeAsync(_currentCube!, _opts.SegmentationBand, _opts.CustomParams);
 
-                // Extraer el nombre de la imagen como clase por defecto
+                if (this.IsDisposed) return;
+
                 _txtClass.Text = Path.GetFileNameWithoutExtension(path).Split('_')[0];
 
+                // Refrescar lista de objetos
+                SyncObjectList();
                 RefreshView();
             }
             catch (Exception ex)
             {
-                MessageBox.Show($"Error cargando imagen: {ex.Message}");
+                if (!this.IsDisposed) MessageBox.Show($"Error cargando imagen: {ex.Message}");
             }
             finally
             {
-                _btnNext.Enabled = true;
+                if (!this.IsDisposed) _btnNext.Enabled = true;
             }
+        }
+
+        // Sincroniza la lista visual con los ROIs en memoria
+        private void SyncObjectList()
+        {
+            int sel = _lstObjects.SelectedIndex;
+            _lstObjects.Items.Clear();
+            for (int i = 0; i < _currentRois.Count; i++)
+            {
+                _lstObjects.Items.Add($"Objeto {i + 1}");
+            }
+            // Mantiene la selección si sigue siendo válida
+            if (sel >= 0 && sel < _lstObjects.Items.Count)
+                _lstObjects.SelectedIndex = sel;
+
+            _picView.Invalidate();
+        }
+
+        // Mover Objeto Arriba
+        private void BtnUp_Click(object? s, EventArgs e)
+        {
+            int idx = _lstObjects.SelectedIndex;
+            if (idx <= 0) return; // Si es el primero o no hay selección, no hacer nada
+
+            // Intercambiar en memoria
+            var temp = _currentRois[idx];
+            _currentRois[idx] = _currentRois[idx - 1];
+            _currentRois[idx - 1] = temp;
+
+            SyncObjectList();
+            _lstObjects.SelectedIndex = idx - 1; // Mantener seleccionado el que movimos
+        }
+
+        // Mover Objeto Abajo
+        private void BtnDown_Click(object? s, EventArgs e)
+        {
+            int idx = _lstObjects.SelectedIndex;
+            if (idx < 0 || idx >= _lstObjects.Items.Count - 1) return; // Si es el último, nada
+
+            // Intercambiar en memoria
+            var temp = _currentRois[idx];
+            _currentRois[idx] = _currentRois[idx + 1];
+            _currentRois[idx + 1] = temp;
+
+            SyncObjectList();
+            _lstObjects.SelectedIndex = idx + 1; // Mantener seleccionado el que movimos
         }
 
         private void RefreshView()
         {
             if (_currentCube == null) return;
 
-            // Renderizamos la banda para previsualizar
             var renderOpts = new BliRenderOptions { Colormap = BliColormap.Grayscale, DrawColorbar = false };
             var bmp = BliRenderer.RenderBand(_currentCube, _opts.SegmentationBand, renderOpts);
 
@@ -155,21 +236,22 @@ namespace SpecimenFX17.Imaging
         {
             if (_picView.Image == null) return;
 
-            // Dibujar ROIs y números
             var g = e.Graphics;
             g.SmoothingMode = SmoothingMode.AntiAlias;
 
-            // Necesitamos calcular la escala del zoom del PictureBox
             float ratio = Math.Min((float)_picView.Width / _currentCube!.Samples, (float)_picView.Height / _currentCube!.Lines);
             float offX = (_picView.Width - _currentCube.Samples * ratio) / 2;
             float offY = (_picView.Height - _currentCube.Lines * ratio) / 2;
 
             int count = 1;
+            int selectedIndex = _lstObjects.SelectedIndex;
+
             foreach (var roi in _currentRois)
             {
-                // Dibujar contorno
-                using var p = new Pen(roi.Color, 2);
-                // Aquí simplificamos dibujando un rectángulo alrededor de la máscara
+                // Resaltar en blanco brillante y grueso si está seleccionado en la lista
+                bool isSelected = (count - 1 == selectedIndex);
+                using var p = new Pen(isSelected ? Color.White : roi.Color, isSelected ? 4 : 2);
+
                 var mask = roi.GetMask(_currentCube.Lines, _currentCube.Samples);
                 int minX = int.MaxValue, minY = int.MaxValue, maxX = 0, maxY = 0;
                 for (int y = 0; y < _currentCube.Lines; y++)
@@ -183,11 +265,10 @@ namespace SpecimenFX17.Imaging
                 var rect = new RectangleF(offX + minX * ratio, offY + minY * ratio, (maxX - minX) * ratio, (maxY - minY) * ratio);
                 g.DrawRectangle(p, rect.X, rect.Y, rect.Width, rect.Height);
 
-                // Dibujar número gigante
                 string txt = count.ToString();
-                using var font = new Font("Arial", 14, FontStyle.Bold);
+                using var font = new Font("Arial", isSelected ? 18 : 14, FontStyle.Bold);
                 var sz = g.MeasureString(txt, font);
-                g.FillRectangle(new SolidBrush(roi.Color), rect.X, rect.Y - sz.Height, sz.Width, sz.Height);
+                g.FillRectangle(new SolidBrush(isSelected ? Color.White : roi.Color), rect.X, rect.Y - sz.Height, sz.Width, sz.Height);
                 g.DrawString(txt, font, Brushes.Black, rect.X, rect.Y - sz.Height);
 
                 count++;
@@ -198,7 +279,6 @@ namespace SpecimenFX17.Imaging
         {
             if (e.Button == MouseButtons.Right)
             {
-                // Mapear clic a imagen
                 float ratio = Math.Min((float)_picView.Width / _currentCube!.Samples, (float)_picView.Height / _currentCube!.Lines);
                 float offX = (_picView.Width - _currentCube.Samples * ratio) / 2;
                 float offY = (_picView.Height - _currentCube.Lines * ratio) / 2;
@@ -206,12 +286,11 @@ namespace SpecimenFX17.Imaging
                 int imgX = (int)((e.X - offX) / ratio);
                 int imgY = (int)((e.Y - offY) / ratio);
 
-                // Buscar qué ROI contiene ese punto y borrarla
                 var toRemove = _currentRois.FirstOrDefault(r => r.Contains(new System.Drawing.Point(imgX, imgY)));
                 if (toRemove != null)
                 {
                     _currentRois.Remove(toRemove);
-                    _picView.Invalidate();
+                    SyncObjectList(); // Actualizar lista tras borrar
                 }
             }
         }
@@ -220,19 +299,17 @@ namespace SpecimenFX17.Imaging
         {
             if (_currentCube == null) return;
 
-            // 1. Si es la primera imagen, inicializar cabecera del CSV
             if (_csvMatrix.Length == 0)
             {
                 _csvMatrix.Append("ID_Muestra,Clase,Nombre_Archivo");
                 for (int i = 0; i < _currentCube.Bands; i++)
                 {
                     double wl = _currentCube.Header.Wavelengths.Count > i ? _currentCube.Header.Wavelengths[i] : i;
-                    _csvMatrix.Append($",{wl:F2}");
+                    _csvMatrix.Append($",{wl.ToString("F2", System.Globalization.CultureInfo.InvariantCulture)}");
                 }
                 _csvMatrix.AppendLine();
             }
 
-            // 2. Calcular espectro medio de cada ROI válida y añadir a la matriz
             int subId = 1;
             foreach (var roi in _currentRois)
             {
