@@ -1,6 +1,5 @@
 ﻿using System;
 using System.Collections.Generic;
-using System.Linq;
 
 namespace SpecimenFX17.Imaging
 {
@@ -18,19 +17,22 @@ namespace SpecimenFX17.Imaging
     {
         public static PcaResult CalculatePcaFromCsv(string csvPath, int numComponents = 3)
         {
-            var lines = System.IO.File.ReadAllLines(csvPath);
-            if (lines.Length < 2) throw new Exception("El CSV está vacío o no tiene suficientes datos.");
+            return CalculatePca(System.IO.File.ReadAllLines(csvPath), numComponents);
+        }
+
+        public static PcaResult CalculatePca(string[] lines, int numComponents = 3)
+        {
+            if (lines.Length < 2) throw new Exception("No hay suficientes datos para calcular el PCA.");
 
             var header = lines[0].Split(',');
             var wavelengths = new List<double>();
 
-            // Extraer longitudes de onda de la cabecera (asumiendo formato: ID, Clase, Archivo, 400.1, 402.5, ...)
             for (int i = 3; i < header.Length; i++)
             {
                 if (double.TryParse(header[i], System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out double wl))
                     wavelengths.Add(wl);
                 else
-                    wavelengths.Add(i); // Fallback: usar índice si falla el parseo
+                    wavelengths.Add(i);
             }
 
             int numSamples = lines.Length - 1;
@@ -39,7 +41,6 @@ namespace SpecimenFX17.Imaging
             List<string> sampleIds = new();
             List<string> classes = new();
 
-            // Leer datos
             for (int i = 1; i < lines.Length; i++)
             {
                 var parts = lines[i].Split(',');
@@ -49,12 +50,14 @@ namespace SpecimenFX17.Imaging
                 for (int j = 0; j < numVariables; j++)
                 {
                     if (double.TryParse(parts[j + 3], System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out double val))
+                    {
+                        // 🛡️ VACUNA ANTI-COLAPSO: Si la matemática del SNV explotó, lo saneamos.
+                        if (double.IsNaN(val) || double.IsInfinity(val)) val = 0;
                         data[i - 1, j] = val;
+                    }
                 }
             }
 
-            // --- CÁLCULO DE PCA (NIPALS Simplificado / SVD iterativo) ---
-            // 1. Centrado medio (Mean Centering)
             double[] means = new double[numVariables];
             for (int j = 0; j < numVariables; j++)
             {
@@ -64,7 +67,6 @@ namespace SpecimenFX17.Imaging
                 for (int i = 0; i < numSamples; i++) data[i, j] -= means[j];
             }
 
-            // 2. Extraer Componentes
             double[,] scores = new double[numSamples, numComponents];
             double[,] loadings = new double[numVariables, numComponents];
             double[] eigenvalues = new double[numComponents];
@@ -78,18 +80,16 @@ namespace SpecimenFX17.Imaging
 
             for (int k = 0; k < numComponents; k++)
             {
-                // Inicializar score temporal t con una columna aleatoria (o la primera)
                 double[] t = new double[numSamples];
                 for (int i = 0; i < numSamples; i++) t[i] = residual[i, 0];
-
                 double[] p = new double[numVariables];
                 double t_old_norm = 0;
 
-                for (int iter = 0; iter < 100; iter++) // Iteraciones NIPALS
+                for (int iter = 0; iter < 100; iter++)
                 {
-                    // p = (X' * t) / (t' * t)
                     double t_norm = 0;
                     for (int i = 0; i < numSamples; i++) t_norm += t[i] * t[i];
+                    if (t_norm == 0) break;
 
                     for (int j = 0; j < numVariables; j++)
                     {
@@ -98,13 +98,15 @@ namespace SpecimenFX17.Imaging
                         p[j] = sum / t_norm;
                     }
 
-                    // Normalizar p
                     double p_norm = 0;
                     for (int j = 0; j < numVariables; j++) p_norm += p[j] * p[j];
                     p_norm = Math.Sqrt(p_norm);
+
+                    // 🛡️ EVITAR DIVISIÓN POR CERO EN EL CÁLCULO
+                    if (p_norm < 1e-10) p_norm = 1;
+
                     for (int j = 0; j < numVariables; j++) p[j] /= p_norm;
 
-                    // t = (X * p) / (p' * p)
                     double new_t_norm = 0;
                     for (int i = 0; i < numSamples; i++)
                     {
@@ -114,16 +116,13 @@ namespace SpecimenFX17.Imaging
                         new_t_norm += t[i] * t[i];
                     }
 
-                    // Convergencia
                     if (Math.Abs(new_t_norm - t_old_norm) < 1e-6) break;
                     t_old_norm = new_t_norm;
                 }
 
-                // Guardar Score y Loading
                 for (int i = 0; i < numSamples; i++) scores[i, k] = t[i];
                 for (int j = 0; j < numVariables; j++) loadings[j, k] = p[j];
 
-                // Deflación: E = X - t * p'
                 double compVariance = 0;
                 for (int i = 0; i < numSamples; i++)
                 {
@@ -133,8 +132,7 @@ namespace SpecimenFX17.Imaging
                         compVariance += (t[i] * p[j]) * (t[i] * p[j]);
                     }
                 }
-
-                eigenvalues[k] = compVariance / totalVariance * 100.0; // Varianza en porcentaje
+                eigenvalues[k] = totalVariance > 0 ? (compVariance / totalVariance * 100.0) : 0;
             }
 
             return new PcaResult

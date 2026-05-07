@@ -1,8 +1,8 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Drawing;
-using System.Drawing.Imaging;
-using System.Runtime.InteropServices;
+using System.Threading;
+using System.Threading.Tasks;
 using System.Windows.Forms;
 using OpenCvSharp;
 
@@ -15,13 +15,13 @@ namespace SpecimenFX17.Imaging
         private readonly int _band;
 
         private PictureBox _picPreview = null!;
+        private Label _lblStatus = null!;
+
         private TrackBar _trkThreshold = null!;
         private CheckBox _chkInvert = null!;
         private TrackBar _trkArea = null!;
         private TrackBar _trkClose = null!;
         private TrackBar _trkOpen = null!;
-
-        // Sliders para los códigos de barras
         private TrackBar _trkTop = null!;
         private TrackBar _trkBottom = null!;
 
@@ -32,7 +32,8 @@ namespace SpecimenFX17.Imaging
         private Label _lblTop = null!;
         private Label _lblBottom = null!;
 
-        private Mat _gray8U = null!;
+        private CancellationTokenSource? _cts;
+        private Mat? _gray8U;
         private Bitmap? _previewBmp;
         private bool _isDrawing = false;
 
@@ -41,7 +42,7 @@ namespace SpecimenFX17.Imaging
             _cube = cube;
             _band = band;
 
-            Text = "UltraVisor de Segmentación - Ajuste Fino Visual";
+            Text = "UltraVisor de Segmentación - Modo Blindado (Ver. 2)";
             Size = new System.Drawing.Size(1200, 850);
             BackColor = Color.FromArgb(30, 30, 35);
             ForeColor = Color.White;
@@ -49,14 +50,26 @@ namespace SpecimenFX17.Imaging
 
             BuildUI();
             InitializeImage();
-            UpdatePreview();
         }
 
-        private void InitializeImage()
+        private async void InitializeImage()
         {
+            _lblStatus.Text = "⏳ Extrayendo banda hiperespectral y normalizando...";
+            _lblStatus.ForeColor = Color.Yellow;
+
             Params.StretchMin = float.NaN;
             Params.StretchMax = float.NaN;
-            _gray8U = AutoSegmenter.NormalizeBandTo8Bit(_cube, _band, Params);
+
+            try
+            {
+                _gray8U = await Task.Run(() => AutoSegmenter.NormalizeBandTo8Bit(_cube, _band, Params, CancellationToken.None));
+                UpdatePreview();
+            }
+            catch (Exception ex)
+            {
+                _lblStatus.Text = $"❌ Error crítico de carga: {ex.Message}";
+                _lblStatus.ForeColor = Color.Red;
+            }
         }
 
         private void BuildUI()
@@ -90,12 +103,10 @@ namespace SpecimenFX17.Imaging
             _trkOpen = new TrackBar { Minimum = 0, Maximum = 10, Value = 1, Width = 320, TickFrequency = 1 };
             _trkOpen.Scroll += (s, e) => { Params.OpenIters = _trkOpen.Value; _lblOpen.Text = $"3. Apertura morfológica: {Params.OpenIters}"; UpdatePreview(); };
 
-            // EL SLIDER QUE TE MENTÍA
             _lblArea = new Label { Text = "4. Tamaño Mínimo (Píxeles): 100", AutoSize = true, Margin = new Padding(0, 15, 0, 0), ForeColor = Color.LightGreen };
             _trkArea = new TrackBar { Minimum = 10, Maximum = 10000, Value = 100, Width = 320, TickFrequency = 500 };
             _trkArea.Scroll += (s, e) => { Params.MinArea = _trkArea.Value; _lblArea.Text = $"4. Tamaño Mínimo (Píxeles): {Params.MinArea}"; UpdatePreview(); };
 
-            // CORTADORES DE CÓDIGOS DE BARRAS
             _lblTop = new Label { Text = "5. Ignorar Margen Superior (%): 0", AutoSize = true, Margin = new Padding(0, 15, 0, 0), ForeColor = Color.Yellow };
             _trkTop = new TrackBar { Minimum = 0, Maximum = 40, Value = 0, Width = 320, TickFrequency = 5 };
             _trkTop.Scroll += (s, e) => { Params.IgnoreTopPct = _trkTop.Value; _lblTop.Text = $"5. Ignorar Margen Superior (%): {Params.IgnoreTopPct}"; UpdatePreview(); };
@@ -130,13 +141,30 @@ namespace SpecimenFX17.Imaging
             pnlControls.Controls.Add(flp);
             pnlControls.Controls.Add(btnOk);
 
-            _picPreview = new PictureBox { Dock = DockStyle.Fill, SizeMode = PictureBoxSizeMode.Zoom, BackColor = Color.Black, Cursor = Cursors.Default };
+            var pnlImage = new Panel { Dock = DockStyle.Fill, BackColor = Color.Black };
+
+            // EL CHIVATO AHORA ESTÁ ARRIBA Y FLOTANDO PARA QUE NUNCA SE OCULTE
+            _lblStatus = new Label
+            {
+                Text = "Inicializando...",
+                Dock = DockStyle.Top,
+                Height = 35,
+                TextAlign = ContentAlignment.MiddleCenter,
+                ForeColor = Color.White,
+                Font = new Font("Segoe UI", 10f, FontStyle.Bold),
+                BackColor = Color.FromArgb(200, 20, 20, 25)
+            };
+
+            _picPreview = new PictureBox { Dock = DockStyle.Fill, SizeMode = PictureBoxSizeMode.Zoom, Cursor = Cursors.Default };
 
             _picPreview.MouseDown += PicPreview_MouseDown;
             _picPreview.MouseMove += PicPreview_MouseMove;
             _picPreview.MouseUp += (s, e) => { _isDrawing = false; };
 
-            Controls.Add(_picPreview);
+            pnlImage.Controls.Add(_picPreview);
+            _picPreview.Controls.Add(_lblStatus); // Añadido dentro de la foto
+
+            Controls.Add(pnlImage);
             Controls.Add(pnlControls);
 
             Params.Threshold = _trkThreshold.Value;
@@ -170,7 +198,6 @@ namespace SpecimenFX17.Imaging
         private void PicPreview_MouseMove(object? sender, MouseEventArgs e)
         {
             if (!_isDrawing || _previewBmp == null) return;
-
             var imgCoords = MapClientToImage(e.X, e.Y);
             if (imgCoords.HasValue)
             {
@@ -194,65 +221,101 @@ namespace SpecimenFX17.Imaging
             int imgY = (int)((clientY - offY) / ratio);
 
             if (imgX >= 0 && imgX < _cube.Samples && imgY >= 0 && imgY < _cube.Lines)
-            {
                 return new System.Drawing.Point(imgX, imgY);
-            }
+
             return null;
         }
 
-        private void UpdatePreview()
+        private async void UpdatePreview()
         {
-            if (_gray8U == null) return;
+            _cts?.Cancel();
+            _cts = new CancellationTokenSource();
+            var token = _cts.Token;
 
-            using Mat rawMask = AutoSegmenter.GetRawMask(_gray8U, Params);
+            // Para no saturar visualmente, solo mostramos procesando si tarda de verdad
+            _lblStatus.Text = "⏳ Procesando Segmentación...";
+            _lblStatus.ForeColor = Color.Orange;
 
-            // --- AHORA LA PREVISUALIZACIÓN ES 100% HONESTA ---
-            // Aplicamos el filtro de Área en tiempo real para que veas lo que va a salir en el lote
-            using Mat filteredMask = Mat.Zeros(rawMask.Size(), MatType.CV_8UC1);
-            using Mat labels = new Mat();
-            using Mat stats = new Mat();
-            using Mat centroids = new Mat();
-
-            int numLabels = Cv2.ConnectedComponentsWithStats(rawMask, labels, stats, centroids);
-            var labelIndexer = labels.GetGenericIndexer<int>();
-            var maskIndexer = filteredMask.GetGenericIndexer<byte>();
-
-            HashSet<int> validLabels = new HashSet<int>();
-            for (int i = 1; i < numLabels; i++)
+            try
             {
-                if (stats.At<int>(i, (int)ConnectedComponentsTypes.Area) >= Params.MinArea)
+                await Task.Run(() =>
                 {
-                    validLabels.Add(i);
-                }
-            }
+                    if (_gray8U == null) return;
 
-            for (int y = 0; y < rawMask.Rows; y++)
-            {
-                for (int x = 0; x < rawMask.Cols; x++)
-                {
-                    if (validLabels.Contains(labelIndexer[y, x]))
+                    using Mat rawMask = AutoSegmenter.GetRawMask(_gray8U, Params);
+                    token.ThrowIfCancellationRequested();
+
+                    using Mat filteredMask = Mat.Zeros(rawMask.Size(), MatType.CV_8UC1);
+                    using Mat labels = new Mat();
+                    using Mat stats = new Mat();
+                    using Mat centroids = new Mat();
+
+                    int numLabels = Cv2.ConnectedComponentsWithStats(rawMask, labels, stats, centroids);
+                    var labelIndexer = labels.GetGenericIndexer<int>();
+                    var maskIndexer = filteredMask.GetGenericIndexer<byte>();
+
+                    HashSet<int> validLabels = new HashSet<int>();
+                    for (int i = 1; i < numLabels; i++)
                     {
-                        maskIndexer[y, x] = 255;
+                        if (stats.At<int>(i, (int)ConnectedComponentsTypes.Area) >= Params.MinArea)
+                            validLabels.Add(i);
                     }
-                }
+
+                    token.ThrowIfCancellationRequested();
+
+                    for (int y = 0; y < rawMask.Rows; y++)
+                    {
+                        for (int x = 0; x < rawMask.Cols; x++)
+                        {
+                            if (validLabels.Contains(labelIndexer[y, x]))
+                                maskIndexer[y, x] = 255;
+                        }
+                    }
+
+                    token.ThrowIfCancellationRequested();
+
+                    using Mat colorView = new Mat();
+                    Cv2.CvtColor(_gray8U, colorView, ColorConversionCodes.GRAY2BGR);
+                    colorView.SetTo(new Scalar(0, 0, 255), filteredMask);
+
+                    Bitmap newBmp;
+                    using (var tempBmp = OpenCvSharp.Extensions.BitmapConverter.ToBitmap(colorView))
+                    {
+                        newBmp = new Bitmap(tempBmp);
+                    }
+
+                    this.Invoke(new Action(() => {
+                        var oldImg = _picPreview.Image;
+                        _previewBmp = newBmp;
+                        _picPreview.Image = _previewBmp;
+                        oldImg?.Dispose();
+
+                        _lblStatus.Text = "✅ Listo";
+                        _lblStatus.ForeColor = Color.LightGreen;
+                    }));
+
+                }, token);
             }
-
-            using Mat colorView = new Mat();
-            Cv2.CvtColor(_gray8U, colorView, ColorConversionCodes.GRAY2BGR);
-
-            colorView.SetTo(new Scalar(0, 0, 255), filteredMask);
-
-            var oldImg = _picPreview.Image;
-            _previewBmp = OpenCvSharp.Extensions.BitmapConverter.ToBitmap(colorView);
-            _picPreview.Image = _previewBmp;
-
-            oldImg?.Dispose();
+            catch (OperationCanceledException)
+            {
+                // Ignoramos la cancelación limpia
+            }
+            catch (Exception ex)
+            {
+                // YA NO QUEDAN ERRORES SILENCIADOS. SI ALGO FALLA, LO VERÁS AQUÍ.
+                this.Invoke(new Action(() => {
+                    _lblStatus.Text = $"❌ Error: {ex.Message}";
+                    _lblStatus.ForeColor = Color.Red;
+                }));
+            }
         }
 
-        protected override void OnFormClosed(FormClosedEventArgs e)
+        protected override void OnFormClosing(FormClosingEventArgs e)
         {
+            _cts?.Cancel();
             _gray8U?.Dispose();
-            base.OnFormClosed(e);
+            _previewBmp?.Dispose();
+            base.OnFormClosing(e);
         }
     }
 }

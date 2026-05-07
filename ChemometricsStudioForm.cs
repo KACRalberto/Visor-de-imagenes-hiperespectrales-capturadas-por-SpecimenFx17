@@ -1,4 +1,5 @@
-﻿using System;
+﻿
+using System;
 using System.Collections.Generic;
 using System.Drawing;
 using System.Drawing.Drawing2D;
@@ -9,8 +10,9 @@ namespace SpecimenFX17.Imaging
 {
     public class ChemometricsStudioForm : WeifenLuo.WinFormsUI.Docking.DockContent
     {
+        // Memoria del Dataset
+        private List<string> _datasetLines = new();
         private PcaResult? _pcaResult;
-        private string _csvPath = "";
 
         // UI Controls
         private PictureBox _picScores = null!;
@@ -18,7 +20,11 @@ namespace SpecimenFX17.Imaging
         private Label _lblInfo = null!;
         private ListBox _lstClasses = null!;
 
-        // Paleta de colores para clases
+        // Interactividad
+        private List<PointF> _scorePoints = new(); // Guarda las X,Y de la pantalla de cada punto
+        private int _hoveredIndex = -1;
+
+        // Paleta de colores
         private readonly Color[] _classColors = { Color.Cyan, Color.Orange, Color.LimeGreen, Color.Magenta, Color.Yellow, Color.White };
         private Dictionary<string, Color> _classColorMap = new();
 
@@ -28,7 +34,6 @@ namespace SpecimenFX17.Imaging
             Size = new System.Drawing.Size(1200, 800);
             BackColor = Color.FromArgb(20, 20, 25);
             ForeColor = Color.White;
-
             BuildUI();
         }
 
@@ -44,11 +49,14 @@ namespace SpecimenFX17.Imaging
 
             var splitMain = new SplitContainer { Dock = DockStyle.Fill, Orientation = Orientation.Horizontal, SplitterDistance = 450, BackColor = Color.FromArgb(40, 40, 45) };
 
-            // PANEL SUPERIOR: SCORES
             var pnlScores = new Panel { Dock = DockStyle.Fill, BackColor = Color.FromArgb(15, 15, 20), Padding = new Padding(10) };
-            var lblScoreTitle = new Label { Text = "📊 PCA Scores (PC1 vs PC2) - Agrupación de Muestras", Dock = DockStyle.Top, Height = 25, ForeColor = Color.LightSkyBlue, Font = new Font("Segoe UI", 10f, FontStyle.Bold) };
+            var lblScoreTitle = new Label { Text = "📊 PCA Scores (PC1 vs PC2) - CLIC DERECHO PARA BORRAR OUTLIERS", Dock = DockStyle.Top, Height = 25, ForeColor = Color.LightSkyBlue, Font = new Font("Segoe UI", 10f, FontStyle.Bold) };
             _picScores = new PictureBox { Dock = DockStyle.Fill, BackColor = Color.FromArgb(10, 10, 15) };
+
+            // --- NUEVOS EVENTOS INTERACTIVOS ---
             _picScores.Paint += PaintScores;
+            _picScores.MouseMove += PicScores_MouseMove;
+            _picScores.MouseDown += PicScores_MouseDown;
             _picScores.Resize += (s, e) => _picScores.Invalidate();
 
             var pnlLegend = new Panel { Dock = DockStyle.Right, Width = 150, BackColor = Color.FromArgb(20, 20, 25) };
@@ -60,7 +68,6 @@ namespace SpecimenFX17.Imaging
             pnlScores.Controls.Add(pnlLegend);
             pnlScores.Controls.Add(lblScoreTitle);
 
-            // PANEL INFERIOR: LOADINGS
             var pnlLoadings = new Panel { Dock = DockStyle.Fill, BackColor = Color.FromArgb(15, 15, 20), Padding = new Padding(10) };
             var lblLoadingTitle = new Label { Text = "📉 PCA Loadings (PC1) - Importancia de Longitudes de Onda", Dock = DockStyle.Top, Height = 25, ForeColor = Color.Orange, Font = new Font("Segoe UI", 10f, FontStyle.Bold) };
             _picLoadings = new PictureBox { Dock = DockStyle.Fill, BackColor = Color.FromArgb(10, 10, 15) };
@@ -84,32 +91,93 @@ namespace SpecimenFX17.Imaging
             {
                 try
                 {
-                    _csvPath = ofd.FileName;
-                    _lblInfo.Text = "Calculando PCA... Espere...";
-                    Application.DoEvents();
-
-                    _pcaResult = PcaEngine.CalculatePcaFromCsv(_csvPath);
-
-                    // Asignar colores a las clases encontradas
-                    _classColorMap.Clear();
-                    _lstClasses.Items.Clear();
-                    int colorIdx = 0;
-                    foreach (var c in _pcaResult.Classes.Distinct())
-                    {
-                        _classColorMap[c] = _classColors[colorIdx % _classColors.Length];
-                        _lstClasses.Items.Add($"■ {c}");
-                        colorIdx++;
-                    }
-
-                    _lblInfo.Text = $"Archivo: {System.IO.Path.GetFileName(_csvPath)} | Muestras: {_pcaResult.SampleIds.Count} | Varianza PC1: {_pcaResult.ExplainedVariance[0]:F1}% | PC2: {_pcaResult.ExplainedVariance[1]:F1}%";
-
-                    _picScores.Invalidate();
-                    _picLoadings.Invalidate();
+                    _datasetLines = System.IO.File.ReadAllLines(ofd.FileName).ToList();
+                    RecalculatePCA();
                 }
                 catch (Exception ex)
                 {
-                    MessageBox.Show($"Error analizando CSV:\n{ex.Message}", "Error PCA", MessageBoxButtons.OK, MessageBoxIcon.Error);
-                    _lblInfo.Text = "Error en el cálculo.";
+                    MessageBox.Show($"Error leyendo archivo:\n{ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                }
+            }
+        }
+
+        private void RecalculatePCA()
+        {
+            if (_datasetLines.Count < 3) return; // Cabecera + al menos 2 datos
+
+            _lblInfo.Text = "Calculando PCA... Espere...";
+            Application.DoEvents();
+
+            try
+            {
+                _pcaResult = PcaEngine.CalculatePca(_datasetLines.ToArray());
+
+                _classColorMap.Clear();
+                _lstClasses.Items.Clear();
+                int colorIdx = 0;
+                foreach (var c in _pcaResult.Classes.Distinct())
+                {
+                    _classColorMap[c] = _classColors[colorIdx % _classColors.Length];
+                    _lstClasses.Items.Add($"■ {c}");
+                    colorIdx++;
+                }
+
+                _lblInfo.Text = $"Muestras: {_pcaResult.SampleIds.Count} | Varianza PC1: {_pcaResult.ExplainedVariance[0]:F1}% | PC2: {_pcaResult.ExplainedVariance[1]:F1}%";
+
+                _hoveredIndex = -1; // Resetear hover
+                _picScores.Invalidate();
+                _picLoadings.Invalidate();
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(ex.Message, "Error PCA", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                _lblInfo.Text = "Error de estructura en el CSV.";
+            }
+        }
+
+        // --- INTERACTIVIDAD: PASAR EL RATÓN ---
+        private void PicScores_MouseMove(object? sender, MouseEventArgs e)
+        {
+            if (_pcaResult == null || _scorePoints.Count != _pcaResult.SampleIds.Count) return;
+
+            int closestIndex = -1;
+            double minDistance = 10.0; // Radio de captura en píxeles
+
+            for (int i = 0; i < _scorePoints.Count; i++)
+            {
+                double dist = Math.Sqrt(Math.Pow(e.X - _scorePoints[i].X, 2) + Math.Pow(e.Y - _scorePoints[i].Y, 2));
+                if (dist < minDistance)
+                {
+                    minDistance = dist;
+                    closestIndex = i;
+                }
+            }
+
+            if (_hoveredIndex != closestIndex)
+            {
+                _hoveredIndex = closestIndex;
+                _picScores.Cursor = (_hoveredIndex != -1) ? Cursors.Hand : Cursors.Default;
+                _picScores.Invalidate(); // Fuerza a repintar para mostrar el nombre
+            }
+        }
+
+        // --- INTERACTIVIDAD: CLIC DERECHO PARA BORRAR ---
+        private void PicScores_MouseDown(object? sender, MouseEventArgs e)
+        {
+            if (e.Button == MouseButtons.Right && _hoveredIndex != -1 && _pcaResult != null)
+            {
+                string id = _pcaResult.SampleIds[_hoveredIndex];
+                string cls = _pcaResult.Classes[_hoveredIndex];
+
+                var result = MessageBox.Show(
+                    $"¿Deseas eliminar definitivamente el punto anómalo '{id}' (Clase: {cls}) del análisis PCA?\n\nEl modelo se recalculará automáticamente.",
+                    "Eliminar Outlier", MessageBoxButtons.YesNo, MessageBoxIcon.Warning);
+
+                if (result == DialogResult.Yes)
+                {
+                    // +1 porque la línea 0 del _datasetLines es la cabecera del CSV
+                    _datasetLines.RemoveAt(_hoveredIndex + 1);
+                    RecalculatePCA();
                 }
             }
         }
@@ -123,25 +191,22 @@ namespace SpecimenFX17.Imaging
             int w = _picScores.Width;
             int h = _picScores.Height;
 
-            // Encontrar Min/Max para escalar
             double minX = double.MaxValue, maxX = double.MinValue;
             double minY = double.MaxValue, maxY = double.MinValue;
 
             for (int i = 0; i < _pcaResult.SampleIds.Count; i++)
             {
-                double x = _pcaResult.Scores[i, 0]; // PC1
-                double y = _pcaResult.Scores[i, 1]; // PC2
+                double x = _pcaResult.Scores[i, 0];
+                double y = _pcaResult.Scores[i, 1];
                 if (x < minX) minX = x; if (x > maxX) maxX = x;
                 if (y < minY) minY = y; if (y > maxY) maxY = y;
             }
 
-            // Márgenes
             double marginX = (maxX - minX) * 0.1; if (marginX == 0) marginX = 1;
             double marginY = (maxY - minY) * 0.1; if (marginY == 0) marginY = 1;
             minX -= marginX; maxX += marginX;
             minY -= marginY; maxY += marginY;
 
-            // Dibujar Ejes (Cruces en el origen 0,0)
             int zeroX = (int)((0 - minX) / (maxX - minX) * w);
             int zeroY = h - (int)((0 - minY) / (maxY - minY) * h);
 
@@ -149,21 +214,55 @@ namespace SpecimenFX17.Imaging
             if (zeroX >= 0 && zeroX <= w) g.DrawLine(axisPen, zeroX, 0, zeroX, h);
             if (zeroY >= 0 && zeroY <= h) g.DrawLine(axisPen, 0, zeroY, w, zeroY);
 
-            // Dibujar Puntos
-            int dotSize = 8;
+            _scorePoints.Clear();
+
             for (int i = 0; i < _pcaResult.SampleIds.Count; i++)
             {
-                double px = _pcaResult.Scores[i, 0];
-                double py = _pcaResult.Scores[i, 1];
-                string cls = _pcaResult.Classes[i];
+                int screenX = (int)((_pcaResult.Scores[i, 0] - minX) / (maxX - minX) * w);
+                int screenY = h - (int)((_pcaResult.Scores[i, 1] - minY) / (maxY - minY) * h);
+                _scorePoints.Add(new PointF(screenX, screenY));
 
-                int screenX = (int)((px - minX) / (maxX - minX) * w);
-                int screenY = h - (int)((py - minY) / (maxY - minY) * h); // Invertir Y para gráficos
+                if (i == _hoveredIndex) continue;
 
-                Color c = _classColorMap.ContainsKey(cls) ? _classColorMap[cls] : Color.Gray;
-                using var brush = new SolidBrush(Color.FromArgb(200, c));
-                g.FillEllipse(brush, screenX - dotSize / 2, screenY - dotSize / 2, dotSize, dotSize);
-                g.DrawEllipse(Pens.White, screenX - dotSize / 2, screenY - dotSize / 2, dotSize, dotSize);
+                Color c = _classColorMap.ContainsKey(_pcaResult.Classes[i]) ? _classColorMap[_pcaResult.Classes[i]] : Color.Gray;
+                using var brush = new SolidBrush(Color.FromArgb(180, c));
+                g.FillEllipse(brush, screenX - 4, screenY - 4, 8, 8);
+                g.DrawEllipse(Pens.White, screenX - 4, screenY - 4, 8, 8);
+            }
+
+            if (_hoveredIndex != -1 && _hoveredIndex < _scorePoints.Count)
+            {
+                int hX = (int)_scorePoints[_hoveredIndex].X;
+                int hY = (int)_scorePoints[_hoveredIndex].Y;
+                Color hc = _classColorMap.ContainsKey(_pcaResult.Classes[_hoveredIndex]) ? _classColorMap[_pcaResult.Classes[_hoveredIndex]] : Color.White;
+
+                g.FillEllipse(new SolidBrush(hc), hX - 6, hY - 6, 12, 12);
+                g.DrawEllipse(new Pen(Color.White, 2f), hX - 6, hY - 6, 12, 12);
+
+                string label = $"{_pcaResult.SampleIds[_hoveredIndex]} ({_pcaResult.Classes[_hoveredIndex]})";
+                using var font = new Font("Segoe UI", 9f, FontStyle.Bold);
+                var sz = g.MeasureString(label, font);
+
+                float boxWidth = sz.Width + 6;
+                float boxHeight = sz.Height + 6;
+
+                // 🛡️ LÓGICA ANTI-CORTES (Colisión con los bordes de la pantalla)
+                float drawX = hX + 12;
+                float drawY = hY - 12;
+
+                // Si choca por la derecha, lo movemos a la izquierda del ratón
+                if (drawX + boxWidth > w) drawX = hX - boxWidth - 12;
+
+                // Si choca por arriba, lo bajamos
+                if (drawY < 0) drawY = hY + 12;
+
+                // Si choca por abajo, lo subimos
+                if (drawY + boxHeight > h) drawY = h - boxHeight - 12;
+
+                // Dibujar caja oscura opaca detrás del texto
+                g.FillRectangle(new SolidBrush(Color.FromArgb(230, 20, 20, 25)), drawX, drawY, boxWidth, boxHeight);
+                g.DrawRectangle(Pens.Gray, drawX, drawY, boxWidth, boxHeight);
+                g.DrawString(label, font, Brushes.White, drawX + 3, drawY + 3);
             }
         }
 
@@ -182,7 +281,7 @@ namespace SpecimenFX17.Imaging
             double minL = double.MaxValue, maxL = double.MinValue;
             for (int j = 0; j < numVars; j++)
             {
-                double v = _pcaResult.Loadings[j, 0]; // Loadings de PC1
+                double v = _pcaResult.Loadings[j, 0];
                 if (v < minL) minL = v;
                 if (v > maxL) maxL = v;
             }
@@ -190,18 +289,19 @@ namespace SpecimenFX17.Imaging
             double marginY = (maxL - minL) * 0.1; if (marginY == 0) marginY = 1;
             minL -= marginY; maxL += marginY;
 
-            // Eje Cero
             int zeroY = h - (int)((0 - minL) / (maxL - minL) * h);
             using var axisPen = new Pen(Color.FromArgb(80, 255, 255, 255), 1) { DashStyle = DashStyle.Dash };
             if (zeroY >= 0 && zeroY <= h) g.DrawLine(axisPen, 0, zeroY, w, zeroY);
 
-            // Trazar línea de Loadings
             var points = new List<System.Drawing.PointF>();
             for (int j = 0; j < numVars; j++)
             {
                 float px = (float)j / (numVars - 1) * w;
                 float py = h - (float)((_pcaResult.Loadings[j, 0] - minL) / (maxL - minL) * h);
-                points.Add(new System.Drawing.PointF(px, py));
+                if (!float.IsNaN(px) && !float.IsNaN(py) && !float.IsInfinity(py))
+                {
+                    points.Add(new System.Drawing.PointF(px, py));
+                }
             }
 
             if (points.Count > 1)
@@ -210,7 +310,6 @@ namespace SpecimenFX17.Imaging
                 g.DrawLines(linePen, points.ToArray());
             }
 
-            // Etiquetas de Longitud de Onda (Aprox 5 etiquetas)
             using var font = new Font("Consolas", 8f);
             for (int i = 0; i <= 5; i++)
             {

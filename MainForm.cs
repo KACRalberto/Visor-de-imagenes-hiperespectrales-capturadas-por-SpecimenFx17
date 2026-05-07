@@ -675,15 +675,7 @@ namespace SpecimenFX17.Imaging
 
             var finalParams = dlgSeg.Params;
 
-            // ✅ MANTENEMOS LOS CLICS DERECHOS. Así si borras el fondo en el UltraVisor, se borra en el lote.
-            // finalParams.PointsToRemove.Clear(); 
-
-            // ❌ BORRAMOS EL PINCEL (Clic Izquierdo). Pintar sobre la imagen piloto deformaría las otras muestras.
             finalParams.PointsToRepair.Clear();
-
-            // ✅ MANTENEMOS LA LUZ CALCULADA. Así la regla de umbral de la imagen piloto sirve para el resto.
-            // finalParams.StretchMin = float.NaN; 
-            // finalParams.StretchMax = float.NaN;
 
             var opts = new BatchOptions
             {

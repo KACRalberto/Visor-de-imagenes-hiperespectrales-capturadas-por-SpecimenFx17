@@ -15,7 +15,7 @@ namespace SpecimenFX17.Imaging
             return System.Drawing.Color.FromArgb(rnd.Next(100, 256), rnd.Next(100, 256), rnd.Next(100, 256));
         }
 
-        public static Mat NormalizeBandTo8Bit(HyperspectralCube cube, int band, SegmentationParams p)
+        public static Mat NormalizeBandTo8Bit(HyperspectralCube cube, int band, SegmentationParams p, CancellationToken ct = default)
         {
             int w = cube.Samples;
             int h = cube.Lines;
@@ -28,11 +28,14 @@ namespace SpecimenFX17.Imaging
             {
                 List<float> vals = new List<float>(w * h);
                 for (int y = 0; y < h; y++)
+                {
+                    if (y % 50 == 0) ct.ThrowIfCancellationRequested(); // Frenos de seguridad
                     for (int x = 0; x < w; x++)
                     {
                         float v = cube[band, y, x];
                         if (!float.IsNaN(v) && !float.IsInfinity(v)) vals.Add(v);
                     }
+                }
 
                 vals.Sort();
                 minV = 0; maxV = 1;
@@ -52,6 +55,8 @@ namespace SpecimenFX17.Imaging
             var indexer = gray8U.GetGenericIndexer<byte>();
             for (int y = 0; y < h; y++)
             {
+                if (y % 50 == 0) ct.ThrowIfCancellationRequested();
+
                 for (int x = 0; x < w; x++)
                 {
                     float v = cube[band, y, x];
@@ -70,32 +75,28 @@ namespace SpecimenFX17.Imaging
         public static Mat GetRawMask(Mat gray8U, SegmentationParams p)
         {
             Mat binary = new Mat();
-
             Cv2.Threshold(gray8U, binary, p.Threshold, 255, p.InvertThreshold ? ThresholdTypes.BinaryInv : ThresholdTypes.Binary);
 
-            // --- MAGIA INDUSTRIAL: ELIMINAR LOS MÁRGENES ---
+            // Cortar etiquetas de los bordes con seguridad
             if (p.IgnoreTopPct > 0)
             {
                 int topRows = (int)(binary.Rows * (p.IgnoreTopPct / 100f));
-                binary.RowRange(0, topRows).SetTo(new Scalar(0)); // Pinta de negro el margen superior
+                if (topRows > 0) binary.RowRange(0, topRows).SetTo(new Scalar(0));
             }
             if (p.IgnoreBottomPct > 0)
             {
                 int bottomRows = (int)(binary.Rows * (p.IgnoreBottomPct / 100f));
-                binary.RowRange(binary.Rows - bottomRows, binary.Rows).SetTo(new Scalar(0)); // Pinta de negro el inferior
+                if (bottomRows > 0) binary.RowRange(binary.Rows - bottomRows, binary.Rows).SetTo(new Scalar(0));
             }
 
             Mat kernel = Cv2.GetStructuringElement(MorphShapes.Ellipse, new OpenCvSharp.Size(5, 5));
-
             if (p.CloseIters > 0) Cv2.MorphologyEx(binary, binary, MorphTypes.Close, kernel, iterations: p.CloseIters);
             if (p.OpenIters > 0) Cv2.MorphologyEx(binary, binary, MorphTypes.Open, kernel, iterations: p.OpenIters);
 
             if (p.PointsToRepair != null && p.PointsToRepair.Count > 0)
             {
                 foreach (var pt in p.PointsToRepair)
-                {
                     Cv2.Circle(binary, new OpenCvSharp.Point(pt.X, pt.Y), 10, new Scalar(255), -1);
-                }
             }
 
             if (p.PointsToRemove != null && p.PointsToRemove.Count > 0)
@@ -105,9 +106,7 @@ namespace SpecimenFX17.Imaging
                     if (pt.X >= 0 && pt.X < binary.Cols && pt.Y >= 0 && pt.Y < binary.Rows)
                     {
                         if (binary.At<byte>(pt.Y, pt.X) > 0)
-                        {
                             Cv2.FloodFill(binary, new OpenCvSharp.Point(pt.X, pt.Y), new Scalar(0));
-                        }
                     }
                 }
             }
@@ -120,18 +119,16 @@ namespace SpecimenFX17.Imaging
             return await Task.Run(() =>
             {
                 if (p == null) p = new SegmentationParams();
-
                 progress?.Report(10);
                 ct.ThrowIfCancellationRequested();
 
-                using Mat gray8U = NormalizeBandTo8Bit(cube, targetBand, p);
-
+                using Mat gray8U = NormalizeBandTo8Bit(cube, targetBand, p, ct);
                 progress?.Report(40);
                 ct.ThrowIfCancellationRequested();
 
                 using Mat binary = GetRawMask(gray8U, p);
-
                 progress?.Report(70);
+                ct.ThrowIfCancellationRequested();
 
                 using Mat labels = new Mat();
                 using Mat stats = new Mat();
@@ -141,13 +138,11 @@ namespace SpecimenFX17.Imaging
 
                 List<SelectionShape> rois = new List<SelectionShape>();
                 int objectCount = 1;
-
                 var labelIndexer = labels.GetGenericIndexer<int>();
 
                 for (int i = 1; i < numLabels; i++)
                 {
                     int area = stats.At<int>(i, (int)ConnectedComponentsTypes.Area);
-
                     if (area >= p.MinArea)
                     {
                         bool[,] objMask = new bool[cube.Lines, cube.Samples];
@@ -158,7 +153,6 @@ namespace SpecimenFX17.Imaging
                         }
 
                         var shape = Activator.CreateInstance(Type.GetType("SpecimenFX17.Imaging.MaskShape")!, new object[] { objMask, GetRandomColor() }) as SelectionShape;
-
                         if (shape != null)
                         {
                             shape.Variety = $"Instancia_{objectCount++:D3}";
