@@ -248,7 +248,7 @@ namespace SpecimenFX17.Imaging
             Parallel.For(0, bands, po, b => {
                 for (int y = 0; y < maxHeight; y++)
                     for (int x = 0; x < totalWidth; x++)
-                        collageStorage.Set(b, y, x, 0f);
+                        collageStorage.Set(b, y, x, float.NaN);
             });
 
             // 3. Volcar los datos de cada cubo en su posición horizontal correspondiente

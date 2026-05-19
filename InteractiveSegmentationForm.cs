@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Drawing;
+using System.Drawing.Drawing2D;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Forms;
@@ -25,6 +26,11 @@ namespace SpecimenFX17.Imaging
         private TrackBar _trkTop = null!;
         private TrackBar _trkBottom = null!;
 
+        private TrackBar _trkLeft = null!;
+        private TrackBar _trkRight = null!;
+        private Label _lblLeft = null!;
+        private Label _lblRight = null!;
+
         private Label _lblThreshold = null!;
         private Label _lblArea = null!;
         private Label _lblClose = null!;
@@ -37,16 +43,26 @@ namespace SpecimenFX17.Imaging
         private Bitmap? _previewBmp;
         private bool _isDrawing = false;
 
+        // 🚀 PUNTO 4 SOLUCIONADO: El temporizador de Debounce (Ahorro Masivo de CPU)
+        private System.Windows.Forms.Timer _debounceTimer = null!;
+
         public InteractiveSegmentationForm(HyperspectralCube cube, int band)
         {
             _cube = cube;
             _band = band;
 
-            Text = "UltraVisor de Segmentación - Modo Blindado (Ver. 2)";
+            Text = "UltraVisor de Segmentación - Modo Ultra-Optimizado";
             Size = new System.Drawing.Size(1200, 850);
             BackColor = Color.FromArgb(30, 30, 35);
             ForeColor = Color.White;
             StartPosition = FormStartPosition.CenterParent;
+
+            // Configuramos el temporizador: espera 200ms después del último movimiento para calcular
+            _debounceTimer = new System.Windows.Forms.Timer { Interval = 200 };
+            _debounceTimer.Tick += (s, e) => {
+                _debounceTimer.Stop();
+                UpdatePreview();
+            };
 
             BuildUI();
             InitializeImage();
@@ -72,6 +88,13 @@ namespace SpecimenFX17.Imaging
             }
         }
 
+        // Método auxiliar para no sobrecargar el BuildUI. Activa el Debounce en vez del cálculo directo.
+        private void TriggerDebounce()
+        {
+            _debounceTimer.Stop();
+            _debounceTimer.Start();
+        }
+
         private void BuildUI()
         {
             var pnlControls = new Panel { Dock = DockStyle.Right, Width = 380, BackColor = Color.FromArgb(25, 25, 30), Padding = new Padding(15) };
@@ -89,31 +112,39 @@ namespace SpecimenFX17.Imaging
             };
 
             _chkInvert = new CheckBox { Text = "Invertir Umbral (Detectar Oscuros)", AutoSize = true, ForeColor = Color.White, Checked = false, Margin = new Padding(0, 0, 0, 15) };
-            _chkInvert.CheckedChanged += (s, e) => { Params.InvertThreshold = _chkInvert.Checked; UpdatePreview(); };
+            _chkInvert.CheckedChanged += (s, e) => { Params.InvertThreshold = _chkInvert.Checked; TriggerDebounce(); };
 
             _lblThreshold = new Label { Text = "1. Umbral de corte: 154", AutoSize = true, Margin = new Padding(0, 5, 0, 0) };
             _trkThreshold = new TrackBar { Minimum = 0, Maximum = 255, Value = 154, Width = 320, TickFrequency = 15 };
-            _trkThreshold.Scroll += (s, e) => { Params.Threshold = _trkThreshold.Value; _lblThreshold.Text = $"1. Umbral de corte: {Params.Threshold}"; UpdatePreview(); };
+            _trkThreshold.Scroll += (s, e) => { Params.Threshold = _trkThreshold.Value; _lblThreshold.Text = $"1. Umbral de corte: {Params.Threshold}"; TriggerDebounce(); };
 
             _lblClose = new Label { Text = "2. Cierre morfológico: 2", AutoSize = true, Margin = new Padding(0, 15, 0, 0) };
             _trkClose = new TrackBar { Minimum = 0, Maximum = 10, Value = 2, Width = 320, TickFrequency = 1 };
-            _trkClose.Scroll += (s, e) => { Params.CloseIters = _trkClose.Value; _lblClose.Text = $"2. Cierre morfológico: {Params.CloseIters}"; UpdatePreview(); };
+            _trkClose.Scroll += (s, e) => { Params.CloseIters = _trkClose.Value; _lblClose.Text = $"2. Cierre morfológico: {Params.CloseIters}"; TriggerDebounce(); };
 
             _lblOpen = new Label { Text = "3. Apertura morfológica: 1", AutoSize = true, Margin = new Padding(0, 15, 0, 0) };
             _trkOpen = new TrackBar { Minimum = 0, Maximum = 10, Value = 1, Width = 320, TickFrequency = 1 };
-            _trkOpen.Scroll += (s, e) => { Params.OpenIters = _trkOpen.Value; _lblOpen.Text = $"3. Apertura morfológica: {Params.OpenIters}"; UpdatePreview(); };
+            _trkOpen.Scroll += (s, e) => { Params.OpenIters = _trkOpen.Value; _lblOpen.Text = $"3. Apertura morfológica: {Params.OpenIters}"; TriggerDebounce(); };
 
             _lblArea = new Label { Text = "4. Tamaño Mínimo (Píxeles): 100", AutoSize = true, Margin = new Padding(0, 15, 0, 0), ForeColor = Color.LightGreen };
             _trkArea = new TrackBar { Minimum = 10, Maximum = 10000, Value = 100, Width = 320, TickFrequency = 500 };
-            _trkArea.Scroll += (s, e) => { Params.MinArea = _trkArea.Value; _lblArea.Text = $"4. Tamaño Mínimo (Píxeles): {Params.MinArea}"; UpdatePreview(); };
+            _trkArea.Scroll += (s, e) => { Params.MinArea = _trkArea.Value; _lblArea.Text = $"4. Tamaño Mínimo (Píxeles): {Params.MinArea}"; TriggerDebounce(); };
 
             _lblTop = new Label { Text = "5. Ignorar Margen Superior (%): 0", AutoSize = true, Margin = new Padding(0, 15, 0, 0), ForeColor = Color.Yellow };
             _trkTop = new TrackBar { Minimum = 0, Maximum = 40, Value = 0, Width = 320, TickFrequency = 5 };
-            _trkTop.Scroll += (s, e) => { Params.IgnoreTopPct = _trkTop.Value; _lblTop.Text = $"5. Ignorar Margen Superior (%): {Params.IgnoreTopPct}"; UpdatePreview(); };
+            _trkTop.Scroll += (s, e) => { Params.IgnoreTopPct = _trkTop.Value; _lblTop.Text = $"5. Ignorar Margen Superior (%): {Params.IgnoreTopPct}"; TriggerDebounce(); };
 
             _lblBottom = new Label { Text = "6. Ignorar Margen Inferior (%): 0", AutoSize = true, Margin = new Padding(0, 5, 0, 0), ForeColor = Color.Yellow };
             _trkBottom = new TrackBar { Minimum = 0, Maximum = 40, Value = 0, Width = 320, TickFrequency = 5 };
-            _trkBottom.Scroll += (s, e) => { Params.IgnoreBottomPct = _trkBottom.Value; _lblBottom.Text = $"6. Ignorar Margen Inferior (%): {Params.IgnoreBottomPct}"; UpdatePreview(); };
+            _trkBottom.Scroll += (s, e) => { Params.IgnoreBottomPct = _trkBottom.Value; _lblBottom.Text = $"6. Ignorar Margen Inferior (%): {Params.IgnoreBottomPct}"; TriggerDebounce(); };
+
+            _lblLeft = new Label { Text = "7. Ignorar Margen Izquierdo (%): 0", AutoSize = true, Margin = new Padding(0, 15, 0, 0), ForeColor = Color.Yellow };
+            _trkLeft = new TrackBar { Minimum = 0, Maximum = 40, Value = 0, Width = 320, TickFrequency = 5 };
+            _trkLeft.Scroll += (s, e) => { Params.IgnoreLeftPct = _trkLeft.Value; _lblLeft.Text = $"7. Ignorar Margen Izquierdo (%): {Params.IgnoreLeftPct}"; TriggerDebounce(); };
+
+            _lblRight = new Label { Text = "8. Ignorar Margen Derecho (%): 0", AutoSize = true, Margin = new Padding(0, 5, 0, 0), ForeColor = Color.Yellow };
+            _trkRight = new TrackBar { Minimum = 0, Maximum = 40, Value = 0, Width = 320, TickFrequency = 5 };
+            _trkRight.Scroll += (s, e) => { Params.IgnoreRightPct = _trkRight.Value; _lblRight.Text = $"8. Ignorar Margen Derecho (%): {Params.IgnoreRightPct}"; TriggerDebounce(); };
 
             var btnClear = new Button { Text = "Limpiar clics y pinceladas", Width = 320, Height = 40, BackColor = Color.FromArgb(60, 60, 65), FlatStyle = FlatStyle.Flat, Margin = new Padding(0, 20, 0, 0) };
             btnClear.Click += (s, e) => { Params.PointsToRemove.Clear(); Params.PointsToRepair.Clear(); UpdatePreview(); };
@@ -136,6 +167,10 @@ namespace SpecimenFX17.Imaging
             flp.Controls.Add(_trkTop);
             flp.Controls.Add(_lblBottom);
             flp.Controls.Add(_trkBottom);
+            flp.Controls.Add(_lblLeft);
+            flp.Controls.Add(_trkLeft);
+            flp.Controls.Add(_lblRight);
+            flp.Controls.Add(_trkRight);
             flp.Controls.Add(btnClear);
 
             pnlControls.Controls.Add(flp);
@@ -143,7 +178,6 @@ namespace SpecimenFX17.Imaging
 
             var pnlImage = new Panel { Dock = DockStyle.Fill, BackColor = Color.Black };
 
-            // EL CHIVATO AHORA ESTÁ ARRIBA Y FLOTANDO PARA QUE NUNCA SE OCULTE
             _lblStatus = new Label
             {
                 Text = "Inicializando...",
@@ -162,7 +196,7 @@ namespace SpecimenFX17.Imaging
             _picPreview.MouseUp += (s, e) => { _isDrawing = false; };
 
             pnlImage.Controls.Add(_picPreview);
-            _picPreview.Controls.Add(_lblStatus); // Añadido dentro de la foto
+            _picPreview.Controls.Add(_lblStatus);
 
             Controls.Add(pnlImage);
             Controls.Add(pnlControls);
@@ -186,12 +220,12 @@ namespace SpecimenFX17.Imaging
             {
                 _isDrawing = true;
                 Params.PointsToRepair.Add(pt);
-                UpdatePreview();
+                TriggerDebounce(); // Pintar manual usa debounce también para no ahogar
             }
             else if (e.Button == MouseButtons.Right)
             {
                 Params.PointsToRemove.Add(pt);
-                UpdatePreview();
+                TriggerDebounce();
             }
         }
 
@@ -202,7 +236,7 @@ namespace SpecimenFX17.Imaging
             if (imgCoords.HasValue)
             {
                 Params.PointsToRepair.Add(imgCoords.Value);
-                UpdatePreview();
+                TriggerDebounce();
             }
         }
 
@@ -232,8 +266,7 @@ namespace SpecimenFX17.Imaging
             _cts = new CancellationTokenSource();
             var token = _cts.Token;
 
-            // Para no saturar visualmente, solo mostramos procesando si tarda de verdad
-            _lblStatus.Text = "⏳ Procesando Segmentación...";
+            _lblStatus.Text = "⏳ Segmentando...";
             _lblStatus.ForeColor = Color.Orange;
 
             try
@@ -298,11 +331,11 @@ namespace SpecimenFX17.Imaging
             }
             catch (OperationCanceledException)
             {
+                
                 // Ignoramos la cancelación limpia
             }
             catch (Exception ex)
             {
-                // YA NO QUEDAN ERRORES SILENCIADOS. SI ALGO FALLA, LO VERÁS AQUÍ.
                 this.Invoke(new Action(() => {
                     _lblStatus.Text = $"❌ Error: {ex.Message}";
                     _lblStatus.ForeColor = Color.Red;
@@ -312,6 +345,8 @@ namespace SpecimenFX17.Imaging
 
         protected override void OnFormClosing(FormClosingEventArgs e)
         {
+            _debounceTimer?.Stop();
+            _debounceTimer?.Dispose();
             _cts?.Cancel();
             _gray8U?.Dispose();
             _previewBmp?.Dispose();

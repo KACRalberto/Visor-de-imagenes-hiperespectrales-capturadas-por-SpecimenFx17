@@ -89,6 +89,17 @@ namespace SpecimenFX17.Imaging
                 if (bottomRows > 0) binary.RowRange(binary.Rows - bottomRows, binary.Rows).SetTo(new Scalar(0));
             }
 
+            if (p.IgnoreLeftPct > 0)
+            {
+                int leftCols = (int)(binary.Cols * (p.IgnoreLeftPct / 100f));
+                if (leftCols > 0) binary.ColRange(0, leftCols).SetTo(new Scalar(0));
+            }
+            if (p.IgnoreRightPct > 0)
+            {
+                int rightCols = (int)(binary.Cols * (p.IgnoreRightPct / 100f));
+                if (rightCols > 0) binary.ColRange(binary.Cols - rightCols, binary.Cols).SetTo(new Scalar(0));
+            }
+
             Mat kernel = Cv2.GetStructuringElement(MorphShapes.Ellipse, new OpenCvSharp.Size(5, 5));
             if (p.CloseIters > 0) Cv2.MorphologyEx(binary, binary, MorphTypes.Close, kernel, iterations: p.CloseIters);
             if (p.OpenIters > 0) Cv2.MorphologyEx(binary, binary, MorphTypes.Open, kernel, iterations: p.OpenIters);

@@ -15,6 +15,9 @@ namespace SpecimenFX17.Imaging
         public int IgnoreTopPct { get; set; } = 0;    // Porcentaje superior a ignorar
         public int IgnoreBottomPct { get; set; } = 0; // Porcentaje inferior a ignorar
 
+        // --- NUEVO: CEGUERA PERIMETRAL HORIZONTAL ---
+        public int IgnoreLeftPct { get; set; } = 0;   // Porcentaje izquierdo a ignorar
+        public int IgnoreRightPct { get; set; } = 0;  // Porcentaje derecho a ignorar
         public List<System.Drawing.Point> PointsToRepair { get; set; } = new();
         public List<System.Drawing.Point> PointsToRemove { get; set; } = new();
 

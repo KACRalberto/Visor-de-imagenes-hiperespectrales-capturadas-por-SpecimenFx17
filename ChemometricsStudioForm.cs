@@ -1,30 +1,26 @@
-﻿
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.Linq;
+using System.Threading.Tasks;
 using System.Windows.Forms;
 
 namespace SpecimenFX17.Imaging
 {
     public class ChemometricsStudioForm : WeifenLuo.WinFormsUI.Docking.DockContent
     {
-        // Memoria del Dataset
         private List<string> _datasetLines = new();
         private PcaResult? _pcaResult;
 
-        // UI Controls
         private PictureBox _picScores = null!;
         private PictureBox _picLoadings = null!;
         private Label _lblInfo = null!;
         private ListBox _lstClasses = null!;
 
-        // Interactividad
-        private List<PointF> _scorePoints = new(); // Guarda las X,Y de la pantalla de cada punto
+        private List<PointF> _scorePoints = new();
         private int _hoveredIndex = -1;
 
-        // Paleta de colores
         private readonly Color[] _classColors = { Color.Cyan, Color.Orange, Color.LimeGreen, Color.Magenta, Color.Yellow, Color.White };
         private Dictionary<string, Color> _classColorMap = new();
 
@@ -53,7 +49,6 @@ namespace SpecimenFX17.Imaging
             var lblScoreTitle = new Label { Text = "📊 PCA Scores (PC1 vs PC2) - CLIC DERECHO PARA BORRAR OUTLIERS", Dock = DockStyle.Top, Height = 25, ForeColor = Color.LightSkyBlue, Font = new Font("Segoe UI", 10f, FontStyle.Bold) };
             _picScores = new PictureBox { Dock = DockStyle.Fill, BackColor = Color.FromArgb(10, 10, 15) };
 
-            // --- NUEVOS EVENTOS INTERACTIVOS ---
             _picScores.Paint += PaintScores;
             _picScores.MouseMove += PicScores_MouseMove;
             _picScores.MouseDown += PicScores_MouseDown;
@@ -84,7 +79,7 @@ namespace SpecimenFX17.Imaging
             Controls.Add(pnlTop);
         }
 
-        private void BtnLoad_Click(object? sender, EventArgs e)
+        private async void BtnLoad_Click(object? sender, EventArgs e)
         {
             using var ofd = new OpenFileDialog { Filter = "Archivos CSV (*.csv)|*.csv" };
             if (ofd.ShowDialog() == DialogResult.OK)
@@ -92,7 +87,7 @@ namespace SpecimenFX17.Imaging
                 try
                 {
                     _datasetLines = System.IO.File.ReadAllLines(ofd.FileName).ToList();
-                    RecalculatePCA();
+                    await RecalculatePCAAsync();
                 }
                 catch (Exception ex)
                 {
@@ -101,16 +96,18 @@ namespace SpecimenFX17.Imaging
             }
         }
 
-        private void RecalculatePCA()
+        // 🚀 PUNTO 3 SOLUCIONADO: Ahora el cálculo pesado se hace en segundo plano
+        private async Task RecalculatePCAAsync()
         {
-            if (_datasetLines.Count < 3) return; // Cabecera + al menos 2 datos
+            if (_datasetLines.Count < 3) return;
 
-            _lblInfo.Text = "Calculando PCA... Espere...";
-            Application.DoEvents();
+            _lblInfo.Text = "⏳ Calculando matriz PCA de alta dimensión... La pantalla no se congelará.";
+            _lblInfo.ForeColor = Color.Orange;
 
             try
             {
-                _pcaResult = PcaEngine.CalculatePca(_datasetLines.ToArray());
+                // El procesador suda aquí, pero la ventana sigue viva
+                _pcaResult = await Task.Run(() => PcaEngine.CalculatePca(_datasetLines.ToArray()));
 
                 _classColorMap.Clear();
                 _lstClasses.Items.Clear();
@@ -122,26 +119,27 @@ namespace SpecimenFX17.Imaging
                     colorIdx++;
                 }
 
-                _lblInfo.Text = $"Muestras: {_pcaResult.SampleIds.Count} | Varianza PC1: {_pcaResult.ExplainedVariance[0]:F1}% | PC2: {_pcaResult.ExplainedVariance[1]:F1}%";
+                _lblInfo.Text = $"✅ Muestras: {_pcaResult.SampleIds.Count} | Varianza PC1: {_pcaResult.ExplainedVariance[0]:F1}% | PC2: {_pcaResult.ExplainedVariance[1]:F1}%";
+                _lblInfo.ForeColor = Color.LightGreen;
 
-                _hoveredIndex = -1; // Resetear hover
+                _hoveredIndex = -1;
                 _picScores.Invalidate();
                 _picLoadings.Invalidate();
             }
             catch (Exception ex)
             {
                 MessageBox.Show(ex.Message, "Error PCA", MessageBoxButtons.OK, MessageBoxIcon.Error);
-                _lblInfo.Text = "Error de estructura en el CSV.";
+                _lblInfo.Text = "❌ Error de estructura en el CSV.";
+                _lblInfo.ForeColor = Color.Red;
             }
         }
 
-        // --- INTERACTIVIDAD: PASAR EL RATÓN ---
         private void PicScores_MouseMove(object? sender, MouseEventArgs e)
         {
             if (_pcaResult == null || _scorePoints.Count != _pcaResult.SampleIds.Count) return;
 
             int closestIndex = -1;
-            double minDistance = 10.0; // Radio de captura en píxeles
+            double minDistance = 10.0;
 
             for (int i = 0; i < _scorePoints.Count; i++)
             {
@@ -157,12 +155,11 @@ namespace SpecimenFX17.Imaging
             {
                 _hoveredIndex = closestIndex;
                 _picScores.Cursor = (_hoveredIndex != -1) ? Cursors.Hand : Cursors.Default;
-                _picScores.Invalidate(); // Fuerza a repintar para mostrar el nombre
+                _picScores.Invalidate();
             }
         }
 
-        // --- INTERACTIVIDAD: CLIC DERECHO PARA BORRAR ---
-        private void PicScores_MouseDown(object? sender, MouseEventArgs e)
+        private async void PicScores_MouseDown(object? sender, MouseEventArgs e)
         {
             if (e.Button == MouseButtons.Right && _hoveredIndex != -1 && _pcaResult != null)
             {
@@ -175,9 +172,8 @@ namespace SpecimenFX17.Imaging
 
                 if (result == DialogResult.Yes)
                 {
-                    // +1 porque la línea 0 del _datasetLines es la cabecera del CSV
                     _datasetLines.RemoveAt(_hoveredIndex + 1);
-                    RecalculatePCA();
+                    await RecalculatePCAAsync(); // Llamamos a la versión asíncrona
                 }
             }
         }
@@ -246,20 +242,13 @@ namespace SpecimenFX17.Imaging
                 float boxWidth = sz.Width + 6;
                 float boxHeight = sz.Height + 6;
 
-                // 🛡️ LÓGICA ANTI-CORTES (Colisión con los bordes de la pantalla)
                 float drawX = hX + 12;
                 float drawY = hY - 12;
 
-                // Si choca por la derecha, lo movemos a la izquierda del ratón
                 if (drawX + boxWidth > w) drawX = hX - boxWidth - 12;
-
-                // Si choca por arriba, lo bajamos
                 if (drawY < 0) drawY = hY + 12;
-
-                // Si choca por abajo, lo subimos
                 if (drawY + boxHeight > h) drawY = h - boxHeight - 12;
 
-                // Dibujar caja oscura opaca detrás del texto
                 g.FillRectangle(new SolidBrush(Color.FromArgb(230, 20, 20, 25)), drawX, drawY, boxWidth, boxHeight);
                 g.DrawRectangle(Pens.Gray, drawX, drawY, boxWidth, boxHeight);
                 g.DrawString(label, font, Brushes.White, drawX + 3, drawY + 3);

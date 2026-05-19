@@ -37,7 +37,6 @@ namespace SpecimenFX17.Imaging
         private Button _btnUp = null!;
         private Button _btnDown = null!;
 
-        // CONSTRUCTOR DE 5 ARGUMENTOS
         public SequentialBatchForm(string inputFolder, string outputFolder, BatchOptions opts, HyperspectralCube? whiteCube = null, HyperspectralCube? darkCube = null)
         {
             _outputPath = outputFolder;
@@ -56,14 +55,12 @@ namespace SpecimenFX17.Imaging
 
         private void BuildUI()
         {
-            // Panel Superior
             var pnlTop = new Panel { Dock = DockStyle.Top, Height = 60, BackColor = Color.FromArgb(20, 20, 25), Padding = new Padding(10) };
             _lblInfo = new Label { Text = "Cargando...", AutoSize = true, Font = new Font("Segoe UI", 12f, FontStyle.Bold), ForeColor = Color.LightSkyBlue };
             _pbProgress = new ProgressBar { Dock = DockStyle.Bottom, Height = 5 };
             pnlTop.Controls.Add(_lblInfo);
             pnlTop.Controls.Add(_pbProgress);
 
-            // Panel Derecho
             var pnlRight = new Panel { Dock = DockStyle.Right, Width = 320, BackColor = Color.FromArgb(25, 25, 30), Padding = new Padding(15) };
 
             _btnNext = new Button
@@ -116,7 +113,6 @@ namespace SpecimenFX17.Imaging
             pnlRight.Controls.Add(flp);
             pnlRight.Controls.Add(_btnNext);
 
-            // Visor Principal
             _picView = new PictureBox { Dock = DockStyle.Fill, SizeMode = PictureBoxSizeMode.Zoom, BackColor = Color.Black, Cursor = Cursors.Hand };
             _picView.MouseDown += PicView_MouseDown;
             _picView.Paint += PicView_Paint;
@@ -138,10 +134,10 @@ namespace SpecimenFX17.Imaging
             }
 
             string path = _files[_currentIndex];
-
             if (this.IsDisposed) return;
 
             _lblInfo.Text = $"Procesando {_currentIndex + 1} de {_files.Count}: {Path.GetFileName(path)}";
+            _lblInfo.ForeColor = Color.LightSkyBlue;
             _pbProgress.Value = (_currentIndex * 100) / _files.Count;
             _btnNext.Enabled = false;
 
@@ -157,7 +153,6 @@ namespace SpecimenFX17.Imaging
                     oldCube?.Dispose();
                     var cube = HyperspectralCube.Load(path);
 
-                    // CALIBRACIÓN Y FILTROS AL VUELO
                     if (_opts.ApplyNormalize && _whiteRef != null && _darkRef != null)
                         cube.Calibrate(_whiteRef, _darkRef, System.Threading.CancellationToken.None);
 
@@ -174,8 +169,9 @@ namespace SpecimenFX17.Imaging
 
                 if (this.IsDisposed) return;
 
-                // Segmentación Automática sobre la imagen procesada
-                _currentRois = await AutoSegmenter.SegmentCubeAsync(_currentCube!, _opts.SegmentationBand, _opts.CustomParams);
+                // Segmentación Automática 
+                // NOTA: AutoSegmenter ahora acepta el CancellationToken, le pasamos None porque aquí no cancelamos a mano
+                _currentRois = await AutoSegmenter.SegmentCubeAsync(_currentCube!, _opts.SegmentationBand, _opts.CustomParams, null, System.Threading.CancellationToken.None);
 
                 if (this.IsDisposed) return;
 
@@ -186,11 +182,25 @@ namespace SpecimenFX17.Imaging
             }
             catch (Exception ex)
             {
-                if (!this.IsDisposed) MessageBox.Show($"Error procesando imagen: {ex.Message}");
+                // 🛡️ AMORTIGUADOR DE CORRUPCIÓN: Si una imagen falla, no paramos la fábrica.
+                if (!this.IsDisposed)
+                {
+                    _csvMatrix.AppendLine($"ERROR,{Path.GetFileName(path)},El archivo está corrupto o es inaccesible: {ex.Message}");
+                    _lblInfo.Text = $"⚠️ Archivo corrupto saltado: {Path.GetFileName(path)}";
+                    _lblInfo.ForeColor = Color.Orange;
+
+                    // Saltamos automáticamente a la siguiente imagen sin bloquear la pantalla
+                    LoadNextImage();
+                }
             }
             finally
             {
                 if (!this.IsDisposed) _btnNext.Enabled = true;
+
+                // 🧹 EL CAMIÓN DE LA BASURA (Fix Memory Leak): 
+                // Forzamos la liberación de la RAM no administrada que deja OpenCV y los archivos .bil gigantes
+                GC.Collect();
+                GC.WaitForPendingFinalizers();
             }
         }
 
@@ -199,9 +209,8 @@ namespace SpecimenFX17.Imaging
             int sel = _lstObjects.SelectedIndex;
             _lstObjects.Items.Clear();
             for (int i = 0; i < _currentRois.Count; i++)
-            {
                 _lstObjects.Items.Add($"Objeto {i + 1}");
-            }
+
             if (sel >= 0 && sel < _lstObjects.Items.Count)
                 _lstObjects.SelectedIndex = sel;
 
@@ -317,7 +326,6 @@ namespace SpecimenFX17.Imaging
                 for (int i = 0; i < _currentCube.Bands; i++)
                 {
                     double wl = _currentCube.Header.Wavelengths.Count > i ? _currentCube.Header.Wavelengths[i] : i;
-                    // FUERZA PUNTOS DECIMALES PARA QUE EL PCA NO FALLE
                     _csvMatrix.Append($",{wl.ToString("F2", System.Globalization.CultureInfo.InvariantCulture)}");
                 }
                 _csvMatrix.AppendLine();
@@ -345,9 +353,43 @@ namespace SpecimenFX17.Imaging
         private void FinalizeBatch()
         {
             string csvPath = Path.Combine(_outputPath, "Matriz_Espectral_Investigacion.csv");
-            File.WriteAllText(csvPath, _csvMatrix.ToString(), Encoding.UTF8);
+            bool fileSaved = false;
 
-            MessageBox.Show($"¡Proceso Completado!\n\nSe han analizado todas las imágenes.\nLa matriz de datos se ha guardado en:\n{csvPath}",
+            // 🛡️ EL ESCUDO CONTRA EXCEL: Un bucle infinito hasta que el usuario cierre el archivo o cancele
+            while (!fileSaved)
+            {
+                try
+                {
+                    File.WriteAllText(csvPath, _csvMatrix.ToString(), Encoding.UTF8);
+                    fileSaved = true; // Si llegamos aquí, se guardó con éxito
+                }
+                catch (IOException)
+                {
+                    var result = MessageBox.Show(
+                        $"¡Alto ahí!\n\nNo puedo guardar la matriz de datos porque el archivo CSV está abierto en otro programa (seguramente Excel).\n\nArchivo: {csvPath}\n\nPor favor, cierra el Excel y pulsa 'Reintentar'.",
+                        "Archivo Bloqueado por Excel",
+                        MessageBoxButtons.RetryCancel,
+                        MessageBoxIcon.Warning);
+
+                    if (result == DialogResult.Cancel)
+                    {
+                        var confirm = MessageBox.Show("¿Estás seguro de cancelar? Perderás todo el trabajo de esta sesión de lote.", "Confirmar Cancelación", MessageBoxButtons.YesNo, MessageBoxIcon.Error);
+                        if (confirm == DialogResult.Yes)
+                        {
+                            this.Close();
+                            return;
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    MessageBox.Show($"Ha ocurrido un error inesperado al intentar guardar el disco:\n{ex.Message}", "Error fatal", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    this.Close();
+                    return;
+                }
+            }
+
+            MessageBox.Show($"¡Proceso Completado con Éxito!\n\nSe han analizado todas las imágenes.\nLa matriz de datos se ha guardado de forma segura en:\n{csvPath}",
                 "Fin del flujo", MessageBoxButtons.OK, MessageBoxIcon.Information);
             this.Close();
         }
