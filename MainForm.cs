@@ -463,10 +463,17 @@ namespace SpecimenFX17.Imaging
             _chkAnalyze = Chk(p, "Analizar bandas (Media, Min/Max, PCA)", false); _chkAnalyze.CheckedChanged += ChkAnalyze_CheckedChanged;
             var btnGraph = Btn(p, "📊  Ver información gráfica", Color.FromArgb(60, 100, 140)); btnGraph.Click += (_, _) => { if (_cube == null) return; if (_graphicalInfoForm == null || _graphicalInfoForm.IsDisposed) { _graphicalInfoForm = new GraphicalInfoForm(_cube); OpenChildForm(_graphicalInfoForm); } else _graphicalInfoForm.BringToFront(); };
             var btnCompare = Btn(p, "⚖️  Comparativa ROI (Orig vs Tratada)", Color.FromArgb(100, 80, 140)); btnCompare.Click += (s, e) => { if (_originalCube == null || _cube == null) return; if (_selections.Count == 0) { MessageBox.Show("Selecciona al menos un ROI para comparar las curvas.", "Aviso"); return; } OpenChildForm(new RoiComparisonForm(_originalCube, _cube, _selections.ToList(), _currentBand)); };
-            var bc = Btn(p, "🧮  Calculadora de Fórmulas", Color.FromArgb(70, 45, 110)); var ba = Btn(p, "🔬  Herramientas Avanzadas", Color.FromArgb(140, 70, 45)); var bp = Btn(p, "🍊  Predecir °Brix (PLS)", Color.FromArgb(140, 90, 30));
-            var b3d = Btn(p, "🧊  Visor de Hipercubo 3D", Color.FromArgb(40, 110, 130)); b3d.Click += (_, _) => { if (_cube != null) OpenChildForm(new Hypercube3DForm(_cube, _selections.AsReadOnly())); };
-            bc.Click += (_, _) => { if (_cube != null) OpenChildForm(new SpectralCalculatorForm(_cube, _selections.AsReadOnly())); }; ba.Click += (_, _) => { if (_cube != null) OpenChildForm(new AdvancedAnalysisForm(_cube, _selections.AsReadOnly())); }; bp.Click += (_, _) => { if (_cube != null) OpenChildForm(new PlsPredictionForm(_cube, _selections.AsReadOnly())); };
+            var bc = Btn(p, "🧮  Calculadora de Fórmulas", Color.FromArgb(70, 45, 110)); var ba = Btn(p, "🔬  Herramientas Avanzadas", Color.FromArgb(140, 70, 45));
 
+            var b3d = Btn(p, "🧊  Visor de Hipercubo 3D", Color.FromArgb(40, 110, 130)); b3d.Click += (_, _) => { if (_cube != null) OpenChildForm(new Hypercube3DForm(_cube, _selections.AsReadOnly())); };
+            bc.Click += (_, _) => { if (_cube != null) OpenChildForm(new SpectralCalculatorForm(_cube, _selections.AsReadOnly())); };
+            ba.Click += (_, _) => { if (_cube != null) OpenChildForm(new AdvancedAnalysisForm(_cube, _selections.AsReadOnly())); };
+            var bpp = Btn(p, "🍊  Predecir Mapa °Brix", Color.FromArgb(140, 90, 30));
+            var btnTrainer = Btn(p, "🧠  Entrenar Modelo PLS", Color.FromArgb(140, 40, 60)); // 👈 NUEVO
+
+            // Enlazar los eventos:
+            bpp.Click += (_, _) => { if (_cube != null) OpenChildForm(new PlsPredictionForm(_cube, _selections.AsReadOnly())); };
+            btnTrainer.Click += (_, _) => { OpenChildForm(new PlsTrainerForm()); }; // 👈 NUEVO
             var btnChemo = Btn(p, "🧪 Chemometrics Studio (PCA)", Color.FromArgb(50, 100, 150));
             btnChemo.Click += (_, _) => { OpenChildForm(new ChemometricsStudioForm()); };
 

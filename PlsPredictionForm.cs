@@ -141,47 +141,28 @@ namespace SpecimenFX17.Imaging
             try
             {
                 var lines = File.ReadAllLines(dlg.FileName);
-                if (lines.Length < 2)
-                {
-                    MessageBox.Show("El archivo seleccionado no tiene el formato esperado (al menos 2 líneas).", "Error de Formato", MessageBoxButtons.OK, MessageBoxIcon.Error);
-                    return;
-                }
+                if (lines.Length < 2) throw new Exception("El archivo es demasiado corto.");
 
-                var firstLineParts = lines[0].Split(',');
-                if (firstLineParts.Length < 2 || !double.TryParse(firstLineParts[1], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out _plsIntercept))
-                {
-                    MessageBox.Show("No se pudo leer el intercepto del modelo en la primera línea. Asegúrate de que el CSV usa punto (.) para los decimales.", "Error de Formato", MessageBoxButtons.OK, MessageBoxIcon.Error);
-                    return;
-                }
+                // 🛠️ FIX: Leer la Fila 1 (Índice 1), no la Fila 0 que tiene las cabeceras de texto
+                var dataLine = lines[1].Split(',');
 
-                var coefStrings = lines[1].Split(',').Skip(1).ToArray();
+                // dataLine[0] es la palabra "Coeficientes"
+                // dataLine[1] es el Intercepto numérico
+                if (dataLine.Length < 2 || !double.TryParse(dataLine[1], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out _plsIntercept))
+                    throw new Exception("No se pudo leer el intercepto del modelo en la línea de datos.");
 
-                if (coefStrings.Length != _cube.Bands)
-                {
-                    MessageBox.Show($"Aviso: El modelo tiene {coefStrings.Length} bandas, pero el cubo {_cube.Bands}. Se usarán las primeras {Math.Min(coefStrings.Length, _cube.Bands)}.", "Discrepancia de Bandas", MessageBoxButtons.OK, MessageBoxIcon.Information);
-                }
+                // 🛠️ FIX: Los coeficientes reales empiezan a partir de la columna 2. Hacemos Skip(2).
+                var coefStrings = dataLine.Skip(2).ToArray();
+                _plsCoefs = coefStrings.Select(s => double.Parse(s.Trim(), System.Globalization.CultureInfo.InvariantCulture)).ToArray();
 
-                var coefsList = new List<double>();
-                foreach (var s in coefStrings)
-                {
-                    if (double.TryParse(s.Trim(), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out double coef))
-                    {
-                        coefsList.Add(coef);
-                    }
-                    else
-                    {
-                        MessageBox.Show($"Se encontró un coeficiente inválido: '{s}'. Revisa el formato del CSV.", "Error de Formato", MessageBoxButtons.OK, MessageBoxIcon.Error);
-                        _plsCoefs = null;
-                        return;
-                    }
-                }
+                _lblStatus.Text = $"Modelo cargado: {_plsCoefs.Length} coeficientes. Intercepto: {_plsIntercept:F3}";
 
-                _plsCoefs = coefsList.ToArray();
-                _lblStatus.Text = $"Modelo PLS cargado ({_plsCoefs.Length} coeficientes).";
+                // Habilitar el botón de predicción que tengas en la UI
+                // (Dependiendo de cómo lo llamaste, puede ser btnPredict.Enabled = true;)
             }
             catch (Exception ex)
             {
-                MessageBox.Show($"Error crítico al cargar el modelo: {ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                MessageBox.Show($"Error al cargar el modelo: {ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
                 _plsCoefs = null;
             }
         }
