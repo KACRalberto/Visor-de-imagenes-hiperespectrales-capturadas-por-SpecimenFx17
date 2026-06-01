@@ -1,12 +1,13 @@
-﻿using System;
+﻿using MathNet.Numerics.Data.Matlab;
+using MathNet.Numerics.LinearAlgebra;
+using OpenCvSharp;
+using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
-using MathNet.Numerics.Data.Matlab;
-using MathNet.Numerics.LinearAlgebra;
 
 namespace SpecimenFX17.Imaging
 {
@@ -164,6 +165,38 @@ namespace SpecimenFX17.Imaging
             return segmentedData;
         }
 
+        private static void SaveDebugPng(HyperspectralCube cube, List<SelectionShape> rois, int band, string savePath, SegmentationParams? p)
+        {
+            // 1. Normalizar la banda de referencia a 8-bits (escala de grises)
+            using Mat gray8U = AutoSegmenter.NormalizeBandTo8Bit(cube, band, p ?? new SegmentationParams());
+
+            // 2. Convertir a BGR para poder pintar a color
+            using Mat colorView = new Mat();
+            Cv2.CvtColor(gray8U, colorView, ColorConversionCodes.GRAY2BGR);
+
+            // 3. Crear una máscara combinada a partir de los ROIs detectados
+            using Mat combinedMask = Mat.Zeros(cube.Lines, cube.Samples, MatType.CV_8UC1);
+            var indexer = combinedMask.GetGenericIndexer<byte>();
+
+            foreach (var roi in rois)
+            {
+                var m = roi.GetMask(cube.Lines, cube.Samples);
+                for (int y = 0; y < cube.Lines; y++)
+                {
+                    for (int x = 0; x < cube.Samples; x++)
+                    {
+                        if (m[y, x]) indexer[y, x] = 255;
+                    }
+                }
+            }
+
+            // 4. Pintar la máscara sobre la imagen (Verde fluorescente: B=0, G=255, R=0)
+            // Cambia el Scalar(0, 255, 0) a (0, 0, 255) si prefieres que se pinte en Rojo.
+            colorView.SetTo(new Scalar(0, 255, 0), combinedMask);
+
+            // 5. Guardar la imagen a disco
+            Cv2.ImWrite(savePath, colorView);
+        }
         public static async Task ProcessFolderAsync(string inputFolder, string outputFolder, BatchOptions options, IProgress<int>? progress, CancellationToken ct = default)
         {
             await Task.Run(async () =>
@@ -285,7 +318,8 @@ namespace SpecimenFX17.Imaging
                                 float[,,] segmentedCube = ApplyMaskToCube(cube, rois);
                                 string enviFilePath = Path.Combine(enviDir, $"{baseName}_segmented");
                                 SaveAsEnvi(enviFilePath, segmentedCube, cube.Header.Wavelengths);
-
+                                string debugPngPath = Path.Combine(enviDir, $"{baseName}_debug.png");
+                                SaveDebugPng(cube, rois, options.SegmentationBand, debugPngPath, options.CustomParams);
                                 foreach (var roi in rois)
                                 {
                                     float[] objectSpectrum = roi.GetSpectrum(cube);
