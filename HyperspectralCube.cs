@@ -339,30 +339,22 @@ namespace SpecimenFX17.Imaging
             }
         }
 
-        /// <summary>
-        /// Calibra el cubo a Reflectancia (0.0 a 1.0) utilizando referencias Blanca y Oscura.
-        /// Aplica el perfil a lo largo de toda la imagen y elimina zonas no corregibles.
-        /// </summary>
         public void Calibrate(HyperspectralCube whiteRef, HyperspectralCube darkRef, System.Threading.CancellationToken ct)
         {
             if (IsCalibrated) return;
 
             int bands = this.Bands;
-            int lines = this.Lines;     // El "Largo" de la muestra
-            int samples = this.Samples; // El "Ancho" de la muestra
+            int lines = this.Lines;
+            int samples = this.Samples;
 
-            // Validaciones críticas de integridad
             if (whiteRef.Bands != bands || darkRef.Bands != bands)
                 throw new Exception("Las referencias no tienen el mismo número de bandas que la muestra.");
 
-            // 1. CREACIÓN DE LOS PERFILES PERFECTOS (Promediando el Largo)
-            // El tamaño del perfil depende del ancho de la referencia, no de la muestra.
             int validSamples = Math.Min(samples, Math.Min(whiteRef.Samples, darkRef.Samples));
 
             float[,] wProfile = new float[bands, validSamples];
             float[,] dProfile = new float[bands, validSamples];
 
-            // Promediamos la referencia blanca a lo largo de TODAS sus líneas
             for (int b = 0; b < bands; b++)
             {
                 for (int s = 0; s < validSamples; s++)
@@ -377,24 +369,19 @@ namespace SpecimenFX17.Imaging
                 }
             }
 
-            // 2. APLICACIÓN AL CUBO DE LA MUESTRA (Multihilo)
             Parallel.For(0, lines, new ParallelOptions { CancellationToken = ct }, y =>
             {
                 for (int x = 0; x < samples; x++)
                 {
-                    // 🛡️ REGLA: "Lo que NO está corregido hay que eliminarlo"
-                    // Si el píxel actual (x) cae fuera del ancho que cubrían nuestras referencias...
                     if (x >= validSamples)
                     {
                         for (int b = 0; b < bands; b++)
                         {
-                            // Lo eliminamos (asignamos 0 absoluto)
                             _storage.Set(b, y, x, 0f);
                         }
-                        continue; // Pasamos al siguiente píxel
+                        continue;
                     }
 
-                    // Si está dentro de la zona segura, aplicamos la fórmula banda por banda
                     for (int b = 0; b < bands; b++)
                     {
                         float raw = _storage.Get(b, y, x);
@@ -403,18 +390,14 @@ namespace SpecimenFX17.Imaging
 
                         float denominator = w - d;
 
-                        // 🛡️ REGLA: Evitar explosiones matemáticas (División por cero o referencias corruptas)
                         if (denominator <= 0.0001f)
                         {
-                            _storage.Set(b, y, x, 0f); // Eliminado
+                            _storage.Set(b, y, x, 0f);
                         }
                         else
                         {
                             float reflectance = (raw - d) / denominator;
-
-                            // Aseguramos que la luz no infrinja la física (0% a 100% de reflejo)
                             reflectance = Math.Clamp(reflectance, 0f, 1f);
-
                             _storage.Set(b, y, x, reflectance);
                         }
                     }
@@ -423,6 +406,7 @@ namespace SpecimenFX17.Imaging
 
             IsCalibrated = true;
         }
+
         private int GetClosestBandIndex(HyperspectralCube refCube, double targetWl, int fallbackIndex)
         {
             if (refCube.Header.Wavelengths == null || refCube.Header.Wavelengths.Count == 0 || targetWl == 0)
@@ -859,27 +843,50 @@ namespace SpecimenFX17.Imaging
             return result;
         }
 
-        // ──────────────────────────────────────────────────────────────────────────
-        // LECTURA DIRECTA A MMF
-        // ──────────────────────────────────────────────────────────────────────────
+        // 🚀 🔥 COCHE CLAVE SOLUCIONADO: Cargador Inteligente Blindado para archivos .bil y .hdr nativos de Specim
         public static HyperspectralCube Load(string hdrOrRawPath, IProgress<int>? progress = null)
         {
             string dir = Path.GetDirectoryName(hdrOrRawPath) ?? "";
-            string baseName = Path.GetFileNameWithoutExtension(hdrOrRawPath);
+            string ext = Path.GetExtension(hdrOrRawPath).ToLowerInvariant();
 
-            string hdrPath = Path.Combine(dir, baseName + ".hdr");
-            if (!File.Exists(hdrPath) && hdrOrRawPath.EndsWith(".hdr", StringComparison.OrdinalIgnoreCase))
-                hdrPath = hdrOrRawPath;
+            string hdrPath = "";
+            string rawPath = "";
 
-            string rawPath = Path.Combine(dir, baseName + ".raw");
-            if (!File.Exists(rawPath))
+            if (ext == ".hdr")
             {
-                string[] exts = { ".img", ".dat", ".bil", ".bip", ".bsq" };
-                foreach (var ext in exts) { if (File.Exists(Path.Combine(dir, baseName + ext))) { rawPath = Path.Combine(dir, baseName + ext); break; } }
-                if (!File.Exists(rawPath) && File.Exists(Path.Combine(dir, baseName))) rawPath = Path.Combine(dir, baseName);
+                hdrPath = hdrOrRawPath;
+                string baseWithoutHdr = hdrOrRawPath[..^4];
+                if (File.Exists(baseWithoutHdr)) rawPath = baseWithoutHdr;
+                else
+                {
+                    string[] rawExts = { ".raw", ".bil", ".img", ".dat", ".bip", ".bsq" };
+                    foreach (var rext in rawExts)
+                    {
+                        if (File.Exists(baseWithoutHdr + rext)) { rawPath = baseWithoutHdr + rext; break; }
+                        string baseName = Path.GetFileNameWithoutExtension(hdrOrRawPath);
+                        if (File.Exists(Path.Combine(dir, baseName + rext))) { rawPath = Path.Combine(dir, baseName + rext); break; }
+                    }
+                }
+            }
+            else
+            {
+                rawPath = hdrOrRawPath;
+                // Specim suele exportar como 'captura.bil' y 'captura.bil.hdr'
+                if (File.Exists(hdrOrRawPath + ".hdr")) hdrPath = hdrOrRawPath + ".hdr";
+                else if (File.Exists(hdrOrRawPath + ".HDR")) hdrPath = hdrOrRawPath + ".HDR";
+                else
+                {
+                    string baseName = Path.GetFileNameWithoutExtension(hdrOrRawPath);
+                    string testHdr = Path.Combine(dir, baseName + ".hdr");
+                    if (File.Exists(testHdr)) hdrPath = testHdr;
+                    else if (File.Exists(testHdr[..^4] + ".HDR")) hdrPath = testHdr[..^4] + ".HDR";
+                }
             }
 
-            if (!File.Exists(rawPath)) throw new FileNotFoundException($"Archivo binario no encontrado: {baseName}");
+            if (string.IsNullOrEmpty(hdrPath) || !File.Exists(hdrPath))
+                throw new FileNotFoundException($"Archivo de cabecera ENVI (.hdr) no encontrado para: {Path.GetFileName(hdrOrRawPath)}");
+            if (string.IsNullOrEmpty(rawPath) || !File.Exists(rawPath))
+                throw new FileNotFoundException($"Archivo de datos binarios no encontrado para: {Path.GetFileName(hdrOrRawPath)}");
 
             var header = EnviHeader.Load(hdrPath);
             var storage = new MappedFileStorage(rawPath, header);

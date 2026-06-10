@@ -26,7 +26,7 @@ namespace SpecimenFX17.Imaging
         private readonly List<DockContent> _childForms = new();
 
         private int _currentBand = 0;
-        private bool _grayscaleMode = false;
+        private bool _grayscaleMode = true;
         private bool _rgbMode = false;
         private Bitmap? _currentBitmap;
         private GraphicalInfoForm? _graphicalInfoForm;
@@ -34,7 +34,6 @@ namespace SpecimenFX17.Imaging
         private readonly List<SelectionShape> _selections = new();
         private Point? _hoverImgPt = null;
 
-        // --- SISTEMA DESHACER / REHACER ---
         private readonly Stack<List<SelectionShape>> _undoStack = new();
         private readonly Stack<List<SelectionShape>> _redoStack = new();
         private Button _btnUndo = null!;
@@ -51,7 +50,6 @@ namespace SpecimenFX17.Imaging
         private Point _polyMouse;
         private List<Point> _freeImg = new(), _freeScr = new();
 
-        // --- VARIABLES DE ZOOM Y PANEO ---
         private float _zoomFactor = 1.0f;
         private PointF _panOffset = new PointF(0, 0);
         private bool _isPanning = false;
@@ -68,7 +66,7 @@ namespace SpecimenFX17.Imaging
         private TrackBar _slider = null!;
         private CheckBox _chkAnalyze = null!;
 
-        private ComboBox _cmbCamera = null!;
+        private Label _lblCameraDetector = null!;
         private ComboBox _cmbCmap = null!;
         private CheckBox _chkCbar = null!;
         private CheckBox _chkGray = null!;
@@ -137,11 +135,36 @@ namespace SpecimenFX17.Imaging
             BackColor = Color.FromArgb(45, 45, 48);
             ForeColor = Color.White;
             Font = new Font("Segoe UI", 9f);
-            try { this.Icon = new Icon("favicon.ico"); } catch { }
-
             IsMdiContainer = true;
             BuildUI();
         }
+
+        // =======================================================================
+        // 🔥 SISTEMA DE EXTRACCIÓN DE FIRMAS DE HARDWARE (Specim 1 vs Specim 2)
+        // =======================================================================
+        private string GetCameraSignature(HyperspectralCube cube, string filePath)
+        {
+            string signature = "";
+            if (cube.Header.RawFields.TryGetValue("sensor type", out var st)) signature += st;
+            if (cube.Header.RawFields.TryGetValue("serial number", out var sn)) signature += sn;
+
+            string rawCheck = ((cube.Header.Description ?? "") + " " + Path.GetFileName(filePath)).ToLowerInvariant();
+            if (rawCheck.Contains("specim1") || rawCheck.Contains("specim_1") || rawCheck.Contains("cam1")) signature += "_SpecimUnit1";
+            else if (rawCheck.Contains("specim2") || rawCheck.Contains("specim_2") || rawCheck.Contains("cam2")) signature += "_SpecimUnit2";
+
+            signature += $"_{cube.Bands}b"; // Añadir el recuento físico de bandas
+            return signature;
+        }
+
+        private string GetCameraFriendlyName(string signature)
+        {
+            if (signature.Contains("SpecimUnit1")) return "Specim Cámara 1";
+            if (signature.Contains("SpecimUnit2")) return "Specim Cámara 2";
+            if (signature.Contains("224b")) return "Specim FX17";
+            if (signature.Contains("448b")) return "Specim FX10";
+            return "Sensor Desconocido";
+        }
+        // =======================================================================
 
         private void SaveStateForUndo()
         {
@@ -236,18 +259,19 @@ namespace SpecimenFX17.Imaging
 
             slPan.Controls.Add(_slider); slPan.Controls.Add(cmbContainer);
 
-            var spCon = new Panel { Dock = DockStyle.Bottom, Height = 200, BackColor = Color.FromArgb(18, 18, 26) };
-            _lblSpecInfo = new Label { Dock = DockStyle.Top, AutoSize = true, Padding = new Padding(0, 5, 0, 5), BackColor = Color.FromArgb(28, 28, 28), ForeColor = Color.FromArgb(180, 180, 220), Font = new Font("Segoe UI", 8f, FontStyle.Italic), Text = "  Rastreo activo con el ratón  •  Clic Izq = fijar selección  •  Clic Der = metadatos (°Brix)  •  Rueda = Zoom", TextAlign = ContentAlignment.MiddleLeft };
-            _specPlot = new PictureBox { Dock = DockStyle.Fill, BackColor = Color.FromArgb(12, 12, 20), SizeMode = PictureBoxSizeMode.Normal };
-            _specPlot.Resize += (_, _) => RedrawSpectrumPlot();
-            spCon.Controls.Add(_specPlot); spCon.Controls.Add(_lblSpecInfo);
+            var splitImageGraph = new SplitContainer
+            {
+                Dock = DockStyle.Fill,
+                Orientation = Orientation.Horizontal,
+                SplitterDistance = 600,
+                SplitterWidth = 6,
+                BackColor = Color.FromArgb(0, 122, 204)
+            };
 
-            var div = new Panel { Dock = DockStyle.Bottom, Height = 3, BackColor = Color.FromArgb(0, 122, 204) };
+            var pnlImgWrapper = new Panel { Dock = DockStyle.Fill, BackColor = Color.Black };
 
             _pictureBox = new PictureBox { Dock = DockStyle.Fill, SizeMode = PictureBoxSizeMode.Normal, BackColor = Color.Black, Cursor = Cursors.Cross };
-
             _pictureBox.MouseEnter += (s, e) => _pictureBox.Focus();
-
             _pictureBox.MouseWheel += (s, e) => {
                 if (e.Delta > 0) _zoomFactor *= 1.1f;
                 else _zoomFactor /= 1.1f;
@@ -269,7 +293,20 @@ namespace SpecimenFX17.Imaging
             _lblCoords = new Label { AutoSize = true, Location = new Point(6, 6), BackColor = Color.FromArgb(160, 0, 0, 0), ForeColor = Color.FromArgb(200, 255, 200), Font = new Font("Consolas", 8f), TextAlign = ContentAlignment.MiddleLeft, Padding = new Padding(6) };
             _pictureBox.Controls.Add(_lblCoords);
 
-            cp.Controls.Add(_pictureBox); cp.Controls.Add(div); cp.Controls.Add(spCon); cp.Controls.Add(slPan);
+            pnlImgWrapper.Controls.Add(_pictureBox);
+            pnlImgWrapper.Controls.Add(slPan);
+
+            var spCon = new Panel { Dock = DockStyle.Fill, BackColor = Color.FromArgb(18, 18, 26) };
+            _lblSpecInfo = new Label { Dock = DockStyle.Top, AutoSize = true, Padding = new Padding(0, 5, 0, 5), BackColor = Color.FromArgb(28, 28, 28), ForeColor = Color.FromArgb(180, 180, 220), Font = new Font("Segoe UI", 8f, FontStyle.Italic), Text = "  Rastreo activo con el ratón  •  Clic Izq = fijar selección  •  Clic Der = metadatos (°Brix)  •  Rueda = Zoom", TextAlign = ContentAlignment.MiddleLeft };
+            _specPlot = new PictureBox { Dock = DockStyle.Fill, BackColor = Color.FromArgb(12, 12, 20), SizeMode = PictureBoxSizeMode.Normal };
+            _specPlot.Resize += (_, _) => RedrawSpectrumPlot();
+            spCon.Controls.Add(_specPlot);
+            spCon.Controls.Add(_lblSpecInfo);
+
+            splitImageGraph.Panel1.Controls.Add(pnlImgWrapper);
+            splitImageGraph.Panel2.Controls.Add(spCon);
+
+            cp.Controls.Add(splitImageGraph);
 
             _imageDocument = new DockContent { Text = "📸 Vista Principal", CloseButtonVisible = false, BackColor = Color.Black, HideOnClose = true };
             _imageDocument.Controls.Add(cp);
@@ -305,17 +342,17 @@ namespace SpecimenFX17.Imaging
         private void BuildRightPanel(FlowLayoutPanel p)
         {
             Sec(p, "CONFIGURACIÓN DEL SENSOR");
-            Lbl(p, "Modelo de Cámara:");
-            _cmbCamera = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, BackColor = Color.FromArgb(45, 45, 48), ForeColor = Color.White, FlatStyle = FlatStyle.Flat, Margin = new Padding(8, 0, 8, 12) };
-            _cmbCamera.Items.AddRange(new string[] { "Specim FX17", "Specim FX10", "IDS Headwall" });
-            _cmbCamera.SelectedIndex = 0;
+            Lbl(p, "Cámara detectada:");
 
-            _cmbCamera.SelectedIndexChanged += (_, _) => {
-                string currentCam = _cmbCamera.SelectedItem.ToString();
-                this.Text = string.IsNullOrEmpty(_loadedFileName) ? $"Specimen — Workspace ({currentCam})" : $"Specimen — [{_loadedFileName}] ({currentCam})";
-                _slbl.Text = $"Cámara configurada: {currentCam}";
+            _lblCameraDetector = new Label
+            {
+                Text = "Esperando imagen...",
+                AutoSize = true,
+                ForeColor = Color.Gold,
+                Font = new Font("Segoe UI", 9f, FontStyle.Bold),
+                Margin = new Padding(8, 0, 8, 12)
             };
-            p.Controls.Add(_cmbCamera);
+            p.Controls.Add(_lblCameraDetector);
             Sep(p);
 
             _btnLoad = Btn(p, "📂  Cargar Cubo .hdr/.bil", Color.FromArgb(0, 122, 204));
@@ -340,7 +377,8 @@ namespace SpecimenFX17.Imaging
                 _slbl.Text = "Imagen restaurada al estado original crudo.";
             };
 
-            Sep(p); Sec(p, "CALIBRACIÓN (Ref. B/N)");
+            Sep(p);
+            Sec(p, "CORRECCIÓN (Ref. B/N)");
 
             var btnLoadWhite = Btn(p, "⚪ Cargar Ref. Blanca", Color.FromArgb(80, 80, 80));
             _lblWhite = new Label { AutoSize = true, ForeColor = Color.Gray, Font = new Font("Segoe UI", 8f), Text = "Sin cargar", Margin = new Padding(8, 0, 8, 4) };
@@ -357,11 +395,63 @@ namespace SpecimenFX17.Imaging
                 if (_stepNormalize) { _stepNormalize = false; _stepAbsorbance = false; UpdateToggleButton(_btnCalibrate, false, Color.FromArgb(120, 80, 40)); UpdateToggleButton(_btnAbsorbance, false, Color.FromArgb(100, 40, 80)); await RebuildWorkingCube(); }
             };
 
-            _btnCalibrate = Btn(p, "✨ Normalizar Imagen", Color.FromArgb(120, 80, 40)); _btnCalibrate.Enabled = false;
+            _btnCalibrate = Btn(p, "✨ Corregir Imagen", Color.FromArgb(120, 80, 40)); _btnCalibrate.Enabled = false;
             _btnAbsorbance = Btn(p, "🧪 Convertir a Absorbancia", Color.FromArgb(100, 40, 80)); _btnAbsorbance.Enabled = false;
 
-            btnLoadWhite.Click += async (s, e) => { using var dlg = new OpenFileDialog { Filter = "Imágenes ENVI (*.hdr, *.bil, *.raw)|*.hdr;*.bil;*.raw|Todos los archivos|*.*" }; if (dlg.ShowDialog() == DialogResult.OK) { _slbl.Text = "Cargando referencia blanca..."; try { _whiteCube = await Task.Run(() => HyperspectralCube.Load(dlg.FileName)); _lblWhite.Text = Path.GetFileName(dlg.FileName); CheckCalibrationReady(); _slbl.Text = "Referencia blanca cargada."; } catch (Exception ex) { MessageBox.Show(ex.Message, "Error"); _slbl.Text = "Error."; } } };
-            btnLoadDark.Click += async (s, e) => { using var dlg = new OpenFileDialog { Filter = "Imágenes ENVI (*.hdr, *.bil, *.raw)|*.hdr;*.bil;*.raw|Todos los archivos|*.*" }; if (dlg.ShowDialog() == DialogResult.OK) { _slbl.Text = "Cargando referencia oscura..."; try { _darkCube = await Task.Run(() => HyperspectralCube.Load(dlg.FileName)); _lblDark.Text = Path.GetFileName(dlg.FileName); CheckCalibrationReady(); _slbl.Text = "Referencia oscura cargada."; } catch (Exception ex) { MessageBox.Show(ex.Message, "Error"); _slbl.Text = "Error."; } } };
+            // 🔥 SECCIÓN BLINDADA: Validación estricta de firma de cámara al cargar referencias
+            btnLoadWhite.Click += async (s, e) => {
+                using var dlg = new OpenFileDialog { Filter = "Imágenes ENVI (*.hdr, *.bil, *.raw)|*.hdr;*.bil;*.raw|Todos los archivos|*.*" };
+                if (dlg.ShowDialog() == DialogResult.OK)
+                {
+                    _slbl.Text = "Cargando referencia blanca...";
+                    try
+                    {
+                        var tempWhite = await Task.Run(() => HyperspectralCube.Load(dlg.FileName));
+                        if (_baseCube != null)
+                        {
+                            string mainSig = GetCameraSignature(_baseCube, _loadedFileName);
+                            string refSig = GetCameraSignature(tempWhite, dlg.FileName);
+                            if (mainSig != refSig)
+                            {
+                                MessageBox.Show($"🛑 ERROR DE COMPATIBILIDAD CRÍTICO:\n\nLa referencia blanca seleccionada pertenece a la unidad [{GetCameraFriendlyName(refSig)}], pero la muestra cargada pertenece a [{GetCameraFriendlyName(mainSig)}].\n\nNo se permite mezclar calibraciones de cámaras diferentes.", "Hardware Incompatible", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                                return;
+                            }
+                        }
+                        _whiteCube = tempWhite;
+                        _lblWhite.Text = Path.GetFileName(dlg.FileName);
+                        CheckCalibrationReady();
+                        _slbl.Text = "Referencia blanca cargada con éxito.";
+                    }
+                    catch (Exception ex) { MessageBox.Show(ex.Message, "Error"); _slbl.Text = "Error."; }
+                }
+            };
+
+            btnLoadDark.Click += async (s, e) => {
+                using var dlg = new OpenFileDialog { Filter = "Imágenes ENVI (*.hdr, *.bil, *.raw)|*.hdr;*.bil;*.raw|Todos los archivos|*.*" };
+                if (dlg.ShowDialog() == DialogResult.OK)
+                {
+                    _slbl.Text = "Cargando referencia oscura...";
+                    try
+                    {
+                        var tempDark = await Task.Run(() => HyperspectralCube.Load(dlg.FileName));
+                        if (_baseCube != null)
+                        {
+                            string mainSig = GetCameraSignature(_baseCube, _loadedFileName);
+                            string refSig = GetCameraSignature(tempDark, dlg.FileName);
+                            if (mainSig != refSig)
+                            {
+                                MessageBox.Show($"🛑 ERROR DE COMPATIBILIDAD CRÍTICO:\n\nLa referencia oscura seleccionada pertenece a la unidad [{GetCameraFriendlyName(refSig)}], pero la muestra cargada pertenece a [{GetCameraFriendlyName(mainSig)}].\n\nNo se permite mezclar calibraciones de cámaras diferentes.", "Hardware Incompatible", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                                return;
+                            }
+                        }
+                        _darkCube = tempDark;
+                        _lblDark.Text = Path.GetFileName(dlg.FileName);
+                        CheckCalibrationReady();
+                        _slbl.Text = "Referencia oscura cargada con éxito.";
+                    }
+                    catch (Exception ex) { MessageBox.Show(ex.Message, "Error"); _slbl.Text = "Error."; }
+                }
+            };
 
             _btnCalibrate.Click += async (s, e) => { if (_originalCube == null || _whiteCube == null || _darkCube == null) return; _stepNormalize = !_stepNormalize; if (!_stepNormalize) { _stepAbsorbance = false; } _btnAbsorbance.Enabled = _stepNormalize; UpdateToggleButton(_btnCalibrate, _stepNormalize, Color.FromArgb(120, 80, 40)); UpdateToggleButton(_btnAbsorbance, _stepAbsorbance, Color.FromArgb(100, 40, 80)); await RebuildWorkingCube(); };
             _btnAbsorbance.Click += async (s, e) => { if (!_stepNormalize) return; _stepAbsorbance = !_stepAbsorbance; UpdateToggleButton(_btnAbsorbance, _stepAbsorbance, Color.FromArgb(100, 40, 80)); await RebuildWorkingCube(); };
@@ -395,7 +485,6 @@ namespace SpecimenFX17.Imaging
             var btnAnalyzeFolder = Btn(p, "🖼️ Analizar carpeta (Galería)", Color.FromArgb(40, 80, 110));
             btnAnalyzeFolder.Click += BtnAnalyzeFolder_Click;
 
-            // Debajo del botón de Galería...
             var btnSequentialBatch = Btn(p, "🧪 Flujo Secuencial (Investigación)", Color.FromArgb(180, 70, 40));
             btnSequentialBatch.Click += BtnSequentialBatch_Click;
 
@@ -469,11 +558,10 @@ namespace SpecimenFX17.Imaging
             bc.Click += (_, _) => { if (_cube != null) OpenChildForm(new SpectralCalculatorForm(_cube, _selections.AsReadOnly())); };
             ba.Click += (_, _) => { if (_cube != null) OpenChildForm(new AdvancedAnalysisForm(_cube, _selections.AsReadOnly())); };
             var bpp = Btn(p, "🍊  Predecir Mapa °Brix", Color.FromArgb(140, 90, 30));
-            var btnTrainer = Btn(p, "🧠  Entrenar Modelo PLS", Color.FromArgb(140, 40, 60)); // 👈 NUEVO
+            var btnTrainer = Btn(p, "🧠  Entrenar Modelo PLS", Color.FromArgb(140, 40, 60));
 
-            // Enlazar los eventos:
             bpp.Click += (_, _) => { if (_cube != null) OpenChildForm(new PlsPredictionForm(_cube, _selections.AsReadOnly())); };
-            btnTrainer.Click += (_, _) => { OpenChildForm(new PlsTrainerForm()); }; // 👈 NUEVO
+            btnTrainer.Click += (_, _) => { OpenChildForm(new PlsTrainerForm()); };
             var btnChemo = Btn(p, "🧪 Chemometrics Studio (PCA)", Color.FromArgb(50, 100, 150));
             btnChemo.Click += (_, _) => { OpenChildForm(new ChemometricsStudioForm()); };
 
@@ -489,9 +577,20 @@ namespace SpecimenFX17.Imaging
                 _slbl.Text = "Vista reseteada.";
             };
 
-            Lbl(p, "Paleta de color:"); _cmbCmap = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, BackColor = Color.FromArgb(45, 45, 48), ForeColor = Color.White, FlatStyle = FlatStyle.Flat, Margin = new Padding(8, 0, 8, 8) }; _cmbCmap.Items.AddRange(Enum.GetNames(typeof(BliColormap))); _cmbCmap.SelectedIndex = 0; _cmbCmap.SelectedIndexChanged += (_, _) => RefreshDisplay(); p.Controls.Add(_cmbCmap);
-            _chkCbar = Chk(p, "Mostrar barra de escala gigante (HUD)", true); _chkGray = Chk(p, "Modo escala de grises", false); _chkRgb = Chk(p, "Modo RGB (Color real visible)", false);
-            _chkCbar.CheckedChanged += (_, _) => _pictureBox.Invalidate(); // Redibujar barra
+            Lbl(p, "Paleta de color:");
+            _cmbCmap = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, BackColor = Color.FromArgb(45, 45, 48), ForeColor = Color.White, FlatStyle = FlatStyle.Flat, Margin = new Padding(8, 0, 8, 8) };
+            _cmbCmap.Items.AddRange(Enum.GetNames(typeof(BliColormap)));
+
+            _cmbCmap.SelectedIndex = (int)BliColormap.Grayscale;
+            _cmbCmap.Enabled = false;
+            _cmbCmap.SelectedIndexChanged += (_, _) => RefreshDisplay();
+            p.Controls.Add(_cmbCmap);
+
+            _chkCbar = Chk(p, "Mostrar barra de escala gigante (HUD)", true);
+            _chkGray = Chk(p, "Modo escala de grises", true);
+            _chkRgb = Chk(p, "Modo RGB (Color real visible)", false);
+
+            _chkCbar.CheckedChanged += (_, _) => _pictureBox.Invalidate();
             _chkGray.CheckedChanged += (_, _) => { _grayscaleMode = _chkGray.Checked; if (_grayscaleMode) _chkRgb.Checked = false; _cmbCmap.Enabled = !_grayscaleMode && !_rgbMode; RefreshDisplay(); };
             _chkRgb.CheckedChanged += (_, _) => { _rgbMode = _chkRgb.Checked; if (_rgbMode) _chkGray.Checked = false; _cmbCmap.Enabled = !_grayscaleMode && !_rgbMode; _slider.Enabled = !_rgbMode; _cmbBands.Enabled = !_rgbMode; RefreshDisplay(); };
 
@@ -642,7 +741,8 @@ namespace SpecimenFX17.Imaging
                 AutoSegment = true,
                 SegmentationBand = _currentBand,
                 SaveNpyMasks = (result == DialogResult.Yes),
-                CustomParams = dlg.Params
+                CustomParams = dlg.Params,
+                ContourOffset = dlg.Params.ContourOffset
             };
 
             _cts?.Cancel(); _cts = new CancellationTokenSource(); var token = _cts.Token;
@@ -681,7 +781,6 @@ namespace SpecimenFX17.Imaging
             if (fbdOut.ShowDialog() != DialogResult.OK) return;
 
             var finalParams = dlgSeg.Params;
-
             finalParams.PointsToRepair.Clear();
 
             var opts = new BatchOptions
@@ -702,6 +801,7 @@ namespace SpecimenFX17.Imaging
             var assistant = new SequentialBatchForm(fbdIn.SelectedPath, fbdOut.SelectedPath, opts, _whiteCube, _darkCube);
             OpenChildForm(assistant);
         }
+
         private void BtnAnalyzeFolder_Click(object? sender, EventArgs e)
         {
             using var fbd = new FolderBrowserDialog { Description = "Selecciona la carpeta con las imágenes autosegmentadas (.hdr/.bil)" };
@@ -720,8 +820,8 @@ namespace SpecimenFX17.Imaging
                     _cube = _baseCube;
 
                     _loadedFileName = "Collage_Multimuestra";
-                    string currentCam = _cmbCamera.SelectedItem.ToString();
-                    this.Text = $"Specimen — Workspace [{_loadedFileName}] ({currentCam})";
+                    //string currentCam = _cmbCamera.SelectedItem.ToString();
+                    //this.Text = $"Specimen — Workspace [{_loadedFileName}] ({currentCam})";
 
                     _currentBand = 0;
                     PopulateBandsCombo();
@@ -750,7 +850,33 @@ namespace SpecimenFX17.Imaging
                 _btnLoad.Enabled = false; _pb.Visible = true; _pb.Value = 0; _slbl.Text = "Cargando cubo...";
                 var prog = new Progress<int>(v => { _pb.Value = v; _slbl.Text = $"Cargando… {v} %"; });
 
-                _baseCube = await Task.Run(() => HyperspectralCube.Load(filePath, prog));
+                var tempCube = await Task.Run(() => HyperspectralCube.Load(filePath, prog));
+
+                // 🔥 SECCIÓN BLINDADA: Vaciar o verificar referencias si cambias de cámara/fichero
+                if (_whiteCube != null)
+                {
+                    string mainSig = GetCameraSignature(tempCube, filePath);
+                    string refSig = GetCameraSignature(_whiteCube, _lblWhite.Text);
+                    if (mainSig != refSig)
+                    {
+                        _whiteCube = null;
+                        _lblWhite.Text = "Sin cargar";
+                        Invoke(() => MessageBox.Show("⚠️ La referencia blanca existente se descartó por incompatibilidad de sensor con el nuevo cubo.", "Calibración Limpiada", MessageBoxButtons.OK, MessageBoxIcon.Warning));
+                    }
+                }
+                if (_darkCube != null)
+                {
+                    string mainSig = GetCameraSignature(tempCube, filePath);
+                    string refSig = GetCameraSignature(_darkCube, _lblDark.Text);
+                    if (mainSig != refSig)
+                    {
+                        _darkCube = null;
+                        _lblDark.Text = "Sin cargar";
+                        Invoke(() => MessageBox.Show("⚠️ La referencia oscura existente se descartó por incompatibilidad de sensor con el nuevo cubo.", "Calibración Limpiada", MessageBoxButtons.OK, MessageBoxIcon.Warning));
+                    }
+                }
+
+                _baseCube = tempCube;
                 _originalCube = _baseCube.Clone(); _cube = _baseCube; _selections.Clear(); _chkAnalyze.Checked = false;
 
                 _undoStack.Clear(); _redoStack.Clear(); UpdateUndoRedoUI();
@@ -761,8 +887,13 @@ namespace SpecimenFX17.Imaging
 
                 _loadedFileName = Path.GetFileName(filePath);
 
-                string currentCam = _cmbCamera.SelectedItem.ToString();
-                this.Text = $"Specimen — Workspace [{_loadedFileName}] ({currentCam})";
+                // 🔥 AUTODETECCIÓN INTELIGENTE DE MODELO DE CÁMARA
+                string mainCameraSig = GetCameraSignature(_baseCube, filePath);
+                string friendlyCam = GetCameraFriendlyName(mainCameraSig);
+                _lblCameraDetector.Text = friendlyCam;
+                this.Text = string.IsNullOrEmpty(_loadedFileName) ? $"Specimen — Workspace ({friendlyCam})" : $"Specimen — [{_loadedFileName}] ({friendlyCam})";
+                _slbl.Text = $"Cámara detectada: {friendlyCam}";
+
 
                 CheckCalibrationReady();
                 _btnExport.Enabled = _btnExpAll.Enabled = _btnExpMeanSpec.Enabled = _btnExpGraph.Enabled = _btnReport.Enabled = _btnClose.Enabled = true;
@@ -842,7 +973,7 @@ namespace SpecimenFX17.Imaging
             if (_lblPipeline == null) return;
             var steps = new System.Collections.Generic.List<string> { "Orig" };
             if (_stepRotation != 0f) steps.Add($"Rot({_stepRotation}º)");
-            if (_stepNormalize) steps.Add("Norm");
+            if (_stepNormalize) steps.Add("Corr");
             if (_stepAbsorbance) steps.Add("Abs");
             if (_stepScatter == ScatterCorrection.SNV) steps.Add("SNV"); else if (_stepScatter == ScatterCorrection.MSC) steps.Add("MSC");
             if (_stepSG) steps.Add($"SG");
@@ -948,15 +1079,15 @@ namespace SpecimenFX17.Imaging
             {
                 case BliColormap.HeatMap: return (ToByte(Clamp(t * 3f, 0, 1)), ToByte(Clamp(t * 3f - 1f, 0, 1)), ToByte(Clamp(t * 3f - 2f, 0, 1)));
                 case BliColormap.Grayscale: return (ToByte(t), ToByte(t), ToByte(t));
-                case BliColormap.ColdBlue: return (ToByte(Clamp(t * 2 - 1, 0, 1)), ToByte(Clamp(t * 2 - 1, 0, 1)), ToByte(Clamp(t * 2, 0, 1)));
-                case BliColormap.GreenFluorescent: return (ToByte(Clamp(t * 2 - 1, 0, 1) * 0.5f), ToByte(Clamp(t * 1.5f, 0, 1)), ToByte(Clamp(t * 0.5f, 0, 1)));
-                case BliColormap.RedFluorescent: return (ToByte(Clamp(t * 1.5f, 0, 1)), ToByte(Clamp(t * 0.5f, 0, 1) * 0.3f), 0);
+                case BliColormap.ColdBlue: return (ToByte(Math.Clamp(t * 2 - 1, 0, 1)), ToByte(Math.Clamp(t * 2 - 1, 0, 1)), ToByte(Math.Clamp(t * 2, 0, 1)));
+                case BliColormap.GreenFluorescent: return (ToByte(Math.Clamp(t * 2 - 1, 0, 1) * 0.5f), ToByte(Math.Clamp(t * 1.5f, 0, 1)), ToByte(Math.Clamp(t * 0.5f, 0, 1)));
+                case BliColormap.RedFluorescent: return (ToByte(Math.Clamp(t * 1.5f, 0, 1)), ToByte(Math.Clamp(t * 0.5f, 0, 1) * 0.3f), 0);
                 default:
                     if (t < 0.125f) { r = 0; g = 0; b = 0.5f + t * 4f; } else if (t < 0.375f) { r = 0; g = (t - .125f) * 4f; b = 1f; } else if (t < 0.625f) { r = (t - .375f) * 4f; g = 1f; b = 1f - (t - .375f) * 4f; } else if (t < 0.875f) { r = 1f; g = 1f - (t - .625f) * 4f; b = 0f; } else { r = 1f; g = (t - .875f) * 8f; b = (t - .875f) * 8f; }
                     return (ToByte(r), ToByte(g), ToByte(b));
             }
         }
-        private static byte ToByte(float v) => (byte)(Clamp(v, 0f, 1f) * 255f);
+        private static byte ToByte(float v) => (byte)(Math.Clamp(v, 0f, 1f) * 255f);
 
         private Bitmap RenderMaskedBand(int band, bool[,] mask, float min, float max)
         {
@@ -999,9 +1130,6 @@ namespace SpecimenFX17.Imaging
             {
                 bmp.UnlockBits(bData);
             }
-
-            // LA LEYENDA ANTIGUA Y PEQUEÑA HA SIDO ELIMINADA DE AQUÍ
-
             return bmp;
         }
 
@@ -1093,7 +1221,7 @@ namespace SpecimenFX17.Imaging
                     LowPercentile = isPcaBand ? 0f : (float)_nudLo.Value,
                     HighPercentile = isPcaBand ? 100f : (float)_nudHi.Value,
                     SignalThreshold = isPcaBand ? 0f : (float)_nudThr.Value,
-                    DrawColorbar = false, // LEYENDA DESACTIVADA DE LA IMAGEN
+                    DrawColorbar = false,
                     Wavelength = WlAt(_currentBand),
                     WavelengthUnit = currentCube.Header.WavelengthUnits
                 };
@@ -1195,7 +1323,17 @@ namespace SpecimenFX17.Imaging
             var oldImg = _specPlot.Image; _specPlot.Image = bmp; oldImg?.Dispose();
         }
 
-        private void BtnExport_Click(object? s, EventArgs e) { if (_currentBitmap == null) return; using var dlg = new SaveFileDialog { Filter = "PNG (*.png)|*.png", FileName = $"Vista_{(_rgbMode ? "RGB" : $"banda{_currentBand + 1}_{WlAt(_currentBand):F1}nm")}" }; if (dlg.ShowDialog() == DialogResult.OK) { var bmpToSave = new Bitmap(_pictureBox.Width, _pictureBox.Height); _pictureBox.DrawToBitmap(bmpToSave, new Rectangle(0, 0, _pictureBox.Width, _pictureBox.Height)); bmpToSave.Save(dlg.FileName, ImageFormat.Png); } }
+        private void BtnExport_Click(object? s, EventArgs e)
+        {
+            if (_currentBitmap == null) return;
+            using var dlg = new SaveFileDialog { Filter = "PNG (*.png)|*.png", FileName = $"Vista_{(_rgbMode ? "RGB" : $"banda{_currentBand + 1}_{WlAt(_currentBand):F1}nm")}" };
+            if (dlg.ShowDialog() == DialogResult.OK)
+            {
+                var bmpToSave = new Bitmap(_pictureBox.Width, _pictureBox.Height);
+                _pictureBox.DrawToBitmap(bmpToSave, new Rectangle(0, 0, _pictureBox.Width, _pictureBox.Height));
+                bmpToSave.Save(dlg.FileName, ImageFormat.Png);
+            }
+        }
 
         private async void BtnExportAll_Click(object? s, EventArgs e)
         {
@@ -1208,7 +1346,7 @@ namespace SpecimenFX17.Imaging
             _btnExpAll.Enabled = false;
             _pb.Visible = true; _pb.Value = 0; _pb.Style = ProgressBarStyle.Continuous;
             _btnCancelTask.Visible = true; _btnCancelTask.Enabled = true; _btnCancelTask.Text = "🛑 Cancelar exp.";
-            _slbl.Text = "Exportando bandas...";
+            _slbl.Text = "Exportando bandas Masivo...";
 
             try
             {
@@ -1404,7 +1542,6 @@ namespace SpecimenFX17.Imaging
                     }
             }
 
-            // --- NUEVA LEYENDA DE COLORES GIGANTE (HUD FLOTANTE) ---
             if (_chkCbar.Checked && !_rgbMode && _cube != null)
             {
                 int origBands = _baseCube != null ? _baseCube.Header.Bands : _cube.Header.Bands;

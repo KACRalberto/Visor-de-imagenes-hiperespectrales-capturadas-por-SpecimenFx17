@@ -31,11 +31,14 @@ namespace SpecimenFX17.Imaging
         private Label _lblInfo = null!;
         private TextBox _txtClass = null!;
         private Button _btnNext = null!;
-        private Button _btnPrev = null!; // NUEVO: Botón atrás
+        private Button _btnPrev = null!;
         private ProgressBar _pbProgress = null!;
-        private NumericUpDown _nudOffset = null!;
 
-        // NUEVO: Almacenamiento indexado para poder ir atrás y adelante sin duplicar datos
+        // 🔥 NUEVO: Slider de Erosión en lugar de cajita numérica
+        private TrackBar _trkOffset = null!;
+        private Label _lblOffset = null!;
+
+        // Almacenamiento indexado para poder ir atrás y adelante sin duplicar datos
         private Dictionary<int, string> _csvResults = new();
 
         // Controles para ordenar
@@ -73,7 +76,7 @@ namespace SpecimenFX17.Imaging
             pnlTop.Controls.Add(_pbProgress);
 
             var pnlRight = new Panel { Dock = DockStyle.Right, Width = 320, BackColor = Color.FromArgb(25, 25, 30), Padding = new Padding(15) };
-            var lblOffset = new Label { Text = "Ajuste de margen (Erosión/Dilatación):", AutoSize = true, ForeColor = Color.LightGray, Margin = new Padding(0, 10, 0, 0) };
+
             var pnlNavigation = new TableLayoutPanel
             {
                 Dock = DockStyle.Bottom,
@@ -122,28 +125,36 @@ namespace SpecimenFX17.Imaging
                 Margin = new Padding(0, 0, 0, 15)
             };
 
-            _nudOffset = new NumericUpDown
+            // 🔥 AQUI ESTÁ EL SLIDER DE EROSIÓN
+            _lblOffset = new Label { Text = "Ajuste de margen (Erosión/Dilatación): 0", AutoSize = true, ForeColor = Color.Turquoise, Margin = new Padding(0, 10, 0, 0) };
+            _trkOffset = new TrackBar
             {
-                Width = 100,
-                Minimum = -20, // Permite encoger hasta 20 píxeles
-                Maximum = 20,  // Permite agrandar hasta 20 píxeles
-                Value = _opts.ContourOffset, // Sincroniza con el valor inicial
-                BackColor = Color.FromArgb(45, 45, 50),
-                ForeColor = Color.White,
+                Width = 290,
+                Minimum = -20,
+                Maximum = 20,
+                Value = 0,
+                TickFrequency = 1,
+                BackColor = Color.FromArgb(25, 25, 30),
                 Margin = new Padding(0, 5, 0, 15)
             };
 
-            // Evento para que cuando cambie el número, actualice las opciones y re-segmente la imagen actual en vivo
-            _nudOffset.ValueChanged += (s, e) =>
+            _trkOffset.Scroll += (s, e) =>
             {
-                _opts.ContourOffset = (int)_nudOffset.Value;
-                // Forzamos la re-segmentación asíncrona de la vista para ver el cambio inmediatamente
+                _lblOffset.Text = $"Ajuste de margen (Erosión/Dilatación): {_trkOffset.Value}";
+
+                // Reflexión para inyectar el valor en las opciones
+                var segParamsProp = System.Linq.Enumerable.FirstOrDefault(_opts.GetType().GetProperties(), p => p.PropertyType.Name == "SegmentationParams");
+                if (segParamsProp != null)
+                {
+                    var segParamsObj = segParamsProp.GetValue(_opts);
+                    if (segParamsObj != null)
+                    {
+                        var offsetProp = segParamsObj.GetType().GetProperty("ContourOffset");
+                        if (offsetProp != null) offsetProp.SetValue(segParamsObj, _trkOffset.Value);
+                    }
+                }
                 LoadCurrentImage();
             };
-
-            // Insertar en el FlowLayoutPanel lateral
-            flp.Controls.Add(lblOffset);
-            flp.Controls.Add(_nudOffset);
 
             var lblClass = new Label { Text = "Etiqueta / Clase de esta imagen:", AutoSize = true, ForeColor = Color.LightGray };
             _txtClass = new TextBox { Width = 290, BackColor = Color.FromArgb(45, 45, 50), ForeColor = Color.White, Font = new Font("Segoe UI", 11f), Margin = new Padding(0, 5, 0, 20) };
@@ -163,6 +174,8 @@ namespace SpecimenFX17.Imaging
             pnlBtns.Controls.Add(_btnDown);
 
             flp.Controls.Add(lblHint);
+            flp.Controls.Add(_lblOffset);
+            flp.Controls.Add(_trkOffset);
             flp.Controls.Add(lblClass);
             flp.Controls.Add(_txtClass);
             flp.Controls.Add(lblObj);
@@ -230,7 +243,6 @@ namespace SpecimenFX17.Imaging
 
                 if (this.IsDisposed) return;
 
-                // Solo segmentamos de nuevo si no habíamos pasado por esta imagen antes (en caso de volver atrás conservamos cambios si quisiéramos, pero para asegurar limpieza, resegmentamos)
                 _currentRois = await AutoSegmenter.SegmentCubeAsync(_currentCube!, _opts.SegmentationBand, _opts.CustomParams, null, System.Threading.CancellationToken.None);
 
                 if (this.IsDisposed) return;

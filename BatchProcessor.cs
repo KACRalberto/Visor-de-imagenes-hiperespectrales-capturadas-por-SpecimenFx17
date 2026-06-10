@@ -15,10 +15,8 @@ namespace SpecimenFX17.Imaging
     {
         public bool ApplyNormalize { get; set; }
 
-        // 🛠️ NUEVO: Referencias para calibrar el lote
         public HyperspectralCube? WhiteRef { get; set; }
         public HyperspectralCube? DarkRef { get; set; }
-
 
         public int ContourOffset { get; set; } = 0;
         public bool ConvertToAbsorbance { get; set; }
@@ -35,7 +33,6 @@ namespace SpecimenFX17.Imaging
         public int SegmentationBand { get; set; } = 65;
         public bool SaveNpyMasks { get; set; } = true;
 
-        // Parámetros personalizados que vienen de la ventana interactiva
         public SegmentationParams? CustomParams { get; set; }
     }
 
@@ -110,7 +107,6 @@ namespace SpecimenFX17.Imaging
                 sw.WriteLine("sensor type = Unknown");
                 sw.WriteLine("byte order = 0");
 
-                // 🛠️ FIX: Decirle al software ENVI que NaN es "Fondo Transparente"
                 sw.WriteLine("data ignore value = NaN");
 
                 sw.WriteLine("wavelength = {");
@@ -160,7 +156,7 @@ namespace SpecimenFX17.Imaging
                         if (combinedMask[y, x])
                             segmentedData[y, b, x] = cube[b, y, x];
                         else
-                            segmentedData[y, b, x] = float.NaN; // 🛠️ FIX: No data (Transparente), NO 0f (Negro)
+                            segmentedData[y, b, x] = float.NaN;
                     }
                 }
             }
@@ -169,14 +165,11 @@ namespace SpecimenFX17.Imaging
 
         private static void SaveDebugPng(HyperspectralCube cube, List<SelectionShape> rois, int band, string savePath, SegmentationParams? p)
         {
-            // 1. Normalizar la banda de referencia a 8-bits (escala de grises)
             using Mat gray8U = AutoSegmenter.NormalizeBandTo8Bit(cube, band, p ?? new SegmentationParams());
 
-            // 2. Convertir a BGR para poder pintar a color
             using Mat colorView = new Mat();
             Cv2.CvtColor(gray8U, colorView, ColorConversionCodes.GRAY2BGR);
 
-            // 3. Crear una máscara combinada a partir de los ROIs detectados
             using Mat combinedMask = Mat.Zeros(cube.Lines, cube.Samples, MatType.CV_8UC1);
             var indexer = combinedMask.GetGenericIndexer<byte>();
 
@@ -192,13 +185,10 @@ namespace SpecimenFX17.Imaging
                 }
             }
 
-            // 4. Pintar la máscara sobre la imagen (Verde fluorescente: B=0, G=255, R=0)
-            // Cambia el Scalar(0, 255, 0) a (0, 0, 255) si prefieres que se pinte en Rojo.
             colorView.SetTo(new Scalar(0, 255, 0), combinedMask);
-
-            // 5. Guardar la imagen a disco
             Cv2.ImWrite(savePath, colorView);
         }
+
         public static async Task ProcessFolderAsync(string inputFolder, string outputFolder, BatchOptions options, IProgress<int>? progress, CancellationToken ct = default)
         {
             await Task.Run(async () =>
@@ -250,7 +240,6 @@ namespace SpecimenFX17.Imaging
                     {
                         using var cube = HyperspectralCube.Load(hdrPath);
 
-                        // 🛠️ FIX: CALIBRAR EL CUBO CRUDO ANTES DE SEGMENTARLO!
                         if (options.ApplyNormalize && options.WhiteRef != null && options.DarkRef != null)
                         {
                             cube.Calibrate(options.WhiteRef, options.DarkRef, ct);
@@ -279,6 +268,14 @@ namespace SpecimenFX17.Imaging
                                 options.CustomParams.StretchMax = float.NaN;
                                 options.CustomParams.PointsToRepair.Clear();
                                 options.CustomParams.PointsToRemove.Clear();
+
+                                // 🔥 FIX CLAVE: Inyectamos el valor de erosión a los parámetros antes de segmentar
+                                options.CustomParams.ContourOffset = options.ContourOffset;
+                            }
+                            else
+                            {
+                                // Si CustomParams viene nulo, creamos uno nuevo e inyectamos el offset
+                                options.CustomParams = new SegmentationParams { ContourOffset = options.ContourOffset };
                             }
 
                             var rois = await AutoSegmenter.SegmentCubeAsync(cube, options.SegmentationBand, options.CustomParams, null, ct);

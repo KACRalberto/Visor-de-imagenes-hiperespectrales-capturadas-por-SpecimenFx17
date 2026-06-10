@@ -23,6 +23,7 @@ namespace SpecimenFX17.Imaging
         private TrackBar _trkArea = null!;
         private TrackBar _trkClose = null!;
         private TrackBar _trkOpen = null!;
+        private TrackBar _trkErosion = null!; // 🔥 NUEVO: Slider de Erosión/Dilatación
         private TrackBar _trkTop = null!;
         private TrackBar _trkBottom = null!;
 
@@ -35,6 +36,7 @@ namespace SpecimenFX17.Imaging
         private Label _lblArea = null!;
         private Label _lblClose = null!;
         private Label _lblOpen = null!;
+        private Label _lblErosion = null!; // 🔥 NUEVO: Label de Erosión/Dilatación
         private Label _lblTop = null!;
         private Label _lblBottom = null!;
 
@@ -43,7 +45,6 @@ namespace SpecimenFX17.Imaging
         private Bitmap? _previewBmp;
         private bool _isDrawing = false;
 
-        // 🚀 PUNTO 4 SOLUCIONADO: El temporizador de Debounce (Ahorro Masivo de CPU)
         private System.Windows.Forms.Timer _debounceTimer = null!;
 
         public InteractiveSegmentationForm(HyperspectralCube cube, int band)
@@ -57,7 +58,6 @@ namespace SpecimenFX17.Imaging
             ForeColor = Color.White;
             StartPosition = FormStartPosition.CenterParent;
 
-            // Configuramos el temporizador: espera 200ms después del último movimiento para calcular
             _debounceTimer = new System.Windows.Forms.Timer { Interval = 200 };
             _debounceTimer.Tick += (s, e) => {
                 _debounceTimer.Stop();
@@ -88,7 +88,6 @@ namespace SpecimenFX17.Imaging
             }
         }
 
-        // Método auxiliar para no sobrecargar el BuildUI. Activa el Debounce en vez del cálculo directo.
         private void TriggerDebounce()
         {
             _debounceTimer.Stop();
@@ -126,25 +125,30 @@ namespace SpecimenFX17.Imaging
             _trkOpen = new TrackBar { Minimum = 0, Maximum = 10, Value = 1, Width = 320, TickFrequency = 1 };
             _trkOpen.Scroll += (s, e) => { Params.OpenIters = _trkOpen.Value; _lblOpen.Text = $"3. Apertura morfológica: {Params.OpenIters}"; TriggerDebounce(); };
 
-            _lblArea = new Label { Text = "4. Tamaño Mínimo (Píxeles): 100", AutoSize = true, Margin = new Padding(0, 15, 0, 0), ForeColor = Color.LightGreen };
+            // 🔥 NUEVO CONTROL DE EROSIÓN (Inyectado justo aquí)
+            _lblErosion = new Label { Text = "4. Erosión/Dilatación (Contorno): 0", AutoSize = true, Margin = new Padding(0, 15, 0, 0), ForeColor = Color.Turquoise };
+            _trkErosion = new TrackBar { Minimum = -20, Maximum = 20, Value = 0, Width = 320, TickFrequency = 1 };
+            _trkErosion.Scroll += (s, e) => { Params.ContourOffset = _trkErosion.Value; _lblErosion.Text = $"4. Erosión/Dilatación (Contorno): {Params.ContourOffset}"; TriggerDebounce(); };
+
+            _lblArea = new Label { Text = "5. Tamaño Mínimo (Píxeles): 100", AutoSize = true, Margin = new Padding(0, 15, 0, 0), ForeColor = Color.LightGreen };
             _trkArea = new TrackBar { Minimum = 10, Maximum = 10000, Value = 100, Width = 320, TickFrequency = 500 };
-            _trkArea.Scroll += (s, e) => { Params.MinArea = _trkArea.Value; _lblArea.Text = $"4. Tamaño Mínimo (Píxeles): {Params.MinArea}"; TriggerDebounce(); };
+            _trkArea.Scroll += (s, e) => { Params.MinArea = _trkArea.Value; _lblArea.Text = $"5. Tamaño Mínimo (Píxeles): {Params.MinArea}"; TriggerDebounce(); };
 
-            _lblTop = new Label { Text = "5. Ignorar Margen Superior (%): 0", AutoSize = true, Margin = new Padding(0, 15, 0, 0), ForeColor = Color.Yellow };
+            _lblTop = new Label { Text = "6. Ignorar Margen Superior (%): 0", AutoSize = true, Margin = new Padding(0, 15, 0, 0), ForeColor = Color.Yellow };
             _trkTop = new TrackBar { Minimum = 0, Maximum = 40, Value = 0, Width = 320, TickFrequency = 5 };
-            _trkTop.Scroll += (s, e) => { Params.IgnoreTopPct = _trkTop.Value; _lblTop.Text = $"5. Ignorar Margen Superior (%): {Params.IgnoreTopPct}"; TriggerDebounce(); };
+            _trkTop.Scroll += (s, e) => { Params.IgnoreTopPct = _trkTop.Value; _lblTop.Text = $"6. Ignorar Margen Superior (%): {Params.IgnoreTopPct}"; TriggerDebounce(); };
 
-            _lblBottom = new Label { Text = "6. Ignorar Margen Inferior (%): 0", AutoSize = true, Margin = new Padding(0, 5, 0, 0), ForeColor = Color.Yellow };
+            _lblBottom = new Label { Text = "7. Ignorar Margen Inferior (%): 0", AutoSize = true, Margin = new Padding(0, 5, 0, 0), ForeColor = Color.Yellow };
             _trkBottom = new TrackBar { Minimum = 0, Maximum = 40, Value = 0, Width = 320, TickFrequency = 5 };
-            _trkBottom.Scroll += (s, e) => { Params.IgnoreBottomPct = _trkBottom.Value; _lblBottom.Text = $"6. Ignorar Margen Inferior (%): {Params.IgnoreBottomPct}"; TriggerDebounce(); };
+            _trkBottom.Scroll += (s, e) => { Params.IgnoreBottomPct = _trkBottom.Value; _lblBottom.Text = $"7. Ignorar Margen Inferior (%): {Params.IgnoreBottomPct}"; TriggerDebounce(); };
 
-            _lblLeft = new Label { Text = "7. Ignorar Margen Izquierdo (%): 0", AutoSize = true, Margin = new Padding(0, 15, 0, 0), ForeColor = Color.Yellow };
+            _lblLeft = new Label { Text = "8. Ignorar Margen Izquierdo (%): 0", AutoSize = true, Margin = new Padding(0, 15, 0, 0), ForeColor = Color.Yellow };
             _trkLeft = new TrackBar { Minimum = 0, Maximum = 40, Value = 0, Width = 320, TickFrequency = 5 };
-            _trkLeft.Scroll += (s, e) => { Params.IgnoreLeftPct = _trkLeft.Value; _lblLeft.Text = $"7. Ignorar Margen Izquierdo (%): {Params.IgnoreLeftPct}"; TriggerDebounce(); };
+            _trkLeft.Scroll += (s, e) => { Params.IgnoreLeftPct = _trkLeft.Value; _lblLeft.Text = $"8. Ignorar Margen Izquierdo (%): {Params.IgnoreLeftPct}"; TriggerDebounce(); };
 
-            _lblRight = new Label { Text = "8. Ignorar Margen Derecho (%): 0", AutoSize = true, Margin = new Padding(0, 5, 0, 0), ForeColor = Color.Yellow };
+            _lblRight = new Label { Text = "9. Ignorar Margen Derecho (%): 0", AutoSize = true, Margin = new Padding(0, 5, 0, 0), ForeColor = Color.Yellow };
             _trkRight = new TrackBar { Minimum = 0, Maximum = 40, Value = 0, Width = 320, TickFrequency = 5 };
-            _trkRight.Scroll += (s, e) => { Params.IgnoreRightPct = _trkRight.Value; _lblRight.Text = $"8. Ignorar Margen Derecho (%): {Params.IgnoreRightPct}"; TriggerDebounce(); };
+            _trkRight.Scroll += (s, e) => { Params.IgnoreRightPct = _trkRight.Value; _lblRight.Text = $"9. Ignorar Margen Derecho (%): {Params.IgnoreRightPct}"; TriggerDebounce(); };
 
             var btnClear = new Button { Text = "Limpiar clics y pinceladas", Width = 320, Height = 40, BackColor = Color.FromArgb(60, 60, 65), FlatStyle = FlatStyle.Flat, Margin = new Padding(0, 20, 0, 0) };
             btnClear.Click += (s, e) => { Params.PointsToRemove.Clear(); Params.PointsToRepair.Clear(); UpdatePreview(); };
@@ -161,6 +165,8 @@ namespace SpecimenFX17.Imaging
             flp.Controls.Add(_trkClose);
             flp.Controls.Add(_lblOpen);
             flp.Controls.Add(_trkOpen);
+            flp.Controls.Add(_lblErosion); // 🔥 AÑADIDO
+            flp.Controls.Add(_trkErosion); // 🔥 AÑADIDO
             flp.Controls.Add(_lblArea);
             flp.Controls.Add(_trkArea);
             flp.Controls.Add(_lblTop);
@@ -205,6 +211,7 @@ namespace SpecimenFX17.Imaging
             Params.InvertThreshold = _chkInvert.Checked;
             Params.CloseIters = _trkClose.Value;
             Params.OpenIters = _trkOpen.Value;
+            Params.ContourOffset = _trkErosion.Value; // 🔥 INICIALIZACIÓN
             Params.MinArea = _trkArea.Value;
         }
 
@@ -220,7 +227,7 @@ namespace SpecimenFX17.Imaging
             {
                 _isDrawing = true;
                 Params.PointsToRepair.Add(pt);
-                TriggerDebounce(); // Pintar manual usa debounce también para no ahogar
+                TriggerDebounce();
             }
             else if (e.Button == MouseButtons.Right)
             {
@@ -331,8 +338,7 @@ namespace SpecimenFX17.Imaging
             }
             catch (OperationCanceledException)
             {
-                
-                // Ignoramos la cancelación limpia
+
             }
             catch (Exception ex)
             {

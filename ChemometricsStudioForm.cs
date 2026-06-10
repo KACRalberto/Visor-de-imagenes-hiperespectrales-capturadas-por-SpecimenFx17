@@ -18,6 +18,12 @@ namespace SpecimenFX17.Imaging
         private Label _lblInfo = null!;
         private ListBox _lstClasses = null!;
 
+        // 🔥 NUEVOS CONTROLES PARA PCA
+        private NumericUpDown _nudComponents = null!;
+        private Button _btnRecalculate = null!;
+        private ComboBox _cmbXAxis = null!;
+        private ComboBox _cmbYAxis = null!;
+
         private List<PointF> _scorePoints = new();
         private int _hoveredIndex = -1;
 
@@ -35,20 +41,59 @@ namespace SpecimenFX17.Imaging
 
         private void BuildUI()
         {
-            var pnlTop = new Panel { Dock = DockStyle.Top, Height = 60, BackColor = Color.FromArgb(30, 30, 35), Padding = new Padding(10) };
-            var btnLoad = new Button { Text = "📂 Cargar Matriz CSV", AutoSize = true, BackColor = Color.FromArgb(0, 120, 215), ForeColor = Color.White, FlatStyle = FlatStyle.Flat };
+            // Panel Superior con FlowLayoutPanel para adaptar botones
+            var pnlTop = new FlowLayoutPanel
+            {
+                Dock = DockStyle.Top,
+                AutoSize = true,
+                BackColor = Color.FromArgb(30, 30, 35),
+                Padding = new Padding(10)
+            };
+
+            var btnLoad = new Button { Text = "📂 Cargar Matriz CSV", AutoSize = true, Padding = new Padding(5), BackColor = Color.FromArgb(0, 120, 215), ForeColor = Color.White, FlatStyle = FlatStyle.Flat, Margin = new Padding(0, 0, 20, 0) };
             btnLoad.Click += BtnLoad_Click;
-            _lblInfo = new Label { Text = "Esperando datos...", AutoSize = true, Location = new System.Drawing.Point(160, 15), ForeColor = Color.Gray };
+
+            var lblComps = new Label { Text = "Nº Componentes (PCA):", AutoSize = true, ForeColor = Color.LightGray, Margin = new Padding(0, 8, 5, 0) };
+            _nudComponents = new NumericUpDown { Minimum = 2, Maximum = 50, Value = 3, Width = 60, BackColor = Color.FromArgb(45, 45, 50), ForeColor = Color.White, Margin = new Padding(0, 5, 10, 0) };
+
+            _btnRecalculate = new Button { Text = "🔄 Recalcular", AutoSize = true, Padding = new Padding(5), BackColor = Color.FromArgb(80, 50, 120), ForeColor = Color.White, FlatStyle = FlatStyle.Flat, Enabled = false, Margin = new Padding(0, 0, 20, 0) };
+            _btnRecalculate.Click += async (s, e) => await RecalculatePCAAsync();
+
+            _lblInfo = new Label { Text = "Esperando datos...", AutoSize = true, ForeColor = Color.Gray, Margin = new Padding(0, 8, 0, 0) };
 
             pnlTop.Controls.Add(btnLoad);
+            pnlTop.Controls.Add(lblComps);
+            pnlTop.Controls.Add(_nudComponents);
+            pnlTop.Controls.Add(_btnRecalculate);
             pnlTop.Controls.Add(_lblInfo);
 
             var splitMain = new SplitContainer { Dock = DockStyle.Fill, Orientation = Orientation.Horizontal, SplitterDistance = 450, BackColor = Color.FromArgb(40, 40, 45) };
 
+            // Panel de Scores
             var pnlScores = new Panel { Dock = DockStyle.Fill, BackColor = Color.FromArgb(15, 15, 20), Padding = new Padding(10) };
-            var lblScoreTitle = new Label { Text = "📊 PCA Scores (PC1 vs PC2) - CLIC DERECHO PARA BORRAR OUTLIERS", Dock = DockStyle.Top, Height = 25, ForeColor = Color.LightSkyBlue, Font = new Font("Segoe UI", 10f, FontStyle.Bold) };
-            _picScores = new PictureBox { Dock = DockStyle.Fill, BackColor = Color.FromArgb(10, 10, 15) };
 
+            var pnlScoreHeader = new Panel { Dock = DockStyle.Top, Height = 35 };
+            var lblScoreTitle = new Label { Text = "📊 PCA Scores - CLIC DERECHO BORRA OUTLIERS", Dock = DockStyle.Left, Width = 400, ForeColor = Color.LightSkyBlue, Font = new Font("Segoe UI", 10f, FontStyle.Bold), TextAlign = ContentAlignment.MiddleLeft };
+
+            // Controles de Ejes
+            var pnlAxes = new FlowLayoutPanel { Dock = DockStyle.Right, Width = 300, FlowDirection = FlowDirection.LeftToRight, Padding = new Padding(0, 3, 0, 0) };
+            var lblX = new Label { Text = "Eje X:", AutoSize = true, ForeColor = Color.White, Margin = new Padding(5, 5, 0, 0) };
+            _cmbXAxis = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 70, BackColor = Color.FromArgb(45, 45, 50), ForeColor = Color.White };
+            var lblY = new Label { Text = "Eje Y:", AutoSize = true, ForeColor = Color.White, Margin = new Padding(15, 5, 0, 0) };
+            _cmbYAxis = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 70, BackColor = Color.FromArgb(45, 45, 50), ForeColor = Color.White };
+
+            _cmbXAxis.SelectedIndexChanged += (s, e) => { _picScores.Invalidate(); _picLoadings.Invalidate(); };
+            _cmbYAxis.SelectedIndexChanged += (s, e) => _picScores.Invalidate();
+
+            pnlAxes.Controls.Add(lblX);
+            pnlAxes.Controls.Add(_cmbXAxis);
+            pnlAxes.Controls.Add(lblY);
+            pnlAxes.Controls.Add(_cmbYAxis);
+
+            pnlScoreHeader.Controls.Add(pnlAxes);
+            pnlScoreHeader.Controls.Add(lblScoreTitle);
+
+            _picScores = new PictureBox { Dock = DockStyle.Fill, BackColor = Color.FromArgb(10, 10, 15) };
             _picScores.Paint += PaintScores;
             _picScores.MouseMove += PicScores_MouseMove;
             _picScores.MouseDown += PicScores_MouseDown;
@@ -61,10 +106,11 @@ namespace SpecimenFX17.Imaging
 
             pnlScores.Controls.Add(_picScores);
             pnlScores.Controls.Add(pnlLegend);
-            pnlScores.Controls.Add(lblScoreTitle);
+            pnlScores.Controls.Add(pnlScoreHeader);
 
+            // Panel de Loadings
             var pnlLoadings = new Panel { Dock = DockStyle.Fill, BackColor = Color.FromArgb(15, 15, 20), Padding = new Padding(10) };
-            var lblLoadingTitle = new Label { Text = "📉 PCA Loadings (PC1) - Importancia de Longitudes de Onda", Dock = DockStyle.Top, Height = 25, ForeColor = Color.Orange, Font = new Font("Segoe UI", 10f, FontStyle.Bold) };
+            var lblLoadingTitle = new Label { Text = "📉 PCA Loadings (Eje X) - Importancia de Longitudes de Onda", Dock = DockStyle.Top, Height = 25, ForeColor = Color.Orange, Font = new Font("Segoe UI", 10f, FontStyle.Bold) };
             _picLoadings = new PictureBox { Dock = DockStyle.Fill, BackColor = Color.FromArgb(10, 10, 15) };
             _picLoadings.Paint += PaintLoadings;
             _picLoadings.Resize += (s, e) => _picLoadings.Invalidate();
@@ -96,18 +142,19 @@ namespace SpecimenFX17.Imaging
             }
         }
 
-        // 🚀 PUNTO 3 SOLUCIONADO: Ahora el cálculo pesado se hace en segundo plano
         private async Task RecalculatePCAAsync()
         {
             if (_datasetLines.Count < 3) return;
 
-            _lblInfo.Text = "⏳ Calculando matriz PCA de alta dimensión... La pantalla no se congelará.";
+            _lblInfo.Text = "⏳ Calculando matriz PCA de alta dimensión...";
             _lblInfo.ForeColor = Color.Orange;
+            _btnRecalculate.Enabled = false;
+
+            int numComps = (int)_nudComponents.Value;
 
             try
             {
-                // El procesador suda aquí, pero la ventana sigue viva
-                _pcaResult = await Task.Run(() => PcaEngine.CalculatePca(_datasetLines.ToArray()));
+                _pcaResult = await Task.Run(() => PcaEngine.CalculatePca(_datasetLines.ToArray(), numComps));
 
                 _classColorMap.Clear();
                 _lstClasses.Items.Clear();
@@ -119,7 +166,22 @@ namespace SpecimenFX17.Imaging
                     colorIdx++;
                 }
 
-                _lblInfo.Text = $"✅ Muestras: {_pcaResult.SampleIds.Count} | Varianza PC1: {_pcaResult.ExplainedVariance[0]:F1}% | PC2: {_pcaResult.ExplainedVariance[1]:F1}%";
+                // Guardamos la selección anterior de ejes para no perderla si es válida
+                int oldX = _cmbXAxis.SelectedIndex;
+                int oldY = _cmbYAxis.SelectedIndex;
+
+                _cmbXAxis.Items.Clear();
+                _cmbYAxis.Items.Clear();
+                for (int i = 0; i < numComps; i++)
+                {
+                    _cmbXAxis.Items.Add($"PC{i + 1}");
+                    _cmbYAxis.Items.Add($"PC{i + 1}");
+                }
+
+                _cmbXAxis.SelectedIndex = (oldX >= 0 && oldX < numComps) ? oldX : 0;
+                _cmbYAxis.SelectedIndex = (oldY >= 0 && oldY < numComps) ? oldY : (numComps > 1 ? 1 : 0);
+
+                _lblInfo.Text = $"✅ Muestras: {_pcaResult.SampleIds.Count} | Varianza PC1: {_pcaResult.ExplainedVariance[0]:F1}% | PC2: {((numComps > 1) ? _pcaResult.ExplainedVariance[1].ToString("F1") : "0.0")}%";
                 _lblInfo.ForeColor = Color.LightGreen;
 
                 _hoveredIndex = -1;
@@ -131,6 +193,10 @@ namespace SpecimenFX17.Imaging
                 MessageBox.Show(ex.Message, "Error PCA", MessageBoxButtons.OK, MessageBoxIcon.Error);
                 _lblInfo.Text = "❌ Error de estructura en el CSV.";
                 _lblInfo.ForeColor = Color.Red;
+            }
+            finally
+            {
+                _btnRecalculate.Enabled = true;
             }
         }
 
@@ -173,14 +239,17 @@ namespace SpecimenFX17.Imaging
                 if (result == DialogResult.Yes)
                 {
                     _datasetLines.RemoveAt(_hoveredIndex + 1);
-                    await RecalculatePCAAsync(); // Llamamos a la versión asíncrona
+                    await RecalculatePCAAsync();
                 }
             }
         }
 
         private void PaintScores(object? sender, PaintEventArgs e)
         {
-            if (_pcaResult == null) return;
+            if (_pcaResult == null || _cmbXAxis.SelectedIndex < 0 || _cmbYAxis.SelectedIndex < 0) return;
+
+            int idxX = _cmbXAxis.SelectedIndex;
+            int idxY = _cmbYAxis.SelectedIndex;
 
             var g = e.Graphics;
             g.SmoothingMode = SmoothingMode.AntiAlias;
@@ -192,8 +261,8 @@ namespace SpecimenFX17.Imaging
 
             for (int i = 0; i < _pcaResult.SampleIds.Count; i++)
             {
-                double x = _pcaResult.Scores[i, 0];
-                double y = _pcaResult.Scores[i, 1];
+                double x = _pcaResult.Scores[i, idxX];
+                double y = _pcaResult.Scores[i, idxY];
                 if (x < minX) minX = x; if (x > maxX) maxX = x;
                 if (y < minY) minY = y; if (y > maxY) maxY = y;
             }
@@ -206,7 +275,8 @@ namespace SpecimenFX17.Imaging
             int zeroX = (int)((0 - minX) / (maxX - minX) * w);
             int zeroY = h - (int)((0 - minY) / (maxY - minY) * h);
 
-            using var axisPen = new Pen(Color.FromArgb(60, 255, 255, 255), 1) { DashStyle = DashStyle.Dash };
+            // 🔥 DIBUJO DE LOS EJES 0 CLAROS
+            using var axisPen = new Pen(Color.FromArgb(150, 255, 255, 255), 2f) { DashStyle = DashStyle.Dash };
             if (zeroX >= 0 && zeroX <= w) g.DrawLine(axisPen, zeroX, 0, zeroX, h);
             if (zeroY >= 0 && zeroY <= h) g.DrawLine(axisPen, 0, zeroY, w, zeroY);
 
@@ -214,8 +284,8 @@ namespace SpecimenFX17.Imaging
 
             for (int i = 0; i < _pcaResult.SampleIds.Count; i++)
             {
-                int screenX = (int)((_pcaResult.Scores[i, 0] - minX) / (maxX - minX) * w);
-                int screenY = h - (int)((_pcaResult.Scores[i, 1] - minY) / (maxY - minY) * h);
+                int screenX = (int)((_pcaResult.Scores[i, idxX] - minX) / (maxX - minX) * w);
+                int screenY = h - (int)((_pcaResult.Scores[i, idxY] - minY) / (maxY - minY) * h);
                 _scorePoints.Add(new PointF(screenX, screenY));
 
                 if (i == _hoveredIndex) continue;
@@ -241,7 +311,6 @@ namespace SpecimenFX17.Imaging
 
                 float boxWidth = sz.Width + 6;
                 float boxHeight = sz.Height + 6;
-
                 float drawX = hX + 12;
                 float drawY = hY - 12;
 
@@ -253,11 +322,23 @@ namespace SpecimenFX17.Imaging
                 g.DrawRectangle(Pens.Gray, drawX, drawY, boxWidth, boxHeight);
                 g.DrawString(label, font, Brushes.White, drawX + 3, drawY + 3);
             }
+
+            // 🔥 TÍTULOS DE LOS EJES
+            using var titleFont = new Font("Segoe UI", 10f, FontStyle.Bold);
+            g.DrawString($"Eje X: PC{idxX + 1} ({_pcaResult.ExplainedVariance[idxX]:F1}%)", titleFont, Brushes.LightGray, w / 2 - 60, h - 25);
+
+            var state = g.Save();
+            g.TranslateTransform(25, h / 2 + 60);
+            g.RotateTransform(-90);
+            g.DrawString($"Eje Y: PC{idxY + 1} ({_pcaResult.ExplainedVariance[idxY]:F1}%)", titleFont, Brushes.LightGray, 0, 0);
+            g.Restore(state);
         }
 
         private void PaintLoadings(object? sender, PaintEventArgs e)
         {
-            if (_pcaResult == null) return;
+            if (_pcaResult == null || _cmbXAxis.SelectedIndex < 0) return;
+
+            int idxX = _cmbXAxis.SelectedIndex; // Se enlaza al eje X seleccionado
 
             var g = e.Graphics;
             g.SmoothingMode = SmoothingMode.AntiAlias;
@@ -270,7 +351,7 @@ namespace SpecimenFX17.Imaging
             double minL = double.MaxValue, maxL = double.MinValue;
             for (int j = 0; j < numVars; j++)
             {
-                double v = _pcaResult.Loadings[j, 0];
+                double v = _pcaResult.Loadings[j, idxX];
                 if (v < minL) minL = v;
                 if (v > maxL) maxL = v;
             }
@@ -286,7 +367,7 @@ namespace SpecimenFX17.Imaging
             for (int j = 0; j < numVars; j++)
             {
                 float px = (float)j / (numVars - 1) * w;
-                float py = h - (float)((_pcaResult.Loadings[j, 0] - minL) / (maxL - minL) * h);
+                float py = h - (float)((_pcaResult.Loadings[j, idxX] - minL) / (maxL - minL) * h);
                 if (!float.IsNaN(px) && !float.IsNaN(py) && !float.IsInfinity(py))
                 {
                     points.Add(new System.Drawing.PointF(px, py));
