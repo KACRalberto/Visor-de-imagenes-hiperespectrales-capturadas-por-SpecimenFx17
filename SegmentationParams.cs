@@ -21,6 +21,7 @@ namespace SpecimenFX17.Imaging
         public List<System.Drawing.Point> PointsToRepair { get; set; } = new();
         public List<System.Drawing.Point> PointsToRemove { get; set; } = new();
 
+        public int ContourOffset { get; set; } = 0;
         public float StretchMin { get; set; } = float.NaN;
         public float StretchMax { get; set; } = float.NaN;
     }

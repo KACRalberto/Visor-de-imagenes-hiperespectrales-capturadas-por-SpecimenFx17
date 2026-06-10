@@ -339,62 +339,90 @@ namespace SpecimenFX17.Imaging
             }
         }
 
-        public void Calibrate(HyperspectralCube whiteRef, HyperspectralCube darkRef, CancellationToken ct = default)
+        /// <summary>
+        /// Calibra el cubo a Reflectancia (0.0 a 1.0) utilizando referencias Blanca y Oscura.
+        /// Aplica el perfil a lo largo de toda la imagen y elimina zonas no corregibles.
+        /// </summary>
+        public void Calibrate(HyperspectralCube whiteRef, HyperspectralCube darkRef, System.Threading.CancellationToken ct)
         {
-            if (whiteRef.Samples != Samples || darkRef.Samples != Samples)
-                throw new ArgumentException($"El ancho de la imagen ({Samples}px) no coincide con las referencias.");
+            if (IsCalibrated) return;
 
-            EnsureWritable(ct);
-            var po = new ParallelOptions { CancellationToken = ct };
+            int bands = this.Bands;
+            int lines = this.Lines;     // El "Largo" de la muestra
+            int samples = this.Samples; // El "Ancho" de la muestra
 
-            int[] wMap = new int[Bands], dMap = new int[Bands];
-            for (int b = 0; b < Bands; b++)
+            // Validaciones críticas de integridad
+            if (whiteRef.Bands != bands || darkRef.Bands != bands)
+                throw new Exception("Las referencias no tienen el mismo número de bandas que la muestra.");
+
+            // 1. CREACIÓN DE LOS PERFILES PERFECTOS (Promediando el Largo)
+            // El tamaño del perfil depende del ancho de la referencia, no de la muestra.
+            int validSamples = Math.Min(samples, Math.Min(whiteRef.Samples, darkRef.Samples));
+
+            float[,] wProfile = new float[bands, validSamples];
+            float[,] dProfile = new float[bands, validSamples];
+
+            // Promediamos la referencia blanca a lo largo de TODAS sus líneas
+            for (int b = 0; b < bands; b++)
             {
-                double targetWl = (Header.Wavelengths != null && Header.Wavelengths.Count > b) ? Header.Wavelengths[b] : 0;
-                wMap[b] = GetClosestBandIndex(whiteRef, targetWl, b);
-                dMap[b] = GetClosestBandIndex(darkRef, targetWl, b);
+                for (int s = 0; s < validSamples; s++)
+                {
+                    float wSum = 0, dSum = 0;
+
+                    for (int l = 0; l < whiteRef.Lines; l++) wSum += whiteRef[b, l, s];
+                    for (int l = 0; l < darkRef.Lines; l++) dSum += darkRef[b, l, s];
+
+                    wProfile[b, s] = wSum / whiteRef.Lines;
+                    dProfile[b, s] = dSum / darkRef.Lines;
+                }
             }
 
-            float[,] maxWhite = new float[Bands, Samples], minDark = new float[Bands, Samples];
-
-            Parallel.For(0, Bands, po, b =>
+            // 2. APLICACIÓN AL CUBO DE LA MUESTRA (Multihilo)
+            Parallel.For(0, lines, new ParallelOptions { CancellationToken = ct }, y =>
             {
-                int mappedW = wMap[b], mappedD = dMap[b];
-                for (int s = 0; s < Samples; s++)
+                for (int x = 0; x < samples; x++)
                 {
-                    float wMax = float.MinValue, dMin = float.MaxValue;
-                    for (int l = 0; l < whiteRef.Lines; l++) { float v = whiteRef[mappedW, l, s]; if (!float.IsNaN(v) && !float.IsInfinity(v) && v > wMax) wMax = v; }
-                    for (int l = 0; l < darkRef.Lines; l++) { float v = darkRef[mappedD, l, s]; if (!float.IsNaN(v) && !float.IsInfinity(v) && v < dMin) dMin = v; }
-                    maxWhite[b, s] = wMax == float.MinValue ? 1f : wMax;
-                    minDark[b, s] = dMin == float.MaxValue ? 0f : dMin;
-                }
-            });
-
-            Parallel.For(0, Bands, po, b =>
-            {
-                for (int l = 0; l < Lines; l++)
-                {
-                    for (int s = 0; s < Samples; s++)
+                    // 🛡️ REGLA: "Lo que NO está corregido hay que eliminarlo"
+                    // Si el píxel actual (x) cae fuera del ancho que cubrían nuestras referencias...
+                    if (x >= validSamples)
                     {
-                        float val = _storage.Get(b, l, s);
-                        if (float.IsNaN(val) || float.IsInfinity(val)) continue;
+                        for (int b = 0; b < bands; b++)
+                        {
+                            // Lo eliminamos (asignamos 0 absoluto)
+                            _storage.Set(b, y, x, 0f);
+                        }
+                        continue; // Pasamos al siguiente píxel
+                    }
 
-                        float range = maxWhite[b, s] - minDark[b, s];
-                        if (range <= 0.0001f) range = 0.0001f;
+                    // Si está dentro de la zona segura, aplicamos la fórmula banda por banda
+                    for (int b = 0; b < bands; b++)
+                    {
+                        float raw = _storage.Get(b, y, x);
+                        float w = wProfile[b, x];
+                        float d = dProfile[b, x];
 
-                        float res = ((val - minDark[b, s]) / range) * 0.99f;
-                        if (float.IsNaN(res) || float.IsInfinity(res) || res < 0f) res = 0f;
-                        else if (res > 1.0f) res = 1.0f;
+                        float denominator = w - d;
 
-                        _storage.Set(b, l, s, res);
+                        // 🛡️ REGLA: Evitar explosiones matemáticas (División por cero o referencias corruptas)
+                        if (denominator <= 0.0001f)
+                        {
+                            _storage.Set(b, y, x, 0f); // Eliminado
+                        }
+                        else
+                        {
+                            float reflectance = (raw - d) / denominator;
+
+                            // Aseguramos que la luz no infrinja la física (0% a 100% de reflejo)
+                            reflectance = Math.Clamp(reflectance, 0f, 1f);
+
+                            _storage.Set(b, y, x, reflectance);
+                        }
                     }
                 }
             });
 
-            IsCalibrated = true; IsAbsorbance = false;
-            ComputeStats(); Version = Guid.NewGuid();
+            IsCalibrated = true;
         }
-
         private int GetClosestBandIndex(HyperspectralCube refCube, double targetWl, int fallbackIndex)
         {
             if (refCube.Header.Wavelengths == null || refCube.Header.Wavelengths.Count == 0 || targetWl == 0)

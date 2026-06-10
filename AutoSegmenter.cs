@@ -29,7 +29,7 @@ namespace SpecimenFX17.Imaging
                 List<float> vals = new List<float>(w * h);
                 for (int y = 0; y < h; y++)
                 {
-                    if (y % 50 == 0) ct.ThrowIfCancellationRequested(); // Frenos de seguridad
+                    if (y % 50 == 0) ct.ThrowIfCancellationRequested();
                     for (int x = 0; x < w; x++)
                     {
                         float v = cube[band, y, x];
@@ -77,7 +77,6 @@ namespace SpecimenFX17.Imaging
             Mat binary = new Mat();
             Cv2.Threshold(gray8U, binary, p.Threshold, 255, p.InvertThreshold ? ThresholdTypes.BinaryInv : ThresholdTypes.Binary);
 
-            // Cortar etiquetas de los bordes con seguridad
             if (p.IgnoreTopPct > 0)
             {
                 int topRows = (int)(binary.Rows * (p.IgnoreTopPct / 100f));
@@ -103,6 +102,24 @@ namespace SpecimenFX17.Imaging
             Mat kernel = Cv2.GetStructuringElement(MorphShapes.Ellipse, new OpenCvSharp.Size(5, 5));
             if (p.CloseIters > 0) Cv2.MorphologyEx(binary, binary, MorphTypes.Close, kernel, iterations: p.CloseIters);
             if (p.OpenIters > 0) Cv2.MorphologyEx(binary, binary, MorphTypes.Open, kernel, iterations: p.OpenIters);
+
+            // =======================================================================
+            // 🔥 NUEVO: AJUSTE DE MARGEN DINÁMICO (EROSIÓN / DILATACIÓN)
+            // =======================================================================
+            int offset = 0;
+            var prop = p.GetType().GetProperty("ContourOffset");
+            if (prop != null) offset = (int)prop.GetValue(p)!;
+
+            if (offset != 0)
+            {
+                int kSize = Math.Abs(offset);
+                using Mat customKernel = Cv2.GetStructuringElement(MorphShapes.Ellipse, new OpenCvSharp.Size(kSize * 2 + 1, kSize * 2 + 1));
+                if (offset < 0)
+                    Cv2.Erode(binary, binary, customKernel);  // Encoje la selección (Erosión)
+                else
+                    Cv2.Dilate(binary, binary, customKernel); // Agranda la selección (Dilatación)
+            }
+            // =======================================================================
 
             if (p.PointsToRepair != null && p.PointsToRepair.Count > 0)
             {

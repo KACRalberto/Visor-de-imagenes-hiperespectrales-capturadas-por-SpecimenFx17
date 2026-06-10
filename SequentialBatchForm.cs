@@ -33,6 +33,7 @@ namespace SpecimenFX17.Imaging
         private Button _btnNext = null!;
         private Button _btnPrev = null!; // NUEVO: Botón atrás
         private ProgressBar _pbProgress = null!;
+        private NumericUpDown _nudOffset = null!;
 
         // NUEVO: Almacenamiento indexado para poder ir atrás y adelante sin duplicar datos
         private Dictionary<int, string> _csvResults = new();
@@ -72,7 +73,7 @@ namespace SpecimenFX17.Imaging
             pnlTop.Controls.Add(_pbProgress);
 
             var pnlRight = new Panel { Dock = DockStyle.Right, Width = 320, BackColor = Color.FromArgb(25, 25, 30), Padding = new Padding(15) };
-
+            var lblOffset = new Label { Text = "Ajuste de margen (Erosión/Dilatación):", AutoSize = true, ForeColor = Color.LightGray, Margin = new Padding(0, 10, 0, 0) };
             var pnlNavigation = new TableLayoutPanel
             {
                 Dock = DockStyle.Bottom,
@@ -120,6 +121,29 @@ namespace SpecimenFX17.Imaging
                 Font = new Font("Segoe UI", 9f, FontStyle.Italic),
                 Margin = new Padding(0, 0, 0, 15)
             };
+
+            _nudOffset = new NumericUpDown
+            {
+                Width = 100,
+                Minimum = -20, // Permite encoger hasta 20 píxeles
+                Maximum = 20,  // Permite agrandar hasta 20 píxeles
+                Value = _opts.ContourOffset, // Sincroniza con el valor inicial
+                BackColor = Color.FromArgb(45, 45, 50),
+                ForeColor = Color.White,
+                Margin = new Padding(0, 5, 0, 15)
+            };
+
+            // Evento para que cuando cambie el número, actualice las opciones y re-segmente la imagen actual en vivo
+            _nudOffset.ValueChanged += (s, e) =>
+            {
+                _opts.ContourOffset = (int)_nudOffset.Value;
+                // Forzamos la re-segmentación asíncrona de la vista para ver el cambio inmediatamente
+                LoadCurrentImage();
+            };
+
+            // Insertar en el FlowLayoutPanel lateral
+            flp.Controls.Add(lblOffset);
+            flp.Controls.Add(_nudOffset);
 
             var lblClass = new Label { Text = "Etiqueta / Clase de esta imagen:", AutoSize = true, ForeColor = Color.LightGray };
             _txtClass = new TextBox { Width = 290, BackColor = Color.FromArgb(45, 45, 50), ForeColor = Color.White, Font = new Font("Segoe UI", 11f), Margin = new Padding(0, 5, 0, 20) };

@@ -19,6 +19,8 @@ namespace SpecimenFX17.Imaging
         public HyperspectralCube? WhiteRef { get; set; }
         public HyperspectralCube? DarkRef { get; set; }
 
+
+        public int ContourOffset { get; set; } = 0;
         public bool ConvertToAbsorbance { get; set; }
         public bool ApplySNV { get; set; }
         public bool ApplyMSC { get; set; }
